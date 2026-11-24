@@ -125,6 +125,19 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
     supportsAspectRatio: true,
     qualityTiers: ['auto'],
   },
+  // 自家 MaaS 的 MiniMax-H3 图像走了 OpenAI 形状的 /images/generations 与
+  // /images/edits，但尺寸只认 `size: WIDTHxHEIGHT`：32 像素对齐、面积落在
+  // 2K 档 4.0–4.3MP 或 16MP 档 16.5–16.9MP（±15% 容差）、比例不超过 3:1，
+  // 低于 2K 直接 400 而不是静默升档。所以 `supportsAspectRatio` 为 false —
+  // 比例只在面板上做选择，真正发出去的是像素尺寸。
+  'h3-image': {
+    label: 'H3 Image',
+    labelZh: 'H3 图像',
+    known: true,
+    supportsEdit: true,
+    supportsAspectRatio: false,
+    qualityTiers: ['2K'],
+  },
 }
 
 /** Documented upstream prompt hard limits (UTF-16 code units). The engine
@@ -133,6 +146,9 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
 const PROMPT_CHAR_LIMITS: Partial<Record<Exclude<ModelFamily, 'unknown'>, number>> = {
   // MiniMax image-01 rejects prompts >= 1500 chars upstream (base_resp 2013).
   minimax: 1500,
+  // 自家 MaaS 的 H3 图像文档给的是 7000 字符；它不是 MiniMax 官方 image-01，
+  // 所以不能沿用上面那条 1500。
+  'h3-image': 7000,
 }
 
 /** The documented prompt character limit for a model id, or null when the
@@ -196,6 +212,11 @@ export function describeModel(model: string): ModelCatalogEntry {
   if (/^agnes-image(?:[.\-_]|$)/i.test(id)) return { family: 'agnes', ...ENTRIES.agnes, lifecycle: 'active' }
   if (/^(?:glm-image|cogview(?:-|$))/i.test(id)) return { family: 'zhipu', ...ENTRIES.zhipu, lifecycle: 'active' }
   if (/^qwen-image(?:[-_.]|$)/i.test(id)) return { family: 'qwen', ...ENTRIES.qwen, lifecycle: 'active' }
+  // 自家 MaaS 的 H3 图像必须排在 MiniMax 官方族之前判定：`minimax-h3-image*`
+  // 虽然不会命中 `image-\d+` 那条 MiniMax 规则，但它确实以 minimax 开头，
+  // 一旦上游以后放宽那条正则就会被错误路由到 `/image_generation`（aspect_ratio
+  // 语义），所以这里先把它锁死。聚合模型 `-enhanced` 也在此族内。
+  if (/^minimax[-_.]?h3[-_.]?image(?:$|[-_.])/i.test(id)) return { family: 'h3-image', ...ENTRIES['h3-image'], lifecycle: 'active' }
   if (/^(?:minimax[-_/])?image-\d+/i.test(id)) return { family: 'minimax', ...ENTRIES.minimax, lifecycle: 'active' }
   // Tier 3.
   return { family: 'unknown', label: 'unknown', labelZh: '未知协议', known: false, supportsEdit: true, supportsAspectRatio: false, qualityTiers: [], lifecycle: 'active' }

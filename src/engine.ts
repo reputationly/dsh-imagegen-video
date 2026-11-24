@@ -396,6 +396,27 @@ const OPENAI_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
   '21:9': '1792x1024',
 }
 
+/**
+ * 自家 MaaS 的 MiniMax-H3 图像尺寸表：只认 `size`，且必须落在 2K 计费档
+ * （4.0–4.3MP、两边 32 的倍数、比例不超过 3:1）。低于 2K 网关直接 400，
+ * 不会静默升档，所以面板上的比例必须在这里一次性换成交付尺寸。
+ */
+const H3_IMAGE_2K_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
+  '1:1': '2048x2048',
+  '4:3': '2368x1760',
+  '3:4': '1760x2368',
+  '3:2': '2368x1760',
+  '2:3': '1760x2368',
+  '16:9': '2720x1536',
+  '9:16': '1536x2720',
+  '21:9': '3136x1344',
+  '3:1': '3552x1184',
+  '1:3': '1184x3552',
+}
+
+/** 没有比例或比例不在表内时的兜底：2K 档的正方形。 */
+const H3_IMAGE_DEFAULT_SIZE = '2048x2048'
+
 /** The panel's aspect ratios mapped to a FRAME size for GIF output.
  *  Every frame shares one image's pixel budget, so the 1024/1536 tiers above
  *  would leave each frame too small to read once 9+ frames are packed in.
@@ -653,6 +674,20 @@ function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
         ? { size: OPENAI_SIZE_BY_RATIO[request.size] }
         : {},
       quality: isGlmImage(model) ? 'hd' : 'standard',
+    }
+  }
+  // 自家 MaaS 的 MiniMax-H3 图像：只发 `size`。
+  //
+  // 两条必须分开处理：
+  //  - 聚合模型（`-enhanced`）在网关侧用 PE 自动定画幅并映射到 2K 画布，
+  //    但**只有客户端不传 size 时**才这么做；一旦传了 <2K 的尺寸，网关的
+  //    尺寸策略会直接 400。所以聚合模型这里一个尺寸字段都不能发。
+  //  - 裸模型（`minimax-h3-image`）必须由我们把面板比例换成 2K 档像素。
+  if (modelFamily(model) === 'h3-image') {
+    if (/-enhanced(?:$|[-_.])/i.test(model)) return { model }
+    return {
+      model,
+      size: H3_IMAGE_2K_SIZE_BY_RATIO[request.size] ?? H3_IMAGE_DEFAULT_SIZE,
     }
   }
   // OpenAI-compatible endpoints: nearest pixel size, clarity tiers mapped to

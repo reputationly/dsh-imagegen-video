@@ -170,6 +170,25 @@ const ENTRIES: Record<Exclude<VideoModelFamily, 'unknown'>, Omit<VideoCatalogEnt
     supportsSeed: false,
     requiresReference: false,
   },
+  // 自家 MaaS 网关的统一任务接口（`docs/video-client-integration.md`）：
+  // `POST <base>/videos` 提交，`GET <base>/videos/{id}` 轮询，成品在
+  // `metadata.url`；`metadata.image_mode` 区分玩法（text-to-video /
+  // first-last-frame / reference），参考图走 `metadata.src_ref_images`。
+  //
+  // 分辨率只有 768P 一档：网关的 2K 是"生成 768P + RelayVSR 超分"，由聚合
+  // 模型（`minimax-h3-2k` / `minimax-h3-ref-2k`）在服务端完成，客户端不需要
+  // 也不应该自己挑 2K。时长 1–20 秒，这里仍按 5/10/15 三档提供。
+  'h3-v2': {
+    label: 'MaaS H3',
+    labelZh: 'MaaS H3 视频',
+    known: true,
+    modes: ['text', 'image', 'keyframe', 'reference'],
+    resolutions: ['768P'],
+    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
+    durations: [5, 10, 15],
+    supportsSeed: false,
+    requiresReference: false,
+  },
   // 启航AIGC's aggregate gateway (Wan 3.0): the flat video endpoint takes
   // model / prompt / mode / duration / resolution / aspect_ratio / images at
   // the TOP level and answers a task id; polling is `GET /v1/tasks/{id}` and
@@ -299,6 +318,12 @@ export function describeVideoModel(model: string): VideoCatalogEntry {
   // and body (see above). Muse ids beyond `muse-video` are unmeasured, so they
   // stay on the generic branch where the failure is at least readable.
   if (/^muse-video$/i.test(id)) return { family: 'muse', ...ENTRIES.muse }
+  // 自家 MaaS 的 H3 视频必须排在 Nbility 那条 minimax 规则之前：两边都叫
+  // `minimax-h3*`，靠后缀区分。这里只认我们自己部署的四个 id 与它们的聚合
+  // 形态（`-2k` / `-ref-2k`），裸名 `minimax-h3` 仍然留给 Nbility 契约。
+  if (/^minimax[-_.]?h3[-_.]?(?:fl2va|ref2va|l2va|2k|ref[-_.]?2k)(?:$|[-_.])/i.test(id)) {
+    return { family: 'h3-v2', ...ENTRIES['h3-v2'] }
+  }
   // MiniMax-H3 through the Nbility gateway, matched by id: the gateway serves
   // other vendors' ids on the same `/v1/videos` path, and only this one speaks
   // the `content` array with per-item roles.

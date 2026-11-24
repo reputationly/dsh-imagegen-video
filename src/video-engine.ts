@@ -213,6 +213,9 @@ const POLL_POLICY: Record<string, { intervalMs: number; deadlineMs: number }> = 
   // to poll every 5-10s, so the shared cadence with a longer ceiling covers a
   // queue slot without hammering the status endpoint.
   minimax: { intervalMs: 5_000, deadlineMs: 30 * 60_000 },
+  // 自家 MaaS 的 H3：单实例串行，768P 一段 5 秒约 3 分钟，2K 聚合还要再走一遍
+  // 超分，排队另计，所以给 40 分钟——比别的族更宽，但不至于让用户干等一小时。
+  'h3-v2': { intervalMs: 5_000, deadlineMs: 40 * 60_000 },
   // 启航AIGC documents a 3s cadence and asks clients to keep polling for at
   // least an hour; Wan renders queue for minutes and a long clip can take
   // longer than the other families' ceilings.
@@ -1329,6 +1332,148 @@ async function minimaxSubmitBody(
   }
 }
 
+/** 参考图上限：网关的参考族（r2va）最多吃 9 张图。 */
+const MAX_H3_REFERENCES = 9
+
+/**
+ * 网关的参考素材上传入口，相对 API base 解析。
+ *
+ * 不放进 {@link VIDEO_PATHS}：那张表只描述 submit/status 成对出现的路径，
+ * 上传两者都不是。跟 status 一样按 base 解析，`apiUrlFull` 场景才不会指错主机。
+ */
+const H3_UPLOAD_PATH = '/ov/files'
+
+/** 参考图的文件扩展名，由 mime 决定（网关按扩展名判容器）。 */
+function h3ReferenceExtension(mime: string): string {
+  if (mime === 'image/png') return 'png'
+  if (mime === 'image/webp') return 'webp'
+  if (mime === 'image/heic') return 'heic'
+  if (mime === 'image/heif') return 'heif'
+  return 'jpg'
+}
+
+/**
+ * 把一张参考图上传到网关素材库，返回可直接放进任务 metadata 的 URL。
+ *
+ * 网关对参考素材只保证「签名 URL 可用」，任务体里的图片字段按 URL 取素材，
+ * 所以本地 data URL 必须先换 URL 再提交。上传失败就是提交失败：拿不到 URL
+ * 还去提交只会让用户等一个注定 400 的任务。
+ */
+async function uploadH3Reference(
+  upstream: VideoUpstreamConfig,
+  baseUrl: string,
+  reference: { mime: string; base64: string },
+  index: number,
+  signal: AbortSignal,
+): Promise<string> {
+  const url = endpointUrl(upstream, baseUrl, H3_UPLOAD_PATH)
+  const form = new FormData()
+  form.append(
+    'file',
+    new Blob([Buffer.from(reference.base64, 'base64')], { type: reference.mime }),
+    `reference-${index + 1}.${h3ReferenceExtension(reference.mime)}`,
+  )
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${upstream.apiKey}` },
+    body: form,
+    signal,
+  })
+  const text = await response.text().catch(() => '')
+  if (!response.ok) {
+    throw new VideoGenError(
+      `参考素材上传失败（HTTP ${response.status} · ${displayUrl(url)}）：${text.slice(0, 200)}`,
+      'video-bad-reference',
+    )
+  }
+  let payload: unknown
+  try {
+    payload = JSON.parse(text)
+  } catch (_notJson: unknown) {
+    throw new VideoGenError('参考素材上传返回的不是 JSON', 'video-bad-reference')
+  }
+  const record = payload !== null && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+  const uploaded = typeof record.url === 'string' ? record.url.trim() : ''
+  if (uploaded === '') throw new VideoGenError('参考素材上传没有返回 url', 'video-bad-reference')
+  return uploaded
+}
+
+/**
+ * 构造自家 MaaS 网关的提交体。
+ *
+ * 契约见网关的 `docs/video-client-integration.md`：
+ *
+ *  - 提交 `POST <base>/videos`，`metadata.image_mode` 区分玩法
+ *    （`text-to-video` / `first-last-frame` / `reference`），成品在轮询返回的
+ *    `metadata.url`；
+ *  - 分辨率固定 768P —— 2K 是网关侧「生成 768P + 超分」的聚合模型行为，
+ *    客户端传 2K 没有意义；
+ *  - 首尾帧走顶层 `image` / `images`，参考图**不能**放顶层（那会被当成首帧），
+ *    必须放 `metadata.src_ref_images`；
+ *  - 音轨由引擎直接混进 mp4，`metadata.generate_audio` 默认 true。
+ */
+async function h3v2SubmitBody(
+  upstream: VideoUpstreamConfig,
+  request: VideoGenerateRequest,
+  model: string,
+  references: DecodedReferences,
+  baseUrl: string,
+  seconds: number,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const wireModel = (request.upstream ?? request.model).trim()
+  if (request.prompt.trim() === '') {
+    // 放在任何上传之前：空提示词会被网关 400，而上传的时间已经白花了。
+    throw new VideoGenError('提示词不能为空：网关要求文本项非空', 'video-bad-prompt')
+  }
+  const metadata: Record<string, unknown> = { resolution: '768P', generate_audio: true }
+  if (request.aspectRatio.trim() !== '') metadata.ratio = request.aspectRatio
+  const body: Record<string, unknown> = {
+    model: wireModel,
+    prompt: request.prompt,
+    duration: seconds,
+    metadata,
+  }
+
+  if (request.mode === 'keyframe') {
+    // 首尾帧：`image_mode` 让网关按 flf2v 处理；只给一张时它按 i2v 处理，
+    // 所以这里不需要替它判断「一张算不算首尾帧」。
+    metadata.image_mode = 'first-last-frame'
+    const frames = references.all.slice(0, 2)
+    const urls: string[] = []
+    for (const [index, frame] of frames.entries()) {
+      urls.push(await uploadH3Reference(upstream, baseUrl, frame, index, signal))
+    }
+    if (urls.length === 1) body.image = urls[0]
+    else if (urls.length > 1) body.images = urls
+    return body
+  }
+
+  if (request.mode === 'reference') {
+    if (references.all.length === 0) {
+      throw new VideoGenError('参考族至少要给一张参考图', 'video-bad-reference')
+    }
+    if (references.all.length > MAX_H3_REFERENCES) {
+      throw new VideoGenError(
+        `网关的参考族最多支持 ${String(MAX_H3_REFERENCES)} 张参考图，本次是 ${String(references.all.length)} 张`,
+        'video-bad-reference',
+      )
+    }
+    metadata.image_mode = 'reference'
+    const urls: string[] = []
+    for (const [index, reference] of references.all.entries()) {
+      urls.push(await uploadH3Reference(upstream, baseUrl, reference, index, signal))
+    }
+    metadata.src_ref_images = urls
+    return body
+  }
+
+  if (references.primary !== undefined) {
+    body.image = await uploadH3Reference(upstream, baseUrl, references.primary, 0, signal)
+  }
+  return body
+}
+
 /** Build the family-specific submit body. */
 function submitBody(
   entry: VideoCatalogEntry,
@@ -1972,7 +2117,17 @@ export async function generateVideo(
         clampVideoSeconds(request.seconds),
         submitBudget.signal,
       )
-      : submitBody(entry, family, request, references)
+      : family === 'h3-v2'
+        ? await h3v2SubmitBody(
+          upstream,
+          request,
+          model,
+          references,
+          baseUrl,
+          clampVideoSeconds(request.seconds),
+          submitBudget.signal,
+        )
+        : submitBody(entry, family, request, references)
     // The submit leg's own context: every failure from here to the task id is a
     // "the render never started" report, which is a different problem from a
     // render that started and then failed.
