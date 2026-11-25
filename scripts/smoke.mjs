@@ -133,8 +133,12 @@ await check('A1 host exports the plugin contract', () => {
   assert.equal(typeof host.makeRoutes, 'function')
   assert.equal(typeof host.generateImage, 'function')
 })
-await check('A1b Git dependency prepare hook builds distributable artifacts', () => {
-  assert.equal(packageJson.scripts.prepare, 'tsdown')
+await check('A1b installing the package as a dependency does not build', () => {
+  // 反向不变量（曾经成立）：`prepare: tsdown` 让 git 依赖在安装时就地构建。本 fork 不再
+  // 走 git 依赖：小助手装的是 CI 打好的 tgz，`lib/` 本来就在包里，因此安装阶段绝不能
+  // 触发构建——它会把宿主的安装过程变成一次 tsdown 编译。构建移到 prepack。
+  assert.equal(packageJson.scripts.prepare, undefined, 'prepare must not build on install')
+  assert.equal(packageJson.scripts.prepack, 'tsdown', 'packing is where the build belongs')
 })
 
 /**
