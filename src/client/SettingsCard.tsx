@@ -18,7 +18,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { CardForm, booleanField, secretField, textField, type CardActions, type CardSaveOutcome, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import { ChannelsForm, type ChannelDraft, type ChannelIssue, type ChannelsFormActions, type ChannelsFormState, type ChannelsSaveOutcome } from './channels-form.ts'
-import { ImageGenApi } from './api.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel, modelFamily } from '../model-catalog.ts'
 import { DEFAULT_VIDEO_MODELS, describeVideoModel } from '../video-model-catalog.ts'
@@ -31,15 +30,6 @@ import { PptSetup } from './PptSetup.tsx'
 import { Select } from './Select.tsx'
 import { onTablistKeyDown, tabIndexFor } from './tablist.ts'
 import css from './settings-card.module.css'
-
-/**
- * The card's own API client (update checks today).
- *
- * Module scope, not a per-render instance: `api.ts` holds no state, and the
- * update check is fired from a button on a card that re-renders on every
- * keystroke elsewhere on the page.
- */
-const settingsApi = new ImageGenApi()
 
 /** The global (non-channel) fields this card's staged form edits. */
 export interface ImageGenSettings {
@@ -387,8 +377,6 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   /** The result line under the save button: which outcome the last save had. */
   const [saveNote, setSaveNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [updateState, setUpdateState] = useState<'idle' | 'checking'>('idle')
-  const [updateNote, setUpdateNote] = useState<{ ok: boolean; text: string } | null>(null)
   const [presetPickerOpen, setPresetPickerOpen] = useState(false)
   const [presets, setPresets] = useState<PresetProviderView[]>([])
   const [presetError, setPresetError] = useState<string | null>(null)
@@ -563,24 +551,6 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
    * nothing, so an empty API URL looked saved while nothing reached the Host.
    * Blocking fields are reported in place and the first one takes focus.
    */
-  /** Run the update check by hand and always say what came back. */
-  const checkUpdate = async (): Promise<void> => {
-    if (updateState === 'checking') return
-    setUpdateState('checking')
-    setUpdateNote(null)
-    try {
-      const info = await settingsApi.updateCheck()
-      setUpdateNote(info.updateAvailable
-        ? { ok: true, text: t('settings.updateAvailable', { version: info.latestVersion, current: info.currentVersion }) }
-        : { ok: true, text: t('settings.updateLatest', { version: info.currentVersion }) })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setUpdateNote({ ok: false, text: t('settings.updateCheckFailed', { error: message }) })
-    } finally {
-      setUpdateState('idle')
-    }
-  }
-
   const saveAll = async (): Promise<boolean> => {
     const blocking = Object.entries(state.channels.issues).find(([, list]) => list.length > 0)
     if (blocking !== undefined) {
@@ -758,30 +728,8 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
           <span className={css.description}>{headerDescription}</span>
         </span>
         {state.dirty ? <span className={css.pending}>{t('settings.unsaved')}</span> : null}
-        {/* Manual check: the plugin used to run its update check once, on mount,
-            and swallow any failure, so a stale install had no way to find out. */}
-        <span
-          role="button"
-          tabIndex={0}
-          className={css.updateCheck}
-          data-update-check=""
-          aria-disabled={updateState === 'checking'}
-          title={updateState === 'checking' ? t('settings.checkingUpdate') : t('settings.checkUpdate')}
-          onClick={event => { event.stopPropagation(); void checkUpdate() }}
-          onKeyDown={event => {
-            if (event.key !== 'Enter' && event.key !== ' ') return
-            event.preventDefault()
-            event.stopPropagation()
-            void checkUpdate()
-          }}
-        >
-          {updateState === 'checking' ? t('settings.checkingUpdate') : t('settings.checkUpdate')}
-        </span>
         <span className={open ? css.chevronOpen : css.chevron}>▾</span>
       </button>
-      {updateNote !== null ? (
-        <p className={updateNote.ok ? css.saved : css.failed} role="status" data-update-note="">{updateNote.text}</p>
-      ) : null}
       {open
         ? (
           <div className={css.body}>

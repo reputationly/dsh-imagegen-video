@@ -34,14 +34,13 @@ import { imageDataRoot } from './image-storage-path.ts'
 import { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates } from './templates-store.ts'
 import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
 import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
-import { checkForUpdate, CURRENT_VERSION, installUpdate, ManualUpdateRequiredError, updateInstallTarget, type UpdateHostContext } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
 import { parseVideoResolution } from './video-model-catalog.ts'
 import { clearDiagnostics, listDiagnostics } from './diagnostics-store.ts'
 import { allSignals, clearSignals, listSignals, promptBucketOf, recordSignal } from './signal-store.ts'
 import { buildReport, DEFAULT_WINDOW_DAYS } from './signal-report.ts'
 import { extractProductLink } from './link-extract.ts'
-import { MODEL_API, AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, LISTING_COPY_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, SIGNALS_API, STAGE_ASSETS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, VIDEO_API, isChannelProtocolPreference, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type VideoDirectorPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type ListingCopyRequest, type PptRunRequest, type PptRuntimeStatus, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type CanvasVideoTaskMeta, type VideoGenerateRequest, type VideoHistoryEntry } from './protocol.ts'
+import { MODEL_API, AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, LISTING_COPY_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, SIGNALS_API, STAGE_ASSETS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, USAGE_API, VIDEO_API, isChannelProtocolPreference, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type VideoDirectorPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type ListingCopyRequest, type PptRunRequest, type PptRuntimeStatus, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type CanvasVideoTaskMeta, type VideoGenerateRequest, type VideoHistoryEntry } from './protocol.ts'
 import { buildCanvasBundle, CANVAS_BUNDLE_API, MAX_CANVAS_BUNDLE_BYTES, parseCanvasBundle } from './canvas-bundle.ts'
 import { probeCodeRender } from './code-render-runtime.ts'
 import { makeOutfitRoutes } from './outfit-reference-routes.ts'
@@ -241,12 +240,6 @@ export interface ImageGenRoutesDeps {
   }
   /** Resolve the object-storage sync settings (with the real secret). */
   resolveStorage?: () => StorageSyncConfig
-  /**
-   * Launcher facts for the update routes: whether this host can install a bundle
-   * itself, and the profile it booted. Hosts that predate the install hook omit
-   * it, and the updater then falls back to argv/env probing and its CLI path.
-   */
-  resolveUpdateContext?: () => UpdateHostContext
   /** Shared host queue, used by Agent tools and browser task endpoints. */
   runtime?: ImageGenerationRuntime
   /**
@@ -1536,7 +1529,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           const report = buildReport(entries, { language: body?.language === 'en' ? 'en' : 'zh' })
           // Markdown, not a file: the browser decides whether to copy or save,
           // and the host never writes outside its own data directory.
-          writeJson(res, 200, { ok: true, markdown: report.issue.body, title: report.issue.title, url: report.issue.url })
+          writeJson(res, 200, { ok: true, markdown: report.issue.body, title: report.issue.title })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'signal-failed', message: messageOf(error) })
         }
@@ -1595,59 +1588,6 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           source: 'auto',
         }).catch(() => { /* the retry already started; a lost signal must not undo it */ })
         writeJson(res, 200, { ok: true, task })
-      },
-    },
-    // ----------------------------------------------- update check
-    {
-      kind: 'exact',
-      path: UPDATE_API.check,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        try {
-          writeJson(res, 200, { ok: true, update: { ...await checkForUpdate(), ...updateInstallTarget(undefined, undefined, deps.resolveUpdateContext?.()) } })
-        } catch (error) {
-          writeJson(res, 200, { ok: false, code: 'update-check-failed', message: messageOf(error) })
-        }
-      },
-    },
-    // ----------------------------------------------- update apply
-    {
-      kind: 'exact',
-      path: UPDATE_API.apply,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        const version = body !== undefined && typeof body.version === 'string' ? body.version.trim() : ''
-        if (version === '') {
-          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'update version is required' })
-          return
-        }
-        try {
-          const latest = await checkForUpdate()
-          if (!latest.updateAvailable || latest.latestVersion !== version) {
-            writeJson(res, 200, { ok: false, code: 'update-not-available', message: `version ${version} is not the latest available release` })
-            return
-          }
-          await installUpdate(version, undefined, undefined, undefined, undefined, deps.resolveUpdateContext?.())
-          writeJson(res, 200, { ok: true, currentVersion: CURRENT_VERSION, updatedVersion: version, restartRequired: true })
-        } catch (error) {
-          // DSH Desktop locks its profile away from the CLI, so "update online"
-          // cannot work there. That is not a failure to retry — it is a
-          // different route to the same file, and the response has to carry the
-          // archive URL so the panel can offer it instead of "update failed".
-          if (error instanceof ManualUpdateRequiredError) {
-            writeJson(res, 200, {
-              ok: false,
-              code: error.code,
-              message: error.message,
-              profile: error.profile,
-              tarballUrl: error.tarballUrl,
-              updatedVersion: version,
-            })
-            return
-          }
-          writeJson(res, 200, { ok: false, code: 'update-failed', message: messageOf(error) })
-        }
       },
     },
     // ------------------------------------------------ subscription status

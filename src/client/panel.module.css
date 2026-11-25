@@ -61,7 +61,7 @@
  *   71  popover-raised    the skills menu / dialog above that scrim
  *   72  chat-resizer      the column resize handle, above the takeover
  *   86  file-overlay      the full-screen file reader
- *   90  context-menu      canvas context menu and the update popover
+ *   90  context-menu      canvas context menu
  *   92  diagnostics       the retained-attempt record, opened from the task
  *                          tray: it is a studio-wide overlay, so it must cover
  *                          everything anchored inside the studio, including
@@ -640,14 +640,12 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 
 .panelHeading {
   display: flex;
-  /* 品牌标是图形不是文字，和 GitHub 图标一样按中线对齐；baseline 会让 SVG 下坠。 */
   align-items: center;
   gap: 10px;
   min-width: 0;
 }
 
 .panelTitle {
-  /* 品牌标是 SVG：h2 只作为语义标题的容器，不参与文字排版。 */
   display: flex;
   align-items: center;
   margin: 0;
@@ -657,26 +655,7 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   white-space: nowrap;
 }
 
-/* GitHub icon button next to the title (opens the repo). */
-.githubLink {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--dsw-radius-sm);
-  color: var(--dsw-alias-label-secondary);
-  text-decoration: none;
-  transition: color 0.12s, background 0.12s;
-}
-
-.githubLink:hover {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-layer-2);
-}
-
-/* --- connection status and update notice -------------------------------------- */
+/* --- connection status -------------------------------------------------------- */
 
 .connectionStatus {
   display: inline-flex;
@@ -705,207 +684,6 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   height: 6px;
   border-radius: 50%;
   background: currentColor;
-}
-
-.updateArea {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-}
-
-.updateButton {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--dsw-alias-state-warn-primary);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent);
-  color: var(--dsw-alias-state-warn-primary);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.updateButton:hover {
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 15%, transparent);
-}
-
-.updateButton[data-kind='ok'] {
-  border-color: var(--dsw-alias-state-success-primary);
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, transparent);
-  color: var(--dsw-alias-state-success-primary);
-}
-
-.updateButton[data-kind='failed'] {
-  border-color: var(--dsw-alias-state-error-primary, #ec1313);
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ec1313) 8%, transparent);
-  color: var(--dsw-alias-state-error-primary, #ec1313);
-}
-
-.updatePopover {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: var(--z-context-menu);
-  display: flex;
-  flex-direction: column;
-  width: min(430px, calc(100vw - 40px));
-  max-height: min(70vh, 560px);
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-1);
-  box-shadow: var(--dsw-elevation-prominent);
-  color: var(--dsw-alias-label-primary);
-  text-align: left;
-}
-
-.updatePopoverHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 13px 14px 11px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
-}
-
-.updatePopoverHeading {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.updatePopoverHeading strong {
-  font-size: 13px;
-}
-
-.updatePopoverHeading small {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-}
-
-.updateClose {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex: none;
-  border: none;
-  border-radius: var(--dsw-radius-sm);
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.updateClose:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
-.updateStatus {
-  margin: 10px 14px 0;
-  padding: 8px 10px;
-  border-radius: var(--dsw-radius-sm);
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, transparent);
-  color: var(--dsw-alias-state-success-primary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.updateStatus[data-kind='failed'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ec1313) 9%, transparent);
-  color: var(--dsw-alias-state-error-primary, #ec1313);
-}
-
-/* The manual-install block: a command the user has to copy verbatim, so it
-   reads as code (selectable, monospaced, wrapping rather than scrolling) and the
-   copy button sits below it instead of competing with the text for width. */
-.updateManual {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 8px 14px 0;
-  padding: 8px 10px;
-  border-radius: var(--dsw-radius-sm);
-  border: 1px solid var(--dsw-alias-border-l1);
-  background: var(--dsw-alias-bg-layer-2);
-}
-
-.updateManualLabel {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.updateManualCode {
-  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--dsw-alias-label-primary);
-  overflow-wrap: anywhere;
-  /* The command is meant to be selected and copied by hand when the clipboard
-     API is unavailable (it needs a secure context), so keep it selectable. */
-  user-select: text;
-}
-
-.updateNotes {
-  min-height: 0;
-  overflow-y: auto;
-  padding: 12px 14px 16px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 1.65;
-}
-
-.updateNotes > :first-child { margin-top: 0; }
-.updateNotes > :last-child { margin-bottom: 0; }
-.updateNotes h1,
-.updateNotes h2,
-.updateNotes h3,
-.updateNotes h4,
-.updateNotes h5,
-.updateNotes h6 { margin: 14px 0 7px; color: var(--dsw-alias-label-primary); line-height: 1.4; }
-.updateNotes h1 { font-size: 16px; }
-.updateNotes h2 { font-size: 15px; }
-.updateNotes h3 { font-size: 14px; }
-.updateNotes p { margin: 7px 0; }
-.updateNotes ul,
-.updateNotes ol { margin: 7px 0; padding-left: 20px; }
-.updateNotes li + li { margin-top: 3px; }
-.updateNotes code { padding: 1px 4px; border-radius: var(--dsw-radius-xs); background: var(--dsw-alias-bg-layer-2); }
-.updateNotes pre { overflow-x: auto; padding: 10px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-2); }
-.updateNotes pre code { padding: 0; background: transparent; }
-.updateNotes blockquote { margin: 8px 0; padding-left: 10px; border-left: 2px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-tertiary); }
-.updateNotes a { color: var(--dsw-alias-brand-primary); }
-.updateNotes img { max-width: 100%; border-radius: var(--dsw-radius-sm); }
-.updateNotes table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.updateNotes th,
-.updateNotes td { padding: 5px 6px; border: 1px solid var(--dsw-alias-border-l1); text-align: left; }
-
-.updatePopoverFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 14px 12px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
-}
-
-.updateRelease {
-  color: var(--dsw-alias-brand-primary);
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  white-space: nowrap;
 }
 
 @media (max-width: 700px) {

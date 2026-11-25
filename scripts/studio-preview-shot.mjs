@@ -372,7 +372,7 @@ try {
         const nav = header.querySelector('nav')
         const actions = [...header.querySelectorAll('button, span')]
           .filter(node => node !== nav && !nav?.contains(node))
-          .filter(node => /chatToggle|connectionStatus|githubLink/.test(String(node.className)))
+          .filter(node => /chatToggle|connectionStatus/.test(String(node.className)))
         if (nav === null) return { nav: null }
         const box = nav.getBoundingClientRect()
         const clashes = actions

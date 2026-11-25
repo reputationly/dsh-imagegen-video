@@ -1,79 +1,28 @@
-# 团团TV（TuanTuan TV）
+# 创作（蒜狸小助手内置）
 
-> **图片与视频一体化的 DSH 生图 / 生视频插件。**（包名 `@q253595422/dsh-imagegen-video`）
-> 生图之外，本仓库提供**完整的生视频链路**，以及**画布视频节点、片段拼接**。
+> **蒜狸小助手内置的生图 / 生视频工作台。**（包名 `@q253595422/dsh-imagegen-video`）
+> 侧栏「创作」进入工作台：文生图、图生图、文生视频、首尾帧、参考生视频、无限画布、画廊与模板库。
 > 各版本的改动见 [CHANGELOG.md](./CHANGELOG.md)，第三方代码归属见 [NOTICE](./NOTICE)。
 
 <div align="center">
-  <a href="https://github.com/q253595422/dsh-imagegen-video/releases"><img src="https://img.shields.io/github/v/release/q253595422/dsh-imagegen-video?color=cb3837&label=release" alt="Latest release" /></a>
-  &nbsp;
-  <a href="https://github.com/q253595422/dsh-imagegen-video/releases"><img src="https://img.shields.io/github/downloads/q253595422/dsh-imagegen-video/total?label=downloads&color=blue" alt="Release downloads" /></a>
-  &nbsp;
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-3b82f6.svg" alt="License" /></a>
   &nbsp;
-  <a href="https://github.com/q253595422/dsh-imagegen-video"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-111827" alt="Platform" /></a>
+  <a href="https://github.com/reputationly/dsh-imagegen-video"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-111827" alt="Platform" /></a>
 
-  <p><strong>在 DeepSeek Harness 里，生成、编辑、管理，一站完成；图片与视频同一套工作流。</strong></p>
+  <p><strong>登录小助手即可使用：模型、模式与参数来自网关的能力清单，不需要单独配置。</strong></p>
   <p><strong>快速导航</strong></p>
-  <p><a href="#quick-start">🚀 快速开始</a>　·　<a href="#canvas">无限画布</a>　·　<a href="#compose">片段拼接</a>　·　<a href="#ecommerce">电商套图</a>　·　<a href="#outfit">服饰穿戴</a>　·　<a href="#txt2img">文生图 / 图生图</a>　·　<a href="#txt2video">生视频</a>　·　<a href="#gallery">模板 / 画廊</a>　·　<a href="#configuration">模型配置</a>　·　<a href="#community">交流群</a>　·　<a href="#license">授权与致谢</a></p>
+  <p><a href="#quick-start">🚀 快速开始</a>　·　<a href="#canvas">无限画布</a>　·　<a href="#compose">片段拼接</a>　·　<a href="#ecommerce">电商套图</a>　·　<a href="#outfit">服饰穿戴</a>　·　<a href="#txt2img">文生图 / 图生图</a>　·　<a href="#txt2video">生视频</a>　·　<a href="#gallery">模板 / 画廊</a>　·　<a href="#configuration">模型配置</a>　·　<a href="#license">授权与致谢</a></p>
 </div>
-
-<a id="sponsor"></a>
-## 赞助商
-
-| 赞助商 | 简介与接入地址 |
-| :---: | --- |
-| <a href="https://api.closeai.hk/"><img src="docs/images/sponsor-yeazi.png" width="170" alt="椰子API" /></a> | **[椰子API](https://api.closeai.hk/)** — OpenAI 兼容的多模型网关。一个 API Key 同时覆盖 GPT Image 与 Gemini 图像模型，不必分别注册各家；在插件里就是一个普通渠道，不需要改代码。<br><br>`https://api.closeai.hk/v1` · Bearer API Key |
-| <a href="https://api.metajing.cn/"><img src="docs/images/sponsor-metajing.png" width="170" alt="清衍 API" /></a> | **[清衍 API](https://api.metajing.cn/)** — 面向国内开发者的 AI API 中转站，站点自述支持 Claude、GPT、Gemini 等模型。<br><br>`https://api.metajing.cn/v1` · `Authorization: Bearer <key>` |
-| <a href="https://github.com/ChisaAlter/WhaleIsle"><img src="docs/images/sponsor-whaleisle.png" width="170" alt="鲸屿 Whale Isle" /></a> | **[鲸屿 Whale Isle](https://github.com/ChisaAlter/WhaleIsle)** — 基于 DeepSeek Harness 的开源社区桌面客户端：AI 对话、终端与 Git、模型与 MCP 接入、主题壁纸与桌宠、用量统计，装好即可把本插件跑在桌面上。<br><br>Windows x64 · macOS Apple Silicon · MIT |
-| <a href="https://github.com/jev-chat/jev-chat-jarvis"><img src="docs/images/sponsor-jevchat.png" width="170" alt="jev-chat" /></a> | **[jev-chat](https://github.com/jev-chat/jev-chat-jarvis)** — 聊天辅助决策工具：回复前先读懂对方意图与当下风险，再给出可一键填入的草稿，发不发由你。Android · Windows · macOS · iOS，MIT。<br><br>官网 `chatjevs.com` |
-| <a href="https://mrday.one/"><img src="docs/images/sponsor-mrdayone.png" width="170" alt="Mr. Day One" /></a> | **[Mr. Day One](https://mrday.one/)** — AI 原生编辑器，把仓库、终端和诊断信息接进同一条智能体回路：改代码、跑测试、读报错、再复审结果。<br><br>`https://mrday.one` |
-| <a href="https://harnesscatalog.com/"><img src="docs/images/sponsor-harnesscatalog.png" width="170" alt="Harness Catalog" /></a> | **[Harness Catalog](https://harnesscatalog.com/)** — DeepSeek Harness 插件目录：逐个评测、给出真实安装命令，并说明什么场景该用它。本项目已收录其中。<br><br>[dsh-imagegen-video 条目](https://harnesscatalog.com/plugins/dsh-imagegen-video/) |
-| <a href="http://82.157.4.13/"><img src="docs/images/sponsor-leon.png" width="170" alt="莱昂 LEON" /></a> | **[莱昂 LEON](http://82.157.4.13/)** — AI 电商操盘手 × GEO 顾问：把电商一线经验蒸馏成可审计的方法论与 AI 工作流，提供 GEO 品牌托管、电商方法论体系搭建与多智能体工作流定制。<br><br>点击名称或徽章访问站点 |
-
-> **以上是赞助位，不是中立推荐。** 七项均由第三方独立维护：两家 API 网关的
-> 可用模型、价格、限流与稳定性，桌面客户端、移动应用与编辑器的兼容性、稳定性
-> 及其使用条款，顾问站点的服务内容与交付承诺，以及插件目录的收录与评价，均以
-> 各自站点公告为准，本项目不做担保。配置网关后密钥会发送给对应服务，请按需
-> 自行评估；不要用它们处理你不愿意交给第三方的内容。
 
 <a id="quick-start"></a>
 ## 快速开始
 
-需要已安装 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 和 Node.js 20+。
+小助手自带本插件，开箱即用：登录后在侧栏点「创作」即进入工作台。模型、模式与参数来自网关的能力清单（`GET /v1/ov/capabilities`），随账号权限变化，不需要单独配置渠道或密钥。
 
-安装包有两个来源：**npm registry**（推荐，包名即版本，`npm view` 能查、能被锁文件盯住）与 **GitHub Release 资产**（每次附带 `SHA256SUMS`）。
-
-```bash
-# npm（registry 直达）
-dsh plugin --profile web add @q253595422/dsh-imagegen-video
-
-# 或 GitHub Release 资产（把两处 X.Y.Z 换成目标版本号）
-dsh plugin --profile web add https://github.com/q253595422/dsh-imagegen-video/releases/download/vX.Y.Z/q253595422-dsh-imagegen-video-X.Y.Z.tgz
-```
-
-也可以先到 [Releases](https://github.com/q253595422/dsh-imagegen-video/releases) 页面下载 `.tgz`，再安装本地文件：
-
-```bash
-dsh plugin --profile web add ./q253595422-dsh-imagegen-video-X.Y.Z.tgz
-```
+独立安装只在本仓库开发调试时需要。数据目录 `~/.dsh/dsh-imagegen/` 与画廊、历史记录保存在宿主侧，升级插件不会清空。
 
 > ⚠️ **不要与 `@dickpy/dsh-imagegen` 同时安装。** 两者注册的是同一套
-> `/api/dsh-imagegen/*` 路由和同一个 UI 面板，同时启用会冲突。数据目录
-> `~/.dsh/dsh-imagegen/` 也是两者共用的，切换前请先备份。详见 [授权与致谢](#license)。
-
-安装后重启 `dsh web`，侧边栏会出现「生图」入口。打开「设置 → 生图 / 生视频」后按页面的三步引导操作：先添加一个模型服务并填写 API 密钥，再分别选择图像模型和视频模型，最后保存即可开始创作。一个服务商可以同时提供生图和生视频；只做生图时，视频模型可以留空。Windows 若遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`。
-
-<details>
-<summary><b>其他安装方式、升级与回滚</b></summary>
-
-- **让 Agent 安装：**把上面的安装命令发给 DSH、Codex 或其他 coding agent。
-- **指定版本：**把上面两处命令里的 `X.Y.Z` 换成同一个目标版本号（形如 `1.2.3`）——URL 里的 `vX.Y.Z` 与文件名里的 `X.Y.Z` 是同一个版本；版本号在 [GitHub Releases](https://github.com/q253595422/dsh-imagegen-video/releases) 页面可见，或运行 `npm view @q253595422/dsh-imagegen-video version` 查最新版。也可以直接在 Releases 页面下载对应版本的 tgz，再按上面的本地文件命令安装。
-- **升级：**重复执行 `add` 命令指向新版本即可；插件也会在面板中提示新版本。更新后重启 `dsh web`。
-- **DSH Desktop 用户：**宿主 CLI 不允许写入 `desktop` 这个 profile，所以面板不会假装去更新，而是直接给出可复制的命令和下载地址，由你自己执行——不会只甩一句「更新失败」而没有原因。
-- 渠道配置、历史记录和画廊数据保存在 DSH 宿主侧，正常升级不会清空。
-
-</details>
+> `/api/dsh-imagegen/*` 路由和同一个 UI 面板，同时启用会冲突；数据目录也共用，切换前请先备份。详见[授权与致谢](#license)。
 
 <a id="features"></a>
 ## 核心功能
@@ -403,23 +352,10 @@ dsh plugin --profile web add ./q253595422-dsh-imagegen-video-X.Y.Z.tgz
   内联 base64 均替换为占位符，API Key 只记「是否发送」）。
   生图与生视频写同一个缓冲：视频的提交 / 轮询 / 下载三条腿各自标记。
 
-<a id="community"></a>
-## 交流群
-
-微信群「龙虾吹水🦞群」：使用问题、版本更新与画布玩法都可以在群里聊。
-
-<div align="center">
-  <img src="docs/images/wechat-group-qr.png" alt="微信群「龙虾吹水🦞群」的加群二维码" width="360" />
-</div>
-
-> 二维码 7 天内有效（2026 年 11 月 27 日前）。过期或人数已满时，请改到
-> [Issues](https://github.com/q253595422/dsh-imagegen-video/issues) 提问题，
-> 并提醒维护者换一张新码。安全敏感的问题不要发在群里，也不要贴 API 密钥。
-
 <a id="license"></a>
 ## 授权与致谢
 
-本项目按 [Apache-2.0](./LICENSE) 发布。各版本的改动逐条列在
+本项目按 [Apache-2.0](./LICENSE) 发布，源自团团TV（TuanTuan TV）并以 Apache-2.0 继续分发。各版本的改动逐条列在
 [CHANGELOG.md](./CHANGELOG.md)；第三方代码与素材的版权、许可与来源见
 [NOTICE](./NOTICE) 与 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
@@ -427,84 +363,7 @@ dsh plugin --profile web add ./q253595422-dsh-imagegen-video-X.Y.Z.tgz
 首尾帧 / 多参考图）、图片转可编辑 PPT（最多 12 张，每张一页）、无限画布（图片与视频节点、
 分镜节点、片段拼接、技能）、电商套图、服饰穿戴（商品试穿 / 角色搭配）、模板库与画廊。
 
-**支持与问题反馈请提到本仓库的 Issues**（[Bug 报告](https://github.com/q253595422/dsh-imagegen-video/issues/new?template=bug_report.yml) · [功能建议](https://github.com/q253595422/dsh-imagegen-video/issues/new?template=feature_request.yml) · [全部 Issues](https://github.com/q253595422/dsh-imagegen-video/issues)）。
-
-**与 `@dickpy/dsh-imagegen` 不能共存**：两者注册同一套 `/api/dsh-imagegen/*` 路由与
-同一个 UI 面板，同时安装会冲突；数据目录 `~/.dsh/dsh-imagegen/` 也是共用的。要换回
-原版，请先卸载本插件。
-
-<details>
-<summary><b>本地开发</b></summary>
-
-```bash
-pnpm run typecheck
-pnpm run build
-pnpm run watch
-pnpm test
-node scripts/smoke-video.mjs
-pnpm run test:negative
-```
-
-`pnpm test` 跑全部离线检查（`verify-tracked` 排第一）；`pnpm run test:negative` 做反向验证——
-把每处修复对应的缺陷重新注回**仓库副本**，要求对应检查变红，
-工作树不被改动。
-
-反向验证的 17 个组可以并排跑，不必等 40 分钟以上的串行链：
-
-```bash
-node scripts/verify-negative-parallel.mjs              # 默认 2 并发
-node scripts/verify-negative-parallel.mjs --jobs 3     # 上限 4（内存）
-node scripts/verify-negative-parallel.mjs --only smoke,pack
-```
-
-它从 `test:negative` 里读组名，启动前先 `pnpm build` 把工作树钉住（有别的进程
-持有 `.build-lock` 时拒绝启动）。一组失败不会中断其余组，最后统一报。
-
-**注意瓶颈不在调度**：`contracts` 与 `smoke` 这类组内部是逐条用例跑的，单组就是
-大半的墙钟；并发只能把「各组之和」压到「最慢那一组」，要再快得让每条用例只跑
-它针对的那条检查。
-
-`smoke` 组（37 条）实测**整组跑不完**：单独一条 1 分 47 秒，乘 37 约 66 分钟，
-但整组实际跑过 2 小时仍未结束，撞上任何执行时限都会被砍在中途——砍掉后日志只
-有开头，等于整组白跑。多出来的时间不是套件，是每条用例先把整棵树复制一份再注入
-缺陷。整组跑不通时按名字分批，加第二参数过滤：
-
-```bash
-node scripts/verify-negative.mjs smoke "quick-start cards"   # 只跑命中的那条
-```
-
-实测分批：9 条 14 分 12 秒、8 条 11 分 39 秒、11 条 15 分 07 秒，合计比整组快且
-每批都有完整结论。
-
-时间线与身份锚定各有自己的纯函数套件，可以单独跑：
-`pnpm run test:timeline`、`pnpm run test:cast`、`pnpm run test:timeline-compose`
-（最后一个需要本机 ffmpeg，缺工具时明确跳过）。
-
-跟进本项目的上游发布：
-
-```bash
-pnpm run upstream:check   # 有新版本时退出码为 1
-pnpm run upstream:plan    # 生成移植报告到 .upstream/<版本>/report.md
-pnpm run upstream:adopt v1.8.3   # 记录「已整合到哪个版本」
-```
-
-`upstream:plan` 会把每个改动文件按**能否干净应用到当前树**分类：新增（整份复制）、
-可直接应用、冲突（需人工读）、本项目自有（视频链、发布说明、授权，不覆盖）。
-它只生成报告，不改任何源码。这几个命令都是**手动**跑的——本项目不跟随上游版本线，
-所以没有定时检测；要跟进时自己跑一次 `upstream:check`。
-
-本地打包并安装到 DSH 验收：
-
-```bash
-pnpm pack --pack-destination .
-dsh plugin --profile web add ./q253595422-dsh-imagegen-video-X.Y.Z.tgz
-```
-
-仓库里的离线套件不需要网络与付费 API 调用；需要浏览器或 `ffmpeg` 的检查在缺
-少工具时会**明确跳过并返回成功**，而不是伪装成失败。并行跑构建与测试请用
-`./scripts/with-lock.sh`，它会把整棵工作树串行化。
-
-</details>
+**问题反馈请提到本仓库的 Issues**（[Bug 报告](https://github.com/reputationly/dsh-imagegen-video/issues/new) · [全部 Issues](https://github.com/reputationly/dsh-imagegen-video/issues)）。
 
 ## 许可证
 

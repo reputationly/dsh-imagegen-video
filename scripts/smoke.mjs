@@ -13,8 +13,6 @@
 import { createServer, request as httpRequest } from 'node:http'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
-import { EventEmitter } from 'node:events'
-import { Readable } from 'node:stream'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { promises as fsPromises } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -332,388 +330,6 @@ await check('A2c prompt models reuse an API-key channel instead of a leading sub
     model: 'gpt-5.6-luna',
   })
 })
-await check('A3 updater parses stable Releases and caches checks', async () => {
-  assert.equal(host.CURRENT_VERSION, packageJson.version)
-  assert.equal(host.compareVersions('v1.0.3', '1.0.2') > 0, true)
-  assert.equal(host.compareVersions('1.0.2', '1.0.2'), 0)
-  assert.equal(host.profileFromProcess(['node', 'dsh', '--profile', 'desktop'], {}), 'desktop')
-  // DSH Desktop passes the profile as a bare path among its argv entries and
-  // sets no flag at all. Reading only `--profile` resolved every Desktop host to
-  // `web`, so an update ran against a profile the user was not running.
-  const desktopHostArgv = [
-    '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness',
-    '--expose-internals',
-    '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js',
-    '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh',
-    '/Users/someone/.dsh/profiles/desktop',
-    '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime',
-  ]
-  assert.equal(host.profileFromProcess(desktopHostArgv, {}), 'desktop', 'the Desktop host profile is read from its path argument')
-  assert.equal(host.profileFromProcess(['node', 'dsh', 'web'], {}), 'web', 'a bare web run still resolves to web')
-  assert.equal(host.profileFromProcess(['node', 'dsh'], {}), 'web', 'an unidentifiable host keeps the historical default')
-  // A path that merely CONTAINS "profiles" must not match; only a real segment does.
-  assert.equal(host.profileFromProcess(['node', 'dsh', '/tmp/profiles-backup/x'], {}), 'web')
-  host.clearUpdateCache()
-  let calls = 0
-  const fetchRelease = async () => {
-    calls += 1
-    return new Response(JSON.stringify({
-      tag_name: 'v9.9.9',
-      html_url: 'https://github.com/q253595422/dsh-imagegen-video/releases/tag/v9.9.9',
-      published_at: '2026-08-17T00:00:00Z',
-      body: '## Changes\n\n- Faster update discovery\n- Show release notes',
-      draft: false,
-      prerelease: false,
-      assets: [
-        { name: 'checksums.txt', browser_download_url: 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/checksums.txt' },
-        { name: 'notes-9.9.9.tgz', browser_download_url: 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/notes-9.9.9.tgz' },
-        { name: 'q253595422-dsh-imagegen-video-9.9.9.tgz', browser_download_url: 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/q253595422-dsh-imagegen-video-9.9.9.tgz' },
-      ],
-    }), { status: 200, headers: { 'content-type': 'application/json' } })
-  }
-  const first = await host.checkForUpdate(fetchRelease, 1000)
-  const second = await host.checkForUpdate(fetchRelease, 1001)
-  assert.equal(first.latestVersion, '9.9.9')
-  assert.equal(first.updateAvailable, true)
-  assert.match(first.releaseNotes, /Faster update discovery/)
-  assert.equal(second, first)
-  assert.equal(calls, 1)
-  // This fork ships as a Release asset, not an npm package, so the installable
-  // archive has to be discovered among the assets rather than guessed from the
-  // tag. `notes-9.9.9.tgz` also carries the version, so the expected name is
-  // what actually distinguishes the plugin archive from a same-version file.
-  assert.equal(
-    first.tarballUrl,
-    'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/q253595422-dsh-imagegen-video-9.9.9.tgz',
-  )
-  assert.equal(host.isInstallableTarballUrl(first.tarballUrl), true)
-  host.clearUpdateCache()
-})
-
-await check('A3b update install refuses what it cannot verify, and never guesses a registry name', async () => {
-  const spawnCalls = []
-  const spawnFn = (...args) => {
-    spawnCalls.push(args)
-    // The updater settles on `close` (it waits for the piped output to drain);
-    // a real child emits both, so the stub does too.
-    return { once: (event, handler) => { if (event === 'exit' || event === 'close') queueMicrotask(() => { handler(0, null) }) } }
-  }
-  const releaseWith = assets => async () => new Response(JSON.stringify({
-    tag_name: 'v9.9.9', html_url: 'https://github.com/q253595422/dsh-imagegen-video/releases/tag/v9.9.9',
-    draft: false, prerelease: false, assets,
-  }), { status: 200, headers: { 'content-type': 'application/json' } })
-  const argv = ['node', 'dsh', '--profile', 'desktop']
-
-  // A release with no archive must fail rather than fall back to an npm spec:
-  // this fork is not on npm, so installing `@q253595422/dsh-imagegen-video@9.9.9`
-  // would fetch nothing while looking like it worked.
-  host.clearUpdateCache()
-  await assert.rejects(
-    () => host.installUpdate('9.9.9', spawnFn, argv, {}, releaseWith([])),
-    /publishes no installable archive/,
-  )
-  assert.equal(spawnCalls.length, 0)
-
-  // The download URL arrives from the network, so an off-GitHub host is refused
-  // before anything is executed.
-  host.clearUpdateCache()
-  await assert.rejects(
-    () => host.installUpdate('9.9.9', spawnFn, argv, {}, releaseWith([
-      { name: 'q253595422-dsh-imagegen-video-9.9.9.tgz', browser_download_url: 'https://evil.example/x.tgz' },
-    ])),
-    /untrusted download host/,
-  )
-  assert.equal(spawnCalls.length, 0)
-  assert.equal(host.isInstallableTarballUrl('http://github.com/a.tgz'), false)
-  assert.equal(host.isInstallableTarballUrl('https://github.com.evil.example/a.tgz'), false)
-  assert.equal(host.isInstallableTarballUrl('not a url'), false)
-
-  // `desktop` is the profile DSH Desktop boots, and the CLI refuses to manage
-  // it (`profile "desktop" is managed exclusively by the Electron application`).
-  // Spawning it anyway is what produced a bare "update failed" with no cause, so
-  // the host now refuses BEFORE spawning and hands the caller the archive URL.
-  host.clearUpdateCache()
-  const archive = 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/q253595422-dsh-imagegen-video-9.9.9.tgz'
-  await assert.rejects(
-    () => host.installUpdate('9.9.9', spawnFn, argv, {}, releaseWith([
-      { name: 'q253595422-dsh-imagegen-video-9.9.9.tgz', browser_download_url: archive },
-    ])),
-    (error) => {
-      assert.equal(error.code, 'update-manual-required', 'the locked profile has its own wire code')
-      assert.equal(error.tarballUrl, archive, 'the caller gets the URL it has to install by hand')
-      assert.match(error.message, /Electron/)
-      return true
-    },
-  )
-  assert.equal(spawnCalls.length, 0, 'a locked profile is never spawned')
-
-  // The happy path: a CLI-managed profile boots, and the profile comes from the
-  // running process instead of being hardcoded.
-  const webArgv = ['node', 'dsh', '--profile', 'web']
-  host.clearUpdateCache()
-  await host.installUpdate('9.9.9', spawnFn, webArgv, {}, releaseWith([
-    { name: 'q253595422-dsh-imagegen-video-9.9.9.tgz', browser_download_url: archive },
-  ]))
-  assert.equal(spawnCalls.length, 1)
-  assert.deepEqual(spawnCalls[0][1], ['plugin', '--profile', 'web', 'add', archive])
-
-  // Every shape an installer can boot under. `--profile=name` and the Windows
-  // `…\profiles\desktop\` path both resolved to `web` before, so an update ran
-  // against a profile the user was not running.
-  const desktopArgv = [
-    '/Applications/DSH.app/Contents/MacOS/DSH',
-    '/Applications/DSH.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js',
-    '/Users/test/.dsh/profiles/desktop',
-  ]
-  assert.equal(host.profileFromProcess(['node', 'dsh', '--profile=custom_web'], {}), 'custom_web')
-  assert.equal(host.profileFromProcess(['node', 'dsh', 'C:\\Users\\test\\.dsh\\profiles\\desktop\\'], {}), 'desktop')
-  assert.equal(host.profileFromProcess(['node', 'dsh', '--profile', 'desktop'], { DSH_PROFILE: 'custom' }), 'custom', 'the env profile outranks the flag')
-  assert.equal(host.profileFromProcess(['node', 'dsh', '--profile', 'desktop'], { DSH_PROFILE: 'ignored' }, { profile: 'host-profile' }), 'host-profile', 'the launcher outranks both')
-  // A path that merely contains "profiles" must not match; only a real segment does.
-  assert.equal(host.profileFromProcess(['node', 'dsh', '--profile', '../bad'], {}), 'web', 'an invalid profile falls back instead of being used')
-  assert.equal(host.updateInstallTarget(desktopArgv, {}).installMode, 'host-managed')
-  assert.equal(host.updateInstallTarget(['node', 'dsh', 'web'], { DSH_DESKTOP: '1' }).installMode, 'host-managed', 'the launcher marker alone locks CLI writes')
-  assert.equal(host.updateInstallTarget(['node', 'dsh', 'web'], {}).installMode, 'cli')
-  assert.equal(host.updateInstallTarget([], {}, { installBundle: async () => undefined }).installMode, 'host')
-  // A version string is spliced into argv, so anything that is not a semver
-  // triple must be refused before a process exists.
-  host.clearUpdateCache()
-  await assert.rejects(host.installUpdate('9.9.9; touch nope', spawnFn, webArgv, {}, releaseWith([])), /invalid update version/)
-  assert.equal(spawnCalls.length, 1, 'an invalid version never starts a package operation')
-  host.clearUpdateCache()
-})
-
-await check('A3c updater keeps the package manager output, store guidance and a diagnostic record', async () => {
-  const calls = []
-  // A child process good enough for the updater: two piped streams, an exit, and
-  // a close that arrives AFTER the output (which is why `close` is awaited).
-  const fakeSpawn = (code, output = '', error) => (command, args, options) => {
-    calls.push({ command, args, options })
-    const child = new EventEmitter()
-    child.stdout = new EventEmitter()
-    child.stderr = new EventEmitter()
-    child.kill = () => true
-    queueMicrotask(() => {
-      if (error !== undefined) { child.emit('error', error); return }
-      child.emit('exit', code, null)
-      setTimeout(() => {
-        child.stderr.emit('data', Buffer.from(output))
-        child.emit('close', code, null)
-      }, 5)
-    })
-    return child
-  }
-  // The three things pnpm prints that matter, assembled from parts so this
-  // fixture carries no credential-shaped literal of its own.
-  const marker = ['Zq4x', 'marker'].join('')
-  const failures = [
-    'ERR_PNPM_UNEXPECTED_STORE',
-    'store/v10 does not match store/v11',
-    ['_auth', 'Token=', marker].join(''),
-    ['https://svc:', marker, '@registry.example/'].join(''),
-  ].join('\n')
-  const release = async () => new Response(JSON.stringify({
-    tag_name: 'v9.9.9', draft: false, prerelease: false,
-    assets: [{ name: 'q253595422-dsh-imagegen-video-9.9.9.tgz', browser_download_url: 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/q253595422-dsh-imagegen-video-9.9.9.tgz' }],
-  }), { status: 200, headers: { 'content-type': 'application/json' } })
-  const webArgv = ['node', 'dsh', 'web']
-
-  host.clearDiagnostics()
-  host.clearUpdateCache()
-  await host.installUpdate('9.9.9', fakeSpawn(0), webArgv, {}, release)
-  assert.deepEqual(calls.at(-1).args, ['plugin', '--profile', 'web', 'add', 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/q253595422-dsh-imagegen-video-9.9.9.tgz'])
-  // Both pipes are read: pnpm splits its explanation across stdout and stderr,
-  // and `ignore` on either used to lose half of it.
-  assert.deepEqual(calls.at(-1).options.stdio, ['ignore', 'pipe', 'pipe'])
-
-  host.clearUpdateCache()
-  await assert.rejects(
-    host.installUpdate('9.9.9', fakeSpawn(1, failures), ['node', 'dsh', 'web', '--profile', 'team-web'], {}, release),
-    error => {
-      assert.match(error.message, /profile: team-web/, 'the failure names the profile it wrote to')
-      assert.match(error.message, /exited with code 1/)
-      assert.match(error.message, /ERR_PNPM_UNEXPECTED_STORE/)
-      assert.match(error.message, /same pnpm version/, 'a store mismatch carries its own remedy')
-      assert.ok(!error.message.includes(marker), 'package-manager output is redacted before it is shown')
-      return true
-    },
-  )
-  // The same failure is retained host-side, so the panel can still explain a
-  // failed update after the popover has been dismissed.
-  const recorded = host.listDiagnostics()
-  assert.ok(
-    recorded.some(entry => entry.mode === 'update' && entry.message.includes('ERR_PNPM_UNEXPECTED_STORE')),
-    JSON.stringify(recorded.map(entry => entry.mode)),
-  )
-  assert.ok(recorded.every(entry => !entry.message.includes(marker)), 'diagnostics never keep a credential')
-
-  host.clearUpdateCache()
-  await assert.rejects(host.installUpdate('9.9.9', fakeSpawn(null, '', new Error('spawn dsh ENOENT')), webArgv, {}, release), /ENOENT/)
-  host.clearUpdateCache()
-  // A spawn that throws synchronously (missing binary, refused execution) used
-  // to escape as a bare exception with nothing about the update attached.
-  await assert.rejects(host.installUpdate('9.9.9', () => { throw new Error('spawn refused') }, webArgv, {}, release), /spawn refused/)
-  host.clearDiagnostics()
-  host.clearUpdateCache()
-})
-
-await check('A3d update discovery exposes the launcher-owned profile and install mode', async () => {
-  const savedFetch = globalThis.fetch
-  host.clearUpdateCache()
-  globalThis.fetch = async () => new Response(JSON.stringify({ tag_name: 'v9.9.9', draft: false, prerelease: false }), { status: 200, headers: { 'content-type': 'application/json' } })
-  try {
-    // A launcher that reports no install hook: the check has to say so, because
-    // "update available" without an install mode is what made Desktop show a
-    // button that then failed with a bare message.
-    const routes = host.makeRoutes({
-      settings: { describe: () => [], mutate: async () => {} },
-      resolve: () => ({ apiUrl: '', apiKey: '' }),
-      resolveUpdateContext: () => ({ profile: 'desktop', profileDir: '/Users/test/.dsh/profiles/desktop' }),
-    })
-    const route = routes.find(candidate => candidate.path === '/api/dsh-imagegen/update/check')
-    assert.ok(route !== undefined, 'the update check route exists')
-    let result
-    await route.handler({ method: 'POST', socket: { remoteAddress: '127.0.0.1' }, headers: { host: '127.0.0.1' } }, { writeHead() {}, end(payload) { result = JSON.parse(payload) } })
-    assert.equal(result.ok, true)
-    assert.equal(result.update.profile, 'desktop', 'the panel can tell the user which profile it would write to')
-    assert.equal(result.update.installMode, 'host-managed', 'a Desktop profile without an install hook cannot be updated by the CLI')
-  } finally {
-    globalThis.fetch = savedFetch
-    host.clearUpdateCache()
-  }
-})
-
-await check('A3e desktop updates delegate to the launcher and verify its actual outcome', async () => {
-  const calls = []
-  const neverSpawn = () => { throw new Error('a launcher-managed update must not spawn a CLI') }
-  const tarball = 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/q253595422-dsh-imagegen-video-9.9.9.tgz'
-  const release = async () => new Response(JSON.stringify({
-    tag_name: 'v9.9.9', draft: false, prerelease: false,
-    assets: [{ name: 'q253595422-dsh-imagegen-video-9.9.9.tgz', browser_download_url: tarball }],
-  }), { status: 200, headers: { 'content-type': 'application/json' } })
-  const context = {
-    profile: 'desktop',
-    installBundle: async (spec, options) => {
-      calls.push({ spec, options })
-      return { application: 'restart-required', bundle: host.PACKAGE_NAME ?? packageJson.name, version: '9.9.9', packageResult: { exitCode: 0 } }
-    },
-  }
-  host.clearUpdateCache()
-  assert.equal(host.updateInstallTarget([], {}, context).installMode, 'host', 'an install hook outranks the locked profile name')
-  await host.installUpdate('9.9.9', neverSpawn, [], {}, release, context)
-  assert.deepEqual(calls, [{ spec: tarball, options: { saveExact: true } }], 'the launcher receives the verified archive URL')
-
-  host.clearUpdateCache()
-  await assert.rejects(host.installUpdate('9.9.9; bad', neverSpawn, [], {}, release, context), /invalid update version/)
-  assert.equal(calls.length, 1, 'an invalid version never reaches the launcher')
-
-  // Nothing about the launcher's report is believed on trust: an update that
-  // claims success but installed something else leaves the disk and the running
-  // plugin disagreeing, which is worse than a visible failure.
-  for (const result of [
-    null,
-    {},
-    { application: 'failed', error: { code: 'already-installed', diagnostic: 'native refusal' } },
-    { application: 'cancelled', version: '9.9.9' },
-    { application: 'overridden', version: '9.9.9' },
-    { application: 'applied', version: '9.9.9', packageResult: { exitCode: 1 } },
-    { application: 'applied', version: '9.9.8' },
-    { application: 'applied', version: '9.9.9', bundle: '@other/bundle' },
-    { application: 'applied' },
-  ]) {
-    host.clearUpdateCache()
-    await assert.rejects(
-      host.installUpdate('9.9.9', neverSpawn, [], {}, release, { ...context, installBundle: async () => result }),
-      undefined,
-      `launcher result must be refused: ${JSON.stringify(result)}`,
-    )
-  }
-
-  const marker = ['Zq4x', 'marker'].join('')
-  host.clearUpdateCache()
-  await assert.rejects(
-    host.installUpdate('9.9.9', neverSpawn, [], {}, release, {
-      ...context,
-      installBundle: async () => ({
-        application: 'failed',
-        error: { code: 'operation-error' },
-        packageResult: { exitCode: 1, output: ['_auth', 'Token=', marker].join('') + '\nERR_PNPM_UNEXPECTED_STORE', logPath: '/profile/diagnostics.log' },
-      }),
-    }),
-    error => {
-      assert.match(error.message, /ERR_PNPM_UNEXPECTED_STORE/)
-      assert.match(error.message, /diagnostics\.log/, 'the launcher diagnostic file is named')
-      assert.ok(!error.message.includes(marker), 'launcher output is redacted too')
-      return true
-    },
-  )
-
-  host.clearUpdateCache()
-  await assert.rejects(
-    host.installUpdate('9.9.9', neverSpawn, [], {}, release, { ...context, installBundle: async () => { throw new Error('host offline') } }),
-    /host offline/,
-  )
-
-  // Older launchers omit `version`; the installed manifest is then the only
-  // evidence, and a missing one is a failure rather than a silent success.
-  const profileDir = mkdtempSync(join(tmpdir(), 'dsh-imagegen-update-profile-'))
-  const packageDir = join(profileDir, 'node_modules', '@q253595422', 'dsh-imagegen-video')
-  mkdirSync(packageDir, { recursive: true })
-  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: packageJson.name, version: '9.9.9' }))
-  host.clearUpdateCache()
-  await host.installUpdate('9.9.9', neverSpawn, [], {}, release, { ...context, profileDir, installBundle: async () => ({ application: 'applied' }) })
-  rmSync(profileDir, { recursive: true, force: true })
-  host.clearUpdateCache()
-})
-
-await check('A3f update routes propagate launcher capability and installation failures', async () => {
-  const savedFetch = globalThis.fetch
-  host.clearUpdateCache()
-  const tarball = 'https://github.com/q253595422/dsh-imagegen-video/releases/download/v9.9.9/q253595422-dsh-imagegen-video-9.9.9.tgz'
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    tag_name: 'v9.9.9', draft: false, prerelease: false,
-    assets: [{ name: 'q253595422-dsh-imagegen-video-9.9.9.tgz', browser_download_url: tarball }],
-  }), { status: 200, headers: { 'content-type': 'application/json' } })
-  let installs = 0
-  let fail = false
-  try {
-    const routes = host.makeRoutes({
-      settings: { describe: () => [], mutate: async () => {} },
-      resolve: () => ({ apiUrl: '', apiKey: '' }),
-      resolveUpdateContext: () => ({
-        profile: 'desktop',
-        installBundle: async spec => {
-          installs += 1
-          assert.equal(spec, tarball)
-          return fail
-            ? { application: 'failed', error: { code: 'operation-error', diagnostic: 'native install failed' } }
-            : { application: 'restart-required', bundle: packageJson.name, version: '9.9.9' }
-        },
-      }),
-    })
-    const invoke = async (path, body = {}) => {
-      const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { method: 'POST', socket: { remoteAddress: '127.0.0.1' }, headers: { host: '127.0.0.1' } })
-      let response
-      await routes.find(candidate => candidate.path.endsWith(path)).handler(req, { writeHead() {}, end(payload) { response = JSON.parse(payload) } })
-      return response
-    }
-    assert.equal((await invoke('/update/check')).update.installMode, 'host')
-    // Only the version the check just reported is installable, so a stale panel
-    // cannot install a version that has since been pulled.
-    assert.equal((await invoke('/update/apply', { version: '1.0.0' })).code, 'update-not-available')
-    assert.equal(installs, 0, 'a non-latest version never reaches the launcher')
-    assert.equal((await invoke('/update/apply', { version: '9.9.9' })).updatedVersion, '9.9.9')
-    assert.equal(installs, 1)
-    fail = true
-    const failure = await invoke('/update/apply', { version: '9.9.9' })
-    assert.equal(failure.ok, false, 'a refused install is not reported as applied')
-    assert.match(failure.message, /native install failed/, 'the launcher cause survives to the panel')
-  } finally {
-    globalThis.fetch = savedFetch
-    host.clearUpdateCache()
-  }
-})
-
 // ---------------------------------------------- B. engine vs mock upstream
 /** A PNG fixture: one pixel, valid header, no external file needed. */
 const pngBytes = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex')
@@ -2725,11 +2341,11 @@ await check('C3c signal routes record, report, draft an issue and clear (L0)', a
 
   const draft = await post('/api/dsh-imagegen/signals/export', {})
   assert.equal(draft.body.ok, true)
-  assert.match(draft.body.url, /^https:\/\/github\.com\/.*\/issues\/new\?/)
   assert.equal(draft.body.markdown.includes('SMOKE-SIGNAL-SECRET'), false, 'the issue draft carries aggregates only')
-  // Nothing is submitted by the host: the draft is a link the user reviews and
-  // opens themselves, which is why there is no POST anywhere in this path.
+  // Nothing is submitted by the host and nothing points at a repository: the
+  // draft is markdown the user copies, reviews and files themselves.
   assert.ok(draft.body.title.length > 0)
+  assert.equal(Object.hasOwn(draft.body, 'url'), false, 'the draft carries no upstream repository link')
 
   // The window is clamped to a range the report can defend (1..365 days), and
   // the clamp is echoed back so the panel's label always matches the numbers.
@@ -6278,14 +5894,14 @@ await check('D6 the plugin declares its own display title in both locales', () =
     assert.ok(file.meta.title.trim() !== '', `${lang}.json's meta.title is not blank`)
     assert.equal(typeof file.meta?.description, 'string', `${lang}.json still declares meta.description`)
   }
-  assert.equal(zh.meta.title, '团团TV', 'the Chinese plugin page shows the product name, not the package name')
+  assert.equal(zh.meta.title, '创作', 'the Chinese plugin page shows the product name, not the package name')
   // The host builds `{ en: <manifest name>, ...languageEntries }`, so `en.json`
   // must win over that fallback rather than repeat it.
   assert.doesNotMatch(en.meta.title, /^@|dsh-imagegen/, 'the English title is a product name, not the package specifier')
   // The name the user sees has to be the name the panel and the sidebar show.
   const locales = readFileSync(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
-  assert.ok(locales.includes("'panel.title': '团团TV'"), 'the studio panel header carries the same name')
-  assert.ok(locales.includes("'entry.label': '团团TV'"), 'the sidebar entry carries the same name')
+  assert.ok(locales.includes("'panel.title': '创作'"), 'the studio panel header carries the same name')
+  assert.ok(locales.includes("'entry.label': '创作'"), 'the sidebar entry carries the same name')
 })
 
 // --------------- E. full client apply in jsdom (mounts the sidebar entry)
@@ -6537,7 +6153,6 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     issue: { title: 'signal', body: '# signal', url: 'https://github.com/x/y/issues/new?title=signal&body=%23%20signal' },
   }
   let signalsReportCalls = 0
-  let signalsExportCalls = 0
   /** Clip history the sidebar must merge with the image history. */
   const videoHistoryEntries = [
     {
@@ -6733,10 +6348,6 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       signalsReportCalls += 1
       const days = Number(init?.body === undefined ? 90 : JSON.parse(String(init.body)).windowDays ?? 90)
       return { ok: true, json: async () => ({ ok: true, report: { ...signalsReport, windowDays: days } }) }
-    }
-    if (path.endsWith('/signals/export')) {
-      signalsExportCalls += 1
-      return { ok: true, json: async () => ({ ok: true, markdown: signalsReport.issue.body, title: signalsReport.issue.title, url: signalsReport.issue.url }) }
     }
     if (path.endsWith('/signals/record')) {
       return { ok: true, json: async () => ({ ok: true, entry: undefined }) }
@@ -8380,19 +7991,9 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     ].filter(button => /删除|清空|delete|clear/i.test(button.textContent ?? ''))
     assert.equal(signalsMutations.length, 0, 'the report offers no destructive action')
 
-    // "打开 issue" hands the draft to a new window; the host never posts it.
-    const issueButton = signalsPanel.querySelector('[data-signals-issue]')
-    assert.ok(issueButton !== null, 'the report offers the upstream draft')
-    const openedWith = []
-    const originalOpen = jsdomWindow.open
-    jsdomWindow.open = (url, ...rest) => { openedWith.push({ url: String(url), rest }); return {} }
-    const exportCallsBefore = signalsExportCalls
-    issueButton.click()
-    assert.ok(await waitFor(() => openedWith.length > 0, 1500), 'the draft opens a window on click')
-    jsdomWindow.open = originalOpen
-    assert.ok(signalsExportCalls > exportCallsBefore, 'the URL comes from the host, not from the panel')
-    assert.match(openedWith[0].url, /issues\/new/, 'the opened page is an issue form the user reviews before submitting')
-    assert.equal(openedWith[0].rest.includes('noopener,noreferrer'), true, 'the opened tab cannot reach back into the studio')
+    // The draft leaves as markdown the user files themselves: this surface
+    // must not open an upstream repository, and must not post anywhere.
+    assert.equal(signalsPanel.querySelector('[data-signals-issue]'), null, 'the report offers no upstream link')
 
     const signalsClose = [...signalsPanel.querySelectorAll('button')]
       .find(button => button.textContent === '×')

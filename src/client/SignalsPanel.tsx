@@ -15,9 +15,8 @@
  *    weak model look identical.
  *  - It never gives a verdict on a small sample. Under `MIN_SAMPLE` the row
  *    says how many signals it has and stops.
- *  - It never uploads. The "open issue" button opens a prefilled GitHub form in
- *    the user's own browser, where they can read and edit every line before
- *    submitting.
+ *  - It never uploads. The report is copied to the clipboard as markdown, so the
+ *    user files it themselves after reading and editing every line.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -129,28 +128,6 @@ export function SignalsPanel(props: {
     }
   }, [report])
 
-  /**
-   * Open the prefilled issue form. A plain anchor would be simpler, but the URL
-   * carries the whole report body and is often over a browser's length limit;
-   * the host's export route is the authority, so it is fetched here, then the
-   * window is opened by the click itself (not on a timer, which popup blockers
-   * drop).
-   */
-  const openIssue = useCallback(async () => {
-    try {
-      const draft = await props.api.signalExport()
-      const opened = window.open(draft.url, '_blank', 'noopener,noreferrer')
-      if (opened === null) {
-        // Popup blocked: copy the body so the click produced something usable.
-        await navigator.clipboard.writeText(draft.markdown)
-        setCopied(true)
-        window.setTimeout(() => { setCopied(false) }, 1600)
-      }
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : String(error))
-    }
-  }, [props.api])
-
   if (!props.open) return null
 
   const language = tt('signals.langMark') === 'en' ? 'en' : 'zh'
@@ -182,7 +159,6 @@ export function SignalsPanel(props: {
           ))}
           <button type="button" onClick={() => { void reload(windowDays) }} disabled={loading}>{loading ? tt('signals.loading') : tt('signals.refresh')}</button>
           <button type="button" onClick={() => { void copyMarkdown() }} disabled={report === null}>{copied ? tt('signals.copied') : tt('signals.copy')}</button>
-          <button type="button" data-signals-issue="" onClick={() => { void openIssue() }} disabled={report === null}>{tt('signals.issue')}</button>
           <button type="button" aria-label={tt('preview.close')} title={tt('preview.close')} onClick={props.onClose}>×</button>
         </div>
       </header>

@@ -7,7 +7,7 @@
 /** Settings namespace this plugin owns (host settings seam + bridge). */
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
-/** Published package version shared by the host updater and the client UI. */
+/** Published package version shown by the client UI. */
 export const PLUGIN_VERSION = '1.35.0'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
@@ -284,7 +284,7 @@ export interface SignalReportSummary {
   buckets: SignalBucketSummary[]
   findings: SignalFindingSummary[]
   gaps: SignalReportGaps
-  issue: { title: string; body: string; url: string }
+  issue: { title: string; body: string }
 }
 
 /** One month as the list route reports it (counts only, not the entries). */
@@ -297,12 +297,6 @@ export interface SignalMonthSummary {
 /** Probe the configured S3-compatible object storage. */
 export const STORAGE_API = {
   test: '/api/dsh-imagegen/storage/test',
-} as const
-
-/** Host-mediated GitHub Release update routes. */
-export const UPDATE_API = {
-  check: '/api/dsh-imagegen/update/check',
-  apply: '/api/dsh-imagegen/update/apply',
 } as const
 
 /**
@@ -2836,32 +2830,6 @@ export interface DiagnosticEntry {
   hadAuth: boolean
   apiUrlFull?: boolean
 }
-/** GitHub Release update information shown by the client. */
-export interface UpdateInfo {
-  currentVersion: string
-  latestVersion: string
-  updateAvailable: boolean
-  releaseUrl: string
-  publishedAt?: string
-  /** Markdown release body shown in the update popover. */
-  releaseNotes?: string
-  /**
-   * Download URL of the release's installable archive. This plugin ships as a
-   * GitHub Release asset rather than an npm package, so the host installs from
-   * this URL. Absent when the release carries no archive.
-   */
-  tarballUrl?: string
-  /**
-   * How this host can install the update. `host` means the launcher performs the
-   * install itself; `host-managed` means only the user can (the CLI refuses that
-   * profile); `cli` is the historical `dsh plugin add` path. Absent from hosts
-   * that predate the host install hook.
-   */
-  installMode?: 'cli' | 'host' | 'host-managed'
-  /** Profile the update would be installed into, as the host resolved it. */
-  profile?: string
-}
-
 /** One history image reference as the browser consumes it (a served URL). */
 export interface HistoryImageRef {
   /** Same-origin URL: `${HISTORY_API.image}/<file>`. */

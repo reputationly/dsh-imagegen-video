@@ -26,7 +26,7 @@ import { ImageGenController } from '../src/client/controller.ts'
 import { mountSidebarEntry } from '../src/client/sidebar-entry.ts'
 import { mountPanel } from '../src/client/mount.tsx'
 import { tt } from '../src/client/helpers.ts'
-import type { CanvasDocument, HistoryEntry, TemplateCase, TemplateSample, UpdateInfo } from '../src/protocol.ts'
+import type { CanvasDocument, HistoryEntry, TemplateCase, TemplateSample } from '../src/protocol.ts'
 
 /** An inline SVG poster, so thumbnails paint something instead of a broken box. */
 function poster(hue: number, label: string): string {
@@ -132,13 +132,6 @@ function previewCanvas(title?: string, id = 'preview-canvas'): CanvasDocument {
   }
 }
 
-const UPDATE_INFO: UpdateInfo = {
-  currentVersion: '1.15.3',
-  latestVersion: '1.15.3',
-  updateAvailable: false,
-  releaseUrl: 'https://github.com/q253595422/dsh-imagegen-video/releases',
-}
-
 /**
  * The host bridge, answered from memory. Every route the panel reaches on mount
  * is implemented; the rest resolve to empty shapes so an unvisited surface
@@ -161,7 +154,6 @@ const api = {
   videoHistoryClear: async () => [],
   videoTaskList: async () => [],
   taskList: async () => [],
-  updateCheck: async () => UPDATE_INFO,
   templatesSample: async (count: number): Promise<TemplateSample[]> => Array
     .from({ length: Math.min(count, 12) }, (_, index) => ({
       sourceId: 'preview',

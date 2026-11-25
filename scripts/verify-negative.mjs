@@ -442,26 +442,6 @@ const CASES = [
     ],
     expect: /escaped into the jsdom console: window is not defined/,
   },
-  // ------------------------------------------------------ the update chain
-  {
-    // Writing the wrong profile into the CLI call is what made the Desktop
-    // update fail with pnpm's own message: a profile the CLI is not allowed to
-    // touch. Spawning instead of refusing must be caught by name.
-    name: 'the updater spawns the locked desktop profile anyway',
-    runner: 'smoke',
-    file: 'src/updater.ts',
-    // The refusal lives on `installMode` now: a Desktop profile without the
-    // launcher's install hook resolves to `host-managed`, and that branch is
-    // the only thing standing between the user and a `dsh plugin --profile
-    // desktop` spawn the CLI is guaranteed to reject.
-    from: "  if (installMode === 'host-managed') {\n    throw new ManualUpdateRequiredError(profile, tarballUrl)",
-    to: "  if (installMode === 'host-managed' && false) {\n    throw new ManualUpdateRequiredError(profile, tarballUrl)",
-    // The refusal is an `assert.rejects`, so a spawn instead of a throw surfaces
-    // as "Missing expected rejection" — that message IS the defect firing, and
-    // the two wire-contract strings are listed for the variants that throw a
-    // different error instead of none.
-    expect: /Missing expected rejection|locked profile has its own wire code|never spawned/,
-  },
   // ------------------------------------------------- PPT agent error passthrough
   {
     // A failure inside the host Agent used to be swallowed and reported as
@@ -473,16 +453,6 @@ const CASES = [
     from: "    if (reason?.kind === 'error') return redactDiagnosticText(",
     to: "    if (reason?.kind === 'error' && false) return redactDiagnosticText(",
     expect: /NO_ADAPTER|agent error|RED as/i,
-  },
-  {
-    // The updater's message is copied into public issue threads. Skipping the
-    // redaction step is how a credential reaches one.
-    name: 'the updater stops redacting package-manager output',
-    runner: 'smoke',
-    file: 'src/updater.ts',
-    from: 'const tail = updateDiagnosticText(message, STDERR_LIMIT)',
-    to: 'const tail = message.slice(0, STDERR_LIMIT)',
-    expect: /npm-native-secret|doesNotMatch|secret/i,
   },
   // ------------------------------------------------- inspiration wall vs a clip
   {
@@ -3464,6 +3434,17 @@ const CASES = [
     to: "",
     expect: /第一张图片节点记成缩略图|first IMAGE node/,
   },
+  // ---------------------------------------- 品牌：旧名不得回到用户眼前
+  {
+    // 「创作」是并入小助手后的唯一名字。把品牌词写回包入口（守卫扫描的文件之一），
+    // verify-no-brand 必须变红；它若保持绿色，说明守卫根本没在读这些文件。
+    name: 'the old brand returns to the shipped entry',
+    runner: 'no-brand',
+    file: 'index.js',
+    from: "export * from './lib/index.js'",
+    to: "export * from './lib/index.js'\n// 团团TV 面板",
+    expect: /brand-word/,
+  },
 ]
 
 const RUNNERS = {
@@ -3471,6 +3452,9 @@ const RUNNERS = {
   // 不是它跑出什么。这条的存在理由是 2026-10-13~15 那三天攒下的 1408 条残渣。
   isolation: { script: 'scripts/verify-test-isolation.mjs', build: false },
   contracts: { script: 'scripts/verify-ui-contracts.mjs', build: false },
+  // 品牌守卫读源码、包入口与本地化元数据，零构建：它守的是「用户看到的字」，
+  // 而复原一个旧品牌词只需要改一处字符串，没有任何运行时症状。
+  'no-brand': { script: 'scripts/verify-no-brand.mjs', build: false },
   // The canvas's bottom chrome (dock / zoom dock / minimap) is a layout
   // question that only a real browser can answer: jsdom has no layout engine,
   // and `.canvasChrome` wraps based on the PANEL's width, which no media query

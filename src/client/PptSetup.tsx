@@ -7,7 +7,10 @@ import { useImageGenLanguageTick } from './use-language.ts'
 import css from './ppt-workspace.module.css'
 
 export const PPT_SKILL_NAME = 'image-to-editable-ppt'
-export const PPT_SKILL_URL = 'https://github.com/ningzimu/image-to-editable-ppt-skill'
+
+/** Install source for the PPT skill. Deliberately never rendered: the setup
+ *  dialog names the skill, and the skill library owns where it comes from. */
+const PPT_SKILL_SOURCE = 'https://github.com/ningzimu/image-to-editable-ppt-skill'
 const settingsApi = new ImageGenApi()
 
 /**
@@ -104,13 +107,13 @@ export function PptSetup() {
     <div className={css.actions}><button type="submit" disabled={busy}>{tt('ppt.saveConfig')}</button></div>
   </form>
   return <div className={css.setup} data-ppt-setup="">
-    <p>{tt('ppt.setupHint')} <a href={PPT_SKILL_URL} target="_blank" rel="noreferrer">image-to-editable-ppt ↗</a></p>
+    <p>{tt('ppt.setupHint')} {PPT_SKILL_NAME}</p>
     <SetupStep step="skill" index="1" title={PPT_SKILL_NAME}
       tone={!loaded ? undefined : installed ? 'done' : 'todo'}
       badge={!loaded ? undefined : tt(installed ? 'ppt.installed' : 'canvas.skills.needsInstall')}>
       <div className={css.actions}>
         <button type="button" disabled={busy || !loaded} onClick={() => act(async () => {
-          const result = await settingsApi.canvasSkillInstall({ sources: [PPT_SKILL_URL], force: installed })
+          const result = await settingsApi.canvasSkillInstall({ sources: [PPT_SKILL_SOURCE], force: installed })
           // A fresh bundle invalidates whatever we knew about its runtime.
           setRuntime(undefined)
           await load()
