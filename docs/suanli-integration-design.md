@@ -95,6 +95,7 @@ const gatewayUrl = (path: `/v1/${string}`) => origin + path
 ### 2.2 凭据读取
 
 - 插件 Host 通过 `ctx.get('credentials')` 可选读取。不要把它加进 `inject`，这样宿主没有凭据服务时插件也能照常加载。调用 `resolve(ref)`，其中 `ref = credentialRef(endpoint().credential)`，取返回值的 `value`。
+- **插件不依赖宿主包**：`suanliModels`、`credentials` 和 2.4 的快照类型都在插件里写本地的最小结构接口（`src/gateway-catalog.ts`），不在 `package.json` 里依赖 `@deepseek-ai/dsh-suanli-model-catalog` 或 `@deepseek-ai/dsh-credentials`，避免插件版本随宿主的 rc 版本漂移。`credentialRef` 的校验也在本地用同一个正则实现，注释写明来源 `packages/credentials/credentials/src/index.ts`。
 - 每次提交任务时都重新 `resolve`，不缓存密钥。
 - 取不到值时状态为 `signed-out`。
 - 登录状态变化由宿主 `suanliModels` 监听 `credentials/reference-updated(ref)` 后刷新目录，插件只消费结果。限制：凭据服务明确说明「进程环境变量的变化不可观测」，所以 AC-2.3（不重启即切换登录态）只对存进凭据库的账号凭据成立。桌面端账号登录写的就是凭据库。如果开发方发现实际是写环境变量，停下来报告，不要自行加轮询。
@@ -167,9 +168,11 @@ interface MediaCatalogSnapshot {
 - **刷新时机**：服务启动后立即刷新一次（不阻塞启动，异常要被捕获）；收到 `credentials/reference-updated` 且 ref 等于本服务的 ref 时刷新；Remote `refresh()` 被调用时刷新（设置页「同步」按钮和插件「刷新」按钮都调它）。并发的刷新合并成一个请求。
 - 当前 `CatalogSync.refresh()` 只在 `/v1/models` 成功后才读能力目录。改为两者独立读取、独立给出状态：`/v1/models` 失败不影响媒体目录，反过来也一样。
 - **失败不清空**：任何失败都保留上一份成功的 `entries / version / fetchedAt`，只更新 `status`。
-- **持久化**：成功目录写进本服务已有的设置命名空间（`ctx.settings.mutate(namespace, [{ op: 'set', path: ['media'], value }])`），只在 `version` 变化时写。启动时先读它作为初始快照，此时状态为 `loading`。
+- **持久化**：成功目录**不写 settings**。settings 只接受 volatile 的 Config 字段，最终落在 `<profileDir>/cordis.patch.yml`，而桌面端每次启动都会用 `writeGatewayProfile()` 整份重写这个文件。改为用 `ctx.storageDomain` 声明一个 Host 侧 KV 域，例如 `suanli-media-catalog`，用 zod schema 描述 `{ version, fetchedAt, entries }`，见 `packages/storage/storage-domain/README.md`。只在 `version` 变化时写入。启动时先同步读取它作为初始快照，此时状态为 `loading`。`storageDomain` 不可用时，退化为只保存在内存里，AC-2.2 的缓存部分随之不成立，测试中要覆盖这一退化。
+- **`entries` 存全部条目**（所有 `operation` 和 `transport.kind`）。只有在生成插件的图像/视频渠道时才按 `transport.kind` 过滤，chat 条目留给 WP3 的兜底路径使用。
+- **启动期不做无谓写入**：`/v1/models` 的结果与已有的 `settings.models` 相同时，不调用 `settings.mutate`，也不发 `llm/models-updated`。这样启动期间不会触发 config reload，也不会让插件二次 apply。媒体目录的 `version` 不变时，同样不写 storage、不发 `media-updated`。
 - `capabilities()` 保持现有返回值不变，改为从 `entries` 推导。
-- 类型放 `src/types.ts`；README 同步更新（`packages/AGENTS.md` 要求 README 和行为在同一个提交里更新），包括 Model Experience 段落。
+- 类型放 `src/types.ts`。`./typert` 和 `./remote` 是构建期生成的，生成器会拒绝无法精确表示的声明，所以 `paramSchema` 不能写成 `Record<string, unknown>` 或宽泛的索引签名，要写成精确形状：`{ type: 'object'; properties: Readonly<Record<string, { type: string; title?: string; enum?: readonly string[]; minimum?: number; maximum?: number; default?: string }>> }`。如果生成器连 `Record<string, …>` 也不接受，改成 `readonly { name: string; … }[]`，由宿主做转换。README 同步更新（`packages/AGENTS.md` 要求 README 和行为在同一个提交里更新），包括 Model Experience 段落。
 
 ### 2.5 网关渠道（插件侧）
 
@@ -200,7 +203,7 @@ interface MediaCatalogSnapshot {
 1. `src/client/ImageGenPanel.tsx` 头部（约 3697–3760 行）：删除 `<BrandMark />`、`css.githubLink` 链接、`updateArea` 更新按钮与弹层，标题改为 `tt('panel.title')`，文案「创作」。删除只为它们服务的状态、副作用与 CSS 类（`githubLink`、`updateArea` 等）。
 2. 删除 `src/client/BrandMark.tsx` 及其引用；`assets/` 中只被它使用的团团TV 图形一并删除；`icon.png` 换成「创作」图标（与小助手侧栏图标风格一致，单色线性，用 `currentColor`）。
 3. 删除 `src/updater.ts`、其路由（`src/routes.ts` 中 update 相关）、`protocol.ts` 里的 `UpdateInfo` 等只为更新服务的类型、`dsh-plugin-sync.ps1`；插件版本随小助手发布。
-4. 文案（`src/client/locales.ts` 全部语言）：所有「团团TV / TuanTuan TV / 团团」改为「创作」或去掉品牌词；删除 `panel.githubTip`。设置标题 `settings.title` 改为「创作」。
+4. 文案（`src/client/locales.ts` 全部语言，以及 `locale/*.json` 的 `meta.title` 和 `meta.description`。插件管理的显示名就来自这两个字段，现在的值都是团团TV）：`meta.title` 中文写「创作」，英文写 “Create”，其他语言用英文；`meta.description` 改为与 `package.json` 的 `description` 同义。所有「团团TV / TuanTuan TV / 团团」改为「创作」或去掉品牌词；删除 `panel.githubTip`。设置标题 `settings.title` 改为「创作」。
 5. 其他 GitHub 外链：
    - `TemplateLibrary.tsx` 详情里的「GitHub」链接 → 改为纯文本署名「来源：<作者/仓库名>」，不可点击（CC BY、handraw 要求保留署名）。
    - `OutfitReferencePicker.tsx`「查看原始来源 ↗」→ 随 WP8 服饰姿势库下线一并删除。
@@ -258,7 +261,7 @@ interface MediaCatalogSnapshot {
   3. 200 但媒体条目为 0：结果为 `empty`，保留旧目录；
   4. `/v1/models` 失败、能力目录成功：媒体目录为 `ready`。反过来也要测；
   5. 两次并发刷新只发出一组请求；
-  6. `version` 不变时不写设置，变化时只写一次；`media-updated` 只在提交之后发出；
+  6. `version` 不变时不写 storage domain，变化时只写一次；`/v1/models` 结果不变时不调用 `settings.mutate`，也不发 `llm/models-updated`；`media-updated` 只在提交之后发出；新建服务实例时，从 storage domain 读到上一份目录；
   7. 凭据为空时状态为 `signed-out`，并且不发请求；
   8. 发出 `credentials/reference-updated(本服务的 ref)` 会触发刷新，其他 ref 不触发；
   9. 服务启动后自动刷新一次，并且启动不等待这次刷新。
@@ -273,10 +276,10 @@ interface MediaCatalogSnapshot {
 
 **验收条件**
 
-- AC-2.1 在已登录的小助手里冷启动，不做任何操作就打开「创作」。模型列表要与 `curl -H "Authorization: Bearer $AURORA_API_KEY" https://maas.ovaijisuan.com/v1/ov/capabilities` 中 `transport.kind ∈ {images, videos_task}` 的条目一一对应，名称用 `displayName.zh`。启动后不需要打开「设置 → 模型」，对话模型列表也已刷新。
+- AC-2.1 在已登录的小助手里冷启动，不做任何操作就打开「创作」。模型列表要与 `curl -H "Authorization: Bearer $AURORA_API_KEY" https://maas.ovaijisuan.com/v1/ov/capabilities` 中 `transport.kind ∈ {images, videos_task}` 的条目一一对应，名称用 `displayName.zh`。同时，启动后不打开「设置 → 模型」，`suanliModels.read()` 返回的模型 id 集合也与 `curl /v1/models` 一致。
 - AC-2.2 断网启动：有缓存时显示上次的模型，并提示「暂时连不上模型服务」；恢复网络后点「重试」，状态回到 `ready`。
 - AC-2.3 在凭据库登录的前提下（见 2.2 的限制），退出登录后状态变为 `signed-out`，生成按钮禁用；重新登录后不重启就能恢复。
-- AC-2.4 在 `<DSH_HOME>` 下的 `settings.yaml`、`cordis.yml`、`cordis.patch.yml` 和插件数据目录中搜不到账号凭据。
+- AC-2.4 对整个 `<DSH_HOME>` 目录（包括 `settings.yaml.imported`、`cordis.patch.yml.bak-*`、storage domain 文件和插件数据目录）做递归字符串搜索，找不到账号凭据。凭据库文件（`.credentials.yaml` 或凭据服务实际使用的存储）除外。
 - AC-2.5 宿主 9 项测试、插件 5 项 smoke 全部通过，反向用例按预期失败。
 
 ### WP3 删除第三方渠道与相关功能（P1）
@@ -285,21 +288,21 @@ interface MediaCatalogSnapshot {
 
 1. 删除渠道编辑 UI：`src/client/channels-form.ts`、`SettingsCard.tsx` 中渠道/预设/订阅/提示词增强接口/对象存储（`storage*`）段落；设置页只保留：Agent 是否可生图/生视频（`allowAgentImageGeneration` / `allowAgentVideoGeneration`）、是否向 Agent 介绍本插件（`announceToAgent`）、本地存储目录（`localStoragePath`）、画布技能（`skillsEnabled`、`allowHeavySkills`、`skillAllowlist`、`skillOutputDir`、`skillHeavyTimeoutMinutes`、`skillAgentPreset`、技能配置）。
 2. 删除：`src/subscription/`（含 `vendors/`）、`src/snapgen-engine.ts`、`src/storage-sync.ts`、`src/presets.ts` 中除网关以外的全部预设（网关渠道由 WP2 生成后，`suanli-maas` 静态预设也删除）、`src/upstream-diagnosis.ts` 中针对第三方供应商的诊断、`src/settings-compat.ts` 中第三方渠道迁移逻辑。删除后清理只被它们使用的协议分支（Agnes、算力萌、Seedream、grok-imagine、nanobanana、glm-image、qwen-image/DashScope、MiniMax `image-01` 原生、Google native、qwen-draw、OpenRouter 等）及对应 smoke（`smoke-google-native`、`smoke-qwen-draw`、`smoke-magpie-discovery`、`smoke-upstream-diagnosis` 等）；`package.json` 的 `test` / `test:negative` 同步删条目。保留 h3 族与通用 OpenAI 兼容图像/视频路径。
-3. 提示词增强与画布轻量技能：改为调用小助手宿主的对话能力（插件已有 `src/host-chat.ts`，以其现有实现为准）使用当前默认对话模型；删除 `promptApiUrl` / `promptApiKey` / `promptModel` 配置。若 `host-chat.ts` 不能满足，改为用网关渠道 + 账号凭据调 `/v1/chat/completions`，模型取目录中 `operation=chat` 且 `default=true` 的条目。
-4. 设置迁移（一次性、幂等）：插件配置保存在 `<DSH_HOME>/settings.yaml` 的插件命名空间中，通过 `src/index.ts` 里已有的 settings seam（`seam.mutate(settingsNamespace, ops)`）读写。启动时如果 `channelSecrets` 非空，或 `apiKey`、`promptApiKey`、`storageSecretKey` 非空，就用一次 `mutate` 把这些字段设为空值（`{}` 或 `''`），**清掉明文密钥**。其他旧字段保留，但不再读取。迁移会写一条诊断「已移除旧版第三方渠道配置」，诊断里不含任何值。幂等的判定方式：字段都已为空时，不调用 `mutate`。Config schema 中的旧字段保留并标为 deprecated，避免旧设置解析失败。
+3. 提示词增强与画布轻量技能：改为调用小助手宿主的对话能力（插件已有 `src/host-chat.ts`，以其现有实现为准）使用当前默认对话模型；删除 `promptApiUrl` / `promptApiKey` / `promptModel` 配置。若 `host-chat.ts` 不能满足，就改为直接请求 `gatewayUrl('/v1/chat/completions')`。凭据按 2.2 取得，模型取 `entries` 中 `transport.kind=chat` 且 `default=true` 的条目，没有就取第一条 chat 条目。这个请求不经过网关渠道对象。
+4. 设置迁移（幂等）：插件配置的实际落点是 `<profileDir>/cordis.patch.yml` 中插件那一行的 config，通过 `src/index.ts` 里已有的 settings seam（`seam.mutate(settingsNamespace, ops)`）读写。旧版 `<DSH_HOME>/settings.yaml` 会在 Loader 就绪后，由宿主 `importLegacyDocument()` 改名为 `settings.yaml.imported` 再导入，这一步晚于插件 `apply`。所以迁移检查要做两次：`apply` 时检查一次；收到本命名空间的 `settings/document-updated` 后再检查一次（`settings-compat.ts` 里已有这个监听）。每次检查时，如果 `channelSecrets` 非空，或 `apiKey`、`promptApiKey`、`storageSecretKey` 非空，就用一次 `mutate` 把这些字段设为空值（`{}` 或 `''`），**清掉明文密钥**。其他旧字段保留，但不再读取。迁移会写一条诊断「已移除旧版第三方渠道配置」，诊断里不含任何值。幂等的判定方式：字段都已为空时，不调用 `mutate`。`settings.yaml.imported` 是宿主保留的导入原件，插件不应改写它；它残留旧密钥的问题，在 PR 描述中作为已知限制写明，并在 WP3 结束时告知验收方，由需求方决定是否请宿主侧在导入后清除 secret 字段。Config schema 中的旧字段保留并标为 deprecated，避免旧设置解析失败。
 5. 系统提示与工具描述中所有第三方协议说明删除（WP5 统一重写）。
 
 **自测标准**
 
 - `pnpm typecheck && pnpm test` 通过（删掉的 smoke 不再出现在脚本里，`verify-script-entries` 通过）。
 - `grep -rniE "openrouter|x\.ai|snapgen|dashscope|bigmodel|volcengine|seedream|agnes|comemoe|closeai|token6688|antigravity|chatgpt\.com|cloudcode-pa|generativelanguage" src` 无结果（`src/templates/` 数据文件除外）。
-- 新增 `scripts/smoke-settings-migration.mjs`，使用记录调用的假 settings seam：输入含旧渠道和密钥的设置，断言 secret 字段被一次 `mutate` 清空；用清理后的设置再跑一次，断言 `mutate` 调用次数为 0；断言诊断不含密钥值。
+- 新增 `scripts/smoke-settings-migration.mjs`，使用记录调用的假 settings seam：输入含旧渠道和密钥的设置，断言 secret 字段被一次 `mutate` 清空；用清理后的设置再跑一次，断言 `mutate` 调用次数为 0；模拟「apply 时没有密钥，随后 `settings/document-updated` 带来导入的密钥」，断言第二次检查会清空它们；断言诊断不含密钥值。
 - `smoke-maas-families.mjs`、`smoke-maas-wire.mjs` 改为从网关渠道取模型后仍全过。
 
 **验收条件**
 
 - AC-3.1 设置页没有渠道、API 地址、API Key、订阅登录、提示词增强接口、对象存储同步等配置项。
-- AC-3.2 在 `<DSH_HOME>/settings.yaml` 的插件段写入旧渠道和明文密钥后启动小助手。启动后该文件中这些密钥为空；再重启一次，文件不再变化（比较修改时间或哈希）。
+- AC-3.2 用含旧渠道和明文密钥的旧版设置启动两种场景：① 写在 `<profileDir>/cordis.patch.yml` 的插件 config 中；② 写在旧版 `<DSH_HOME>/settings.yaml` 中。两种场景都要求**首次启动完成后**，`cordis.patch.yml` 里这些密钥为空，不需要第二次启动；之后再重启一次，插件不再写这个文件。`settings.yaml.imported` 按 WP3 第 4 条作为已知限制记录。
 - AC-3.3 文生图（`minimax-h3-image-enhanced`）、图生图、文生视频（`minimax-h3-2k`）、首尾帧（`minimax-h3-fl2va`）、参考生视频（`minimax-h3-ref-2k` / `minimax-h3-ref2va`）在真实网关各成功一次，参考素材经 `/v1/ov/files` 上传（验收方抓包确认）。
 - AC-3.4 提示词增强、画布「文本润色 / 图片描述」在未配置任何独立接口的情况下可用。
 
@@ -314,7 +317,7 @@ interface MediaCatalogSnapshot {
 **自测标准**
 
 - `scripts/verify-ui-contracts.mjs` 增加断言：槽位注册只有 `sidebar.panellist`（id `imagegen`）与 `main`（key `imagegen`），dispose 函数调用后两者都被移除（用假的 slots 注册表记录 register/dispose）。
-- 本地起小助手 Web（deepseek-harness `apps/web` 开发模式，按其 README）加载本插件，手动截图：侧栏有「创作」、点击切到工作台、点「会话」切回。
+- 本地起小助手 Web（deepseek-harness `apps/web` 开发模式，按其 README）加载本插件，手动截图：侧栏有「创作」、点击切到工作台、点「会话」切回。Web profile 没有网关配置，工作台会显示 `not-configured`，这是预期的。模型列表相关的 AC-2.1 在 WP9 的桌面端验证。
 
 **验收条件**
 
@@ -328,7 +331,7 @@ interface MediaCatalogSnapshot {
 **改动**
 
 1. `src/index.ts` 的 `IMAGEGEN_GUIDANCE`（当前约 3,970 字）重写为 ≤ 600 字的**静态**中文说明：本机有「创作」工作台；可用 `generate_image` / `edit_image` / `generate_video` 生成；默认等待完成；图片结果在回复最前面用 Markdown 图片语法展示；视频渲染需数分钟不要轮询。**不拼接**渠道/模型表、不写协议细节、不写外部网址、不写密钥存储方式。按 `agent-experience` skill 的原则写（站在模型视角，只写任务相关概念）。
-2. 模型选择改由工具参数承担：`generate_image` / `edit_image` / `generate_video` 的 `model` 参数描述改为「可选；不填使用默认模型。可用模型见 `list_media_models`」，并新增一个只读工具 `list_media_models`，返回当前目录里图像/视频模型的 `model`、`displayName.zh`、支持的模式和参数枚举。工具 schema 不随目录变化，`model` 参数不使用 enum，避免目录一变工具定义也变、导致提示缓存失效。模型列表**不得**放进系统提示。
+2. 模型选择改由工具参数承担：`generate_image` / `edit_image` / `generate_video` 的 `model` 参数描述改为「可选；不填使用默认模型。可用模型见 `list_media_models`」，并新增一个只读工具 `list_media_models`，返回当前目录里图像/视频模型的 `model`、`displayName.zh`、支持的模式和参数枚举。返回结果按 `operation`、`model` 固定排序，`default` 条目放在各组第一位；总长度超过 4,000 字时截断，并在末尾说明总数。工具 schema 不随目录变化，`model` 参数不使用 enum，避免目录一变工具定义也变、导致提示缓存失效。模型列表**不得**放进系统提示。
 3. 工具描述中删除第三方协议说明，长度各 ≤ 400 字。
 4. `allowHeavySkills` 默认值改为 `false`；开启重任务技能前的确认框保留。
 5. `/edit_image` 命令保留，使用网关默认图生图模型。
@@ -435,10 +438,10 @@ interface MediaCatalogSnapshot {
 **验收条件**
 
 - AC-8.1 打开模板库，图片请求全部指向 `hero.ovaijisuan.com`（网络面板中没有其他图片域名）。单图 ≤ 300 KB，首屏图片 ≤ 24 张且懒加载，首屏图片总字节 ≤ 3 MB。国内网络下的实际加载时间只作为观察项记录，不作为通过条件。
-- AC-8.5 用旧版本收藏过的、仍保留在精选库里的模板，升级后仍显示为已收藏。
 - AC-8.2 部署后 `curl -I https://hero.ovaijisuan.com/creative-templates/<任一文件>` 返回 200、`content-type: image/webp`、长缓存头。
 - AC-8.3 官网首页、`/download`、`/about`、`/showcase` 功能不受影响。
 - AC-8.4 署名在卡片和详情中可见。
+- AC-8.5 用旧版本收藏过的、仍保留在精选库里的模板，升级后仍显示为已收藏。
 
 ### WP9 打包进小助手（P1，两个仓库）
 
@@ -449,7 +452,7 @@ interface MediaCatalogSnapshot {
 1. `package.json` 版本改为 `1.35.0-suanli.1`（之后每次发行递增 `suanli.N`）。
 2. `package.json` 的 `peerDependencies` 中 `react` / `react-dom`（如有）在 `peerDependenciesMeta` 标 `optional: true`；不使用 `github:` 依赖；`prepare` 脚本在作为依赖安装时不得触发构建（参考 dsh-codex-pet 的处理）。
 3. 新增 `.github/workflows/suanli.yml`：`release` 分支 push 时 `pnpm install --frozen-lockfile && pnpm typecheck && pnpm test && pnpm pack`，把 tgz 提交到 `dist` 分支（文件名需匹配 deepseek-harness `apps/desktop/scripts` 中 tgz 文件名正则 `^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$`）。
-4. bundle 元数据三件套（`packages/util/official-bundles/README.md` 要求：缺任意一项，加进 profile 也不生效）：`package.json` 声明 `dsh.bundle.patch`（指向 `cordis.patch.yml`）和 `icon`，并导出 `./locale/*.json`。插件管理里的显示名和简介来自 `locale/<lang>.json`，`zh` 写「创作」，`en` 写 “Create”。开发方先对照 `@michengai/dsh-codex-pet` 在 `278e8398b1` 上的 `package.json` 检查缺了哪些。
+4. 核对 bundle 元数据三件套（`packages/util/official-bundles/README.md` 要求）：`dsh.bundle.patch: ./cordis.patch.yml`、`icon: ./icon.png`、`files` 中的 `locale`。现状已经满足，这里只核对，显示名文案在 WP1 第 4 条中修改。`cordis.patch.yml` 现在插入了 13 行（`imagegen`、`imagegen-image` … `imagegen-diagnostics`），WP3 删除功能时，这份文件要同步删掉对应的行（例如只为第三方功能服务的子入口），并核对每一行的 `name` 仍指向 `package.json` `exports` 里存在的子路径。
 5. 删除或停用与上游 npm 发布相关的 workflow（`release.yml`、`npm-backfill.yml`、`hol-plugin-scanner.yml`）中会向 npm / 上游发布的步骤。
 
 **deepseek-harness**
@@ -469,7 +472,7 @@ interface MediaCatalogSnapshot {
 
 - dsh-imagegen-video：`pnpm pack` 产物可被 `npm install <tgz>` 安装且不触发构建；`node scripts/verify-pack.mjs` 通过。
 - deepseek-harness：`pnpm install` 成功；上述两个组合测试通过；`pnpm run build`（或仓库对应的受影响构建）通过；桌面打包脚本本地 dry-run 能找到并暂存 tgz。
-- 用桌面端开发模式（`apps/desktop`，按其 README 启动）登录真实测试账号，完成 AC-2.1 和 AC-3.3 中的一次生图、一次生视频。测试账号凭据通过 Devin 机密 `AURORA_API_KEY` 注入，开发方不得把它写进任何文件。
+- 用桌面端开发模式（`apps/desktop`，按其 README 启动）登录真实测试账号，完成 AC-2.1 和 AC-3.3 中的一次生图、一次生视频。测试账号凭据由需求方在调试时直接提供（作为 Host 进程的 `AURORA_API_KEY` 或在桌面端登录）。开发期不得把它写进 `cordis.patch.yml`、`.credentials.yaml` 或任何会提交的文件。
 
 **验收条件**
 
