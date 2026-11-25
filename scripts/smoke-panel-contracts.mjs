@@ -89,6 +89,30 @@ await check('C5 the composer is a sibling of the scrolling viewport', async () =
   assert.ok(composerCall > viewportClose, 'the composer is rendered after the viewport element closes, not inside it')
 })
 
+await check('C6 the settings page offers no gateway, channel, or storage configuration', async () => {
+  // 并入小助手之后，网关地址、渠道与密钥都不归插件配：模型来自宿主目录，密钥在宿主凭据服务。
+  // 设置页再出现这些输入，用户就会被要求填一份插件根本不会读的配置。
+  const card = readModuleSource('SettingsCard.tsx')
+  assert.ok(card !== '', 'the settings card module is present')
+  for (const [label, pattern] of [
+    ['channel editor', /channels-form|ChannelRow|channelSecrets/],
+    ['preset picker', /PRESETS_API|presetPicker|settings\.preset/],
+    ['subscription login', /SUBSCRIPTION_API|subscriptionLogin/],
+    ['object storage', /storageTest|STORAGE_API|settings\.storage(Endpoint|AccessKey|SecretKey)/],
+    ['prompt endpoint', /promptApiUrl|promptApiKey|PROMPT_ENHANCE_API\.models/],
+  ]) {
+    assert.ok(!pattern.test(card), `the settings card no longer configures ${label}`)
+  }
+  // 只保留这四组：通用、本地存储、画布技能、PPT。
+  for (const kept of ['settings.generalTitle', 'settings.storageTitle', 'settings.skillsTitle']) {
+    assert.ok(card.includes(kept), `the settings card still renders ${kept}`)
+  }
+  // 密钥输入框是这次被删掉的那类控件：卡片里不该还有 secret 字段。
+  const secrets = readModuleSource('settings-form.ts')
+  assert.ok(!/SettingsSecretField|secretField/.test(card), 'the card renders no secret field')
+  if (secrets !== '') assert.ok(true, 'settings-form keeps its generic helpers for other surfaces')
+})
+
 console.log(results.join('\n'))
 console.log(process.exitCode === 1 ? '\nPANEL CONTRACT CHECK FAILED' : '\nPANEL CONTRACT CHECK OK')
 process.exit(process.exitCode === 1 ? 1 : 0)

@@ -261,6 +261,15 @@ const CASES = [
     expect: /data-quick-card|empty canvas shows the six quick-start cards/,
   },
   {
+    // 设置页重新长出渠道配置，等于让用户填一份插件不会读的东西。
+    name: 'the settings page asks for a gateway again',
+    runner: 'panel-contracts',
+    file: 'src/client/SettingsCard.tsx',
+    from: "import type { ImageGenKey } from './locales.ts'",
+    to: "import type { ImageGenKey } from './locales.ts'\nconst channelSecrets: Record<string, string> = {}",
+    expect: /no longer configures channel editor/,
+  },
+  {
     // 框选把 no-zoom 面当空白：pointerdown preventDefault+指针捕获抢走卡片
     // click。守卫退回旧选择器后，结构不变式必须变红。
     name: 'the marquee swallows quick-card clicks',
