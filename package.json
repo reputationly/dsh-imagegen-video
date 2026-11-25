@@ -1,7 +1,7 @@
 {
   "name": "@q253595422/dsh-imagegen-video",
   "description": "蒜狸小助手的生图与生视频工作台：文生图、图生图、文生视频、首尾帧、参考生视频、无限画布、画廊与模板库。",
-  "version": "1.35.0",
+  "version": "1.35.0-suanli.1",
   "type": "module",
   "icon": "./icon.png",
   "main": "index.js",
@@ -163,7 +163,6 @@
     "url": "https://github.com/reputationly/dsh-imagegen-video/issues"
   },
   "scripts": {
-    "prepare": "tsdown",
     "build": "tsdown",
     "watch": "tsdown --watch",
     "typecheck": "tsc --noEmit",
@@ -202,6 +201,7 @@
     "test:signals": "node scripts/smoke-signals.mjs",
     "test:stage-3d": "node scripts/verify-stage-3d.mjs",
     "test:history-group": "node scripts/smoke-history-group-images.mjs",
-    "test:lan-auth": "node scripts/smoke-lan-bind-auth.mjs"
+    "test:lan-auth": "node scripts/smoke-lan-bind-auth.mjs",
+    "prepack": "tsdown"
   }
 }

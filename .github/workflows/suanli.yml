@@ -1,0 +1,82 @@
+# 蒜狸发行：把插件打成 tgz 并发布到 dist 分支。
+#
+# 小助手安装的是发行包本身，不是 npm 上的版本：宿主把 tgz 作为依赖，打包安装包时再用
+# `stage-external-packages` 取下来放进安装包，用户侧不联网。所以这条工作流只做一件事——
+# 通过全部门禁之后，把 `pnpm pack` 的产物提交到 `dist` 分支，文件名固定为
+# `<包名>-<版本>.tgz`（宿主的打包脚本按 `^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$` 匹配）。
+name: Suanli release
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: suanli-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Pack and publish the tarball
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the release branch
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Negative checks
+        run: pnpm test:negative
+
+      - name: Pack
+        run: pnpm pack
+
+      # 同一个版本重复发一次只会得到一个同名文件：先删掉旧文件，再提交新内容，历史里不会
+      # 出现两个内容不同却同名的 tgz。
+      - name: Publish to the dist branch
+        run: |
+          set -euo pipefail
+          package=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          archive=$(node -p "require('node:path').basename(require('node:child_process').execSync('ls *.tgz', { encoding: 'utf8' }).trim())")
+          work=$(mktemp -d)
+          git worktree add --detach "$work" 2>/dev/null || true
+          (
+            cd "$work"
+            git fetch --depth=1 origin dist || true
+            git checkout --orphan=dist-fresh >/dev/null 2>&1 || git checkout -b dist-fresh >/dev/null 2>&1
+            git rm -rf . >/dev/null 2>&1 || true
+            cp "$GITHUB_WORKSPACE/$archive" .
+            rm -f "${package#@*}-"*.tgz 2>/dev/null || true
+            printf '%s %s\n' "$package" "$version" > RELEASE.txt
+            git add .
+            git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+              commit -m "dist: $package@$version"
+            git push --force origin HEAD:dist
+          )
+          rm -rf "$work"
+        shell: bash
+
+      - name: Report
+        run: echo "published $(node -p "require('./package.json').name")@$(node -p "require('./package.json').version") to the dist branch"
