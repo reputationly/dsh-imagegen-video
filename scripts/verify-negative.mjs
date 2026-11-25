@@ -51,6 +51,13 @@ function freshCopy (needsGit = false) {
   // reason that has nothing to do with the injected defect -- the harness
   // reporting ITS OWN incompleteness as the defect. Copied from `files` rather
   // than listed here, so the two cannot drift apart.
+  // agent-surface 的基线要和 `docs/agent-surface.snapshot.md` 对齐；它是唯一的 docs 输入，
+  // 所以单独按文件复制，而不是把整个 docs/ 拖进每个用例的副本。
+  const snapshot = join(SRC, 'docs', 'agent-surface.snapshot.md')
+  if (existsSync(snapshot)) {
+    mkdirSync(join(COPY, 'docs'), { recursive: true })
+    cpSync(snapshot, join(COPY, 'docs', 'agent-surface.snapshot.md'))
+  }
   const { files = [] } = JSON.parse(readFileSync(join(SRC, 'package.json'), 'utf8'))
   for (const entry of files) {
     const from = join(SRC, entry)
@@ -3050,6 +3057,17 @@ const CASES = [
     to: 'return (candidates.find(entry => entry.default) ?? candidates[candidates.length - 1]!).model',
     expect: /目录没有标记默认项时取第一条/,
   },
+  // ---------------------------------------- Agent 面：系统提示的字数上限
+  {
+    // 系统提示一旦长起来，代价不是报错而是每个账号换一份提示、提示缓存全废。
+    // 往里塞 700 字，守卫必须变红。
+    name: 'the system prompt grows past its budget',
+    runner: 'agent-surface',
+    file: 'src/index.ts',
+    from: 'export const IMAGEGEN_GUIDANCE = ',
+    to: 'export const IMAGEGEN_GUIDANCE = ' + "'" + 'x'.repeat(700) + "' + ",
+    expect: /over the 600 limit/,
+  },
 ]
 
 const RUNNERS = {
@@ -3062,6 +3080,8 @@ const RUNNERS = {
   'no-brand': { script: 'scripts/verify-no-brand.mjs', build: false },
   // 网关目录适配层是纯逻辑（条目 → 渠道、默认模型、地址规范化），读源码即可，零构建。
   'gateway-catalog': { script: 'scripts/smoke-gateway-catalog.mjs', build: false },
+  // Agent 面读的是构建产物（lib/index.js 里的常量与工具定义），所以注入后必须重建。
+  'agent-surface': { script: 'scripts/verify-agent-surface.mjs', build: true },
   // The canvas's bottom chrome (dock / zoom dock / minimap) is a layout
   // question that only a real browser can answer: jsdom has no layout engine,
   // and `.canvasChrome` wraps based on the PANEL's width, which no media query

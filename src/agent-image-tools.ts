@@ -345,10 +345,10 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'generate_image',
-      description: 'Generate an image. By default this tool call stays pending until the task reaches a final state; completed images are shown beside this tool call, while the model receives their attachment references, without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. Only use models configured for this plugin; omit model to use the configured default image model (or the first model when none is configured).',
+      description: 'Generate an image. By default the call waits for the task and returns attachment references for each image; they are shown beside this tool call. Set wait_for_completion=false for background mode, then poll with get_image_generation_task. Omit model to use the default image model; call list_media_models for the models and parameters this account has.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'Detailed image-generation prompt.' },
-        model: { type: 'string', description: 'One of the configured image models. Defaults to the configured default image model, or the first model when none is configured.' },
+        model: { type: 'string', description: 'Optional model id from list_media_models. Defaults to the default image model.' },
         size: { type: 'string', description: 'Aspect ratio such as 1:1, 16:9, 9:16, or auto.' },
         quality: { type: 'string', description: 'auto, 1k, 2k, or 4k.' },
         count: { type: 'integer', description: 'Number of images, 1 to 4. Defaults to 1.' },
@@ -382,11 +382,11 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
     })),
     ctx.tools.register(defineTool({
       name: 'edit_image',
-      description: 'Edit an image. By default this tool call stays pending until the task reaches a final state; completed images are shown beside this tool call, while the model receives their attachment references, without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. source_image must be an image reference returned by a completed generation or get_image_generation_task; pass that entire object unchanged. Only configured image models are allowed; omit model to use the configured default image model (or the first model when none is configured).',
+      description: 'Edit an image with a prompt. source_image must be an image reference returned by a generation or get_image_generation_task, passed unchanged. By default the call waits and returns attachment references for the new image; set wait_for_completion=false for background mode. Omit model to use the default image model; see list_media_models.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'How to transform the source image.' },
         source_image: { ...imageRefSchema, required: true, description: 'Image reference returned by get_image_generation_task.' },
-        model: { type: 'string', description: 'One of the configured image models. Defaults to the configured default image model, or the first model when none is configured.' },
+        model: { type: 'string', description: 'Optional model id from list_media_models. Defaults to the default image model.' },
         size: { type: 'string', description: 'Aspect ratio such as 1:1, 16:9, 9:16, or auto.' },
         quality: { type: 'string', description: 'auto, 1k, 2k, or 4k.' },
         count: { type: 'integer', description: 'Number of images, 1 to 4. Defaults to 1.' },

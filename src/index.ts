@@ -29,7 +29,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type { ImageAttachmentRef, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import {
   entriesOfKind, gatewayChannel, isCredentialRefName, modelOptionsOf, pluginSnapshotOf,
-  selectDefaultAlias, type GatewayCatalogHost, type GatewayCredentialsHost, type GatewayEndpoint,
+  selectDefaultAlias, type GatewayCatalogHost, type GatewayCredentialsHost, type GatewayEndpoint, type PluginSnapshot,
 } from './gateway-catalog.ts'
 import { IMAGEGEN_SETTINGS_NAMESPACE, isChannelProtocolPreference, type GatewayCatalogSnapshot, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
@@ -305,6 +305,7 @@ import { ImageGenerationRuntime, type ChannelsView, type HostChatSeam, type Runt
 import { createHostChatSeam, type HostAgentPresets, type HostAgentsService, type HostDefaultModel } from './host-chat.ts'
 import { registerAgentCanvasTools } from './agent-canvas-tools.ts'
 import { registerAgentImageTools } from './agent-image-tools.ts'
+import { registerMediaModelsTool } from './agent-media-models-tool.ts'
 import { registerAgentVideoTools } from './agent-video-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
 import { setImageDataRoot, imageDataRoot } from './image-storage-path.ts'
@@ -346,6 +347,7 @@ export { renderCode, dimensionsFor, locateFfmpeg, extractRenderSource, looksLike
 export { codeRenderSystemPrompt, codeRenderUserPrompt, readGeneratedCode, fallbackRendererSource, type CodeBrief, type CodeTarget } from './code-prompt.ts'
 export { registerAgentCanvasTools } from './agent-canvas-tools.ts'
 export { registerAgentImageTools, resolveAgentImageModel } from './agent-image-tools.ts'
+export { mediaModelsListing, MEDIA_MODELS_RESULT_LIMIT, registerMediaModelsTool } from './agent-media-models-tool.ts'
 export { registerAgentVideoTools, resolveAgentVideoModel, AGENT_VIDEO_TOOL_NAMES } from './agent-video-tools.ts'
 export { latestSessionImage, registerEditImageCommand } from './edit-image-command.ts'
 export { PptTaskStore } from './ppt-task-store.ts'
@@ -530,7 +532,7 @@ const configSchema = z.object({
   storageSyncGallery: z.boolean().default(true).volatile(),
   storageSyncHistory: z.boolean().default(false).volatile(),
   skillsEnabled: z.boolean().default(true).volatile(),
-  allowHeavySkills: z.boolean().default(true).volatile(),
+  allowHeavySkills: z.boolean().default(false).volatile(),
   skillAllowlist: z.string().default('').volatile(),
   skillOutputDir: z.string().default('').volatile(),
   skillHeavyTimeoutMinutes: z.number().default(20).volatile(),
@@ -579,30 +581,15 @@ const DEFAULT_ALLOW_AGENT_IMAGE_GENERATION = true
 const SECTION_ORDER = 150
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-export const IMAGEGEN_GUIDANCE = '本机已安装「创作」工作台（包名 dsh-imagegen）：入口在侧边栏「新会话 / 生图」工作台，设置项在插件自己的设置页。能力：工作台只对接部署自己的模型网关（new-api），渠道、模型目录与默认模型都来自宿主的能力清单，密钥由宿主凭据服务持有、提交前现取，插件不保存任何密钥。图像走 OpenAI 兼容的 /images/generations 与 /images/edits；网关的 `minimax-h3-image*` 家族（含聚合模型 `minimax-h3-image-enhanced`）同样走这两个路径，但尺寸只认 `size` 且必须落在 2K 计费档（2048x2048、2368x1760、2720x1536 等），低于 2K 网关直接 400，插件会把面板比例换成对应的交付尺寸；聚合模型由网关侧自动定画幅，因此客户端不传尺寸。视频走网关统一的异步任务接口：提交 POST /videos，轮询 GET /videos/{id}，成品在轮询返回的 metadata.url；metadata.image_mode 区分文生视频 / 首尾帧 / 参考族，参考图放 metadata.src_ref_images。模型名保留 minimax-h3 前缀（`minimax-h3-2k`、`minimax-h3-ref-2k`、`minimax-h3-fl2va`、`minimax-h3-ref2va` 是网关侧的聚合模型），插件据此选协议；视频只有 768P 一档，2K 由网关侧超分完成。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：多来源标签页（精选案例库 / 沧河案例库 / 手绘模板库 / Prompt-Signal / GPT Image 2 案例库），内置多个社区库的数千条提示词案例，可搜索、筛选、收藏（星标，宿主持久化）与复用；在线来源可独立刷新并每 12 小时后台同步，手绘、Prompt-Signal 与 GPT Image 2 案例库使用随插件版本更新的固定快照。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。用户也可以使用 `/edit_image <修改描述>`，命令会直接读取当前对话最近图片并调用插件图片模型，不经过对话模型的图片能力检查。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗账户额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；参考图会发送至部署的模型网关；模板库参考图首次加载需要访问对应来源站点（vibeui.top / gpt-image2.canghe.ai / cdn.jsdelivr.net / raw.githubusercontent.com / pbs.twimg.com / mosaic.fxtwitter.com）。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。插件同时支持 AI 生视频：面板「生视频」标签页可文生视频、图生视频、首尾帧与多参考图生成。Agent 可直接调用 `generate_video` 提交视频生成（默认等待完成，完成视频以文件落盘并通过同源 URL 播放），也可传 `wait_for_completion: false` 后用 `get_video_generation_task` 查询；视频渲染通常需要数分钟，不要反复轮询。视频文件保存在本机数据目录的 videos/ 下，不占用对话上下文。无限画布的图片节点还有几个纯界面能力（标注局部改图：画框后挂一张跟随图片移动的提示词卡片、本地抠图去背景、按视觉模型拆分图层、为节点指定模型），它们由用户在画布上操作，Agent 无需也无法触发。无限画布还支持「技能」：任意图片/文本/文件节点（生成配置节点除外）的悬浮工具条或右键菜单都有「技能」入口，内置动作包括文本润色（polish.text，可指定 formal/casual/shorter/expand 或自定义指令）、图片描述（describe.image）、内容抽取（extract.content：文本/代码/OOXML/PDF 抽取为文本节点），以及重任务「图片转可编辑 PPT」（ppt.fromImages）；同时会列出本机 ~/.dsh/skills 下所有可被模型调用的技能（id 形如 skill:<名称>）。轻量技能与提示词增强都走本机对话面板里选定的那个对话模型（不再需要单独配置接口），重任务技能会启动一个无头 DSH Agent 在本机执行真实流水线（读写文件、跑 CLI），可能持续数分钟到数十分钟并消耗较多额度，因此界面会先弹确认框。`image-to-editable-ppt` 需要用户自行安装该技能，并按它的文档配置 OCR Token 与图片后端，未安装时运行会返回可操作的 skill-missing 提示；底部 Dock 的「技能库」面板可以在线安装（粘贴仓库/压缩包/SKILL.md 链接，支持 GitHub、裸 git、raw 与 zip）或上传本地技能压缩包，也可以卸载，装好后宿主会热加载、无需重启。技能可以在 SKILL.md 旁边放 skill.config.json 声明自己需要的配置（字段 + apply 步骤：command 调技能自带 CLI、或写一份配置文件），技能库面板据此渲染「配置」表单并支持保存 / 保存并应用，密钥走设置脱敏存储、不会进入运行目录或提示词；已知技能（image-to-editable-ppt 的 editppt config）插件内置了配方，所以用户不需要手敲配置命令。文件节点支持拖拽或菜单上传任意文件（单文件 ≤50MB，脚本/可执行文件被拒绝），并在节点内直接预览内容：文本/代码/CSV/TSV/JSON 原文、XLSX 表格、DOCX/PPTX/ODT/ODS 抽取文本、ZIP 目录清单都由宿主解码成有限的预览数据返回，图片、PDF、音频、视频由宿主以 inline 响应（支持 HTTP Range，可拖动播放进度）交给浏览器渲染；双击节点或点悬浮工具条的「放大预览」会在全屏阅读器里显示全文并支持复制与下载，无法内联的二进制类型仍以下载方式提供（宿主以 application/octet-stream + attachment 返回，HTML/SVG 一类的标记永远不会内联渲染）。技能运行只产出节点与连线草稿，由浏览器端写入画布文档。汇报格式：Agent 工具完成图片生成/改图后，工具结果 JSON 的 files 字段给出图片落盘绝对路径；最终回复必须在最前面用 Markdown 图片语法内嵌展示（![生成图片](files 里的第一个路径)），图片在前、说明文字在后，多张图逐张列出。不要用 dsh-ui 组件、代码块或外链包裹图片。'
+/**
+ * 给 Agent 的静态说明。
+ *
+ * 这段文字**不随目录变化**：每个账号、每次目录刷新都重写一次系统提示会打掉提供方的提示
+ * 缓存，也让同一份产品在不同账号下长得不一样。模型清单、玩法与参数因此在
+ * `list_media_models` 里，按需读取。
+ */
+export const IMAGEGEN_GUIDANCE = '本机有「创作」工作台（侧栏「创作」，可看历史与无限画布）。生图用 generate_image，改图用 edit_image（图片引用来自一次生成结果），生视频用 generate_video。不传 model 用该操作的默认模型；可用模型、玩法与参数见 list_media_models。默认等到任务结束：图片生成后把结果放在回复最前面，用 Markdown 图片语法展示，再写说明文字。视频渲染需要数分钟，提交后不要反复轮询。失败原因以工具结果为准，不要编造模型名。'
 
-/** Append the live channel × model table so an Agent can honor user choices. */
-function guidanceFor(channels: RuntimeChannel[], defaultChannelId: string, defaultModel: string, defaultVideoModel = ''): string {
-  if (channels.length === 0) {
-    return `${IMAGEGEN_GUIDANCE} 网关目录还没有就绪：请先在宿主里登录部署账号（渠道、模型与密钥都来自宿主的能力清单）。`
-  }
-  const table = channels.map(channel => {
-    const aliases = channel.models.map(model => model.alias).join('、')
-    const mark = channel.id === defaultChannelId ? '（默认渠道）' : ''
-    const key = channel.apiKey === '' ? '（未填密钥）' : ''
-    const models = channel.models.length === 0 ? '未配置模型' : `可用模型：${aliases}`
-    const videoAliases = (channel.videoModels ?? []).map(model => model.alias).join('、')
-    const videos = (channel.videoModels ?? []).length === 0 ? '' : `；视频模型：${videoAliases}`
-    return `渠道「${channel.name}」${mark}[${channel.apiUrl}] ${models}${videos}${key}`
-  }).join('；')
-  const fallback = defaultModel === ''
-    ? '未指定模型时若仅一个可用模型可直接生成，若有多个应先询问用户选择「渠道 + 模型」。'
-    : `未指定模型时默认使用「${defaultModel}」。`
-  const videoFallback = defaultVideoModel === ''
-    ? '视频模型未设默认，未指定时应先与用户确认。'
-    : `视频未指定模型时默认使用「${defaultVideoModel}」。`
-  return `${IMAGEGEN_GUIDANCE} 当前渠道与模型：${table}。用户指定模型名时取该模型所属渠道；${fallback}${videoFallback}`
-}
 
 /** Normalize raw channel entries into the wire shape (schema-adjacent guard). */
 function normalizeChannels(value: unknown): ChannelConfig[] {
@@ -738,6 +725,9 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     const endpoint = gatewayHost()?.endpoint()
     return endpoint !== undefined && isCredentialRefName(endpoint.credential) ? endpoint : undefined
   }
+  /** 供 Agent 工具读取的目录快照（插件视角，含 not-configured）。 */
+  const gatewaySnapshotValue = (): PluginSnapshot => pluginSnapshotOf(gatewayHost())
+
   const reloadGatewayKey = async (): Promise<string> => {
     const endpoint = gatewayEndpoint()
     if (endpoint === undefined) {
@@ -779,7 +769,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
       defaultVideoModel,
       skills: {
         enabled: value.skillsEnabled ?? true,
-        allowHeavy: value.allowHeavySkills ?? true,
+        allowHeavy: value.allowHeavySkills ?? false,
         allowlist: (value.skillAllowlist ?? '')
           .split(/[\n,]/)
           .map(item => item.trim())
@@ -1311,6 +1301,11 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
       if (feature === 'video') return registerAgentVideoTools(tctx, runtime, resolveVideoToolConfig)
       if (feature === 'canvas') return registerAgentCanvasTools(tctx, resolveVideoToolConfig)
       const disposeTools = registerAgentImageTools(tctx, runtime, resolveAgentConfig)
+      // 只读的模型清单：系统提示不拼目录，模型名与玩法由它按需回答。
+      const disposeModelsTool = registerMediaModelsTool(tctx, () => {
+        const value = resolve()
+        return { enabled: value.enabled, announceToAgent: value.announceToAgent, snapshot: gatewaySnapshotValue }
+      })
       // Video tools mount alongside the image ones and share the same runtime,
       // so a task started by an Agent and one started in the panel are visible
       // to each other and to the same persisted history.
@@ -1325,6 +1320,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
       })
       return () => {
         disposeCommand()
+        disposeModelsTool()
         disposeTools()
       }
     }, 'dsh-imagegen: ' + feature + ' agent tools')
@@ -1347,7 +1343,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     disposeSection = ctx.systemPrompt.section({
       name: 'plugin:dsh-imagegen',
       order: SECTION_ORDER,
-      text: guidanceFor(value.channels, value.defaultChannelId, value.defaultModel, value.defaultVideoModel),
+      text: IMAGEGEN_GUIDANCE,
     })
   }
 

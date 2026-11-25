@@ -113,6 +113,18 @@ export interface GatewaySnapshot {
   readonly entries: readonly GatewayEntry[]
 }
 
+/** 插件视角的目录快照：比宿主多一个 `not-configured`（宿主没挂目录服务时）。 */
+export interface PluginSnapshot {
+  /** 最近一次读取的结果。 */
+  readonly status: GatewayStatus
+  /** 最近一份成功目录的版本。 */
+  readonly version: string | null
+  /** 最近一份成功目录的读取时间。 */
+  readonly fetchedAt: number | null
+  /** 最近一份成功目录的全部条目。 */
+  readonly entries: readonly GatewayEntry[]
+}
+
 /** 宿主 `suanliModels` 命名空间里本插件用到的方法。 */
 export interface GatewayCatalogHost {
   /** 读取最近一份目录快照。 */
@@ -296,12 +308,7 @@ export function isCredentialRefName(credential: string): boolean {
  * @param host - 宿主的目录服务，未挂载时为 `undefined`。
  * @returns 插件视角的快照。
  */
-export function pluginSnapshotOf(host: GatewayCatalogHost | undefined): {
-  status: GatewayStatus
-  version: string | null
-  fetchedAt: number | null
-  entries: readonly GatewayEntry[]
-} {
+export function pluginSnapshotOf(host: GatewayCatalogHost | undefined): PluginSnapshot {
   if (host === undefined) return { status: 'not-configured', version: null, fetchedAt: null, entries: [] }
   const snapshot = host.media()
   const status = snapshot.status === 'ready' && !hasRenderableEntries(snapshot.entries) ? 'empty' : snapshot.status
