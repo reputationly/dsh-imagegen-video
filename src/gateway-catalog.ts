@@ -249,6 +249,15 @@ export function entriesOfKind(entries: readonly GatewayEntry[], kind: string): r
 }
 
 /**
+ * 把条目转成状态条与模型选择器要的选项。
+ * @param entries - 同一传输方式下的条目。
+ * @returns 选项列表，保持目录顺序。
+ */
+export function modelOptionsOf(entries: readonly GatewayEntry[]): { model: string; label: string; isDefault: boolean }[] {
+  return entries.map(entry => ({ model: entry.model, label: displayNameOf(entry), isDefault: entry.default }))
+}
+
+/**
  * 目录里的条目能否被工作台渲染。
  * @param entries - 目录里的全部条目。
  * @returns 至少有图像或视频条目时为 true。

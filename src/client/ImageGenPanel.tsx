@@ -30,10 +30,11 @@ import PromoWorkspace from './PromoWorkspace.tsx'
 import { AplusWorkspace } from './AplusWorkspace.tsx'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import { DiagnosticsButton, DiagnosticsPanel } from './DiagnosticsPanel.tsx'
+import { GatewayStatus } from './gateway-status.tsx'
 import { SignalsButton, SignalsPanel } from './SignalsPanel.tsx'
 import { GenerationLoading } from './GenerationLoading.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
-import type { CanvasSummary, EcommerceRefRole, GenerateMode, GenerateRequest, GeneratedImage, GenerationTask, GenerationTaskStatus, GenerationTaskSummary, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, VideoHistoryEntry, VideoTaskSummary } from '../protocol.ts'
+import type { CanvasSummary, EcommerceRefRole, GatewayCatalogSnapshot, GenerateMode, GenerateRequest, GeneratedImage, GenerationTask, GenerationTaskStatus, GenerationTaskSummary, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, VideoHistoryEntry, VideoTaskSummary } from '../protocol.ts'
 import { AGENT_IMAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope, ImageModelGroup } from './settings-scope.ts'
 import { imageModelOptions, videoModelOptions } from './settings-scope.ts'
@@ -1280,6 +1281,30 @@ export function ImageGenPanel(props: {
   const [previewScale, setPreviewScale] = useState(1)
   const [promptCopied, setPromptCopied] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  // 网关目录：宿主读取并持久化，这里只按状态渲染状态条。60 秒轮询（目录变化很少，
+  // 又不能让用户手动刷才能看到新模型），刷新时把上一份快照留在界面上。
+  const [gatewaySnapshot, setGatewaySnapshot] = useState<GatewayCatalogSnapshot | null>(null)
+  const [gatewayRefreshing, setGatewayRefreshing] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    const load = (): void => {
+      void api.gatewayCatalog().then((snapshot) => {
+        if (!cancelled) setGatewaySnapshot(snapshot)
+      }).catch(() => {
+        // 目录读不到不是面板的错误：宿主侧已经把原因写进 status，下一次轮询再试。
+      })
+    }
+    load()
+    const timer = window.setInterval(load, 60_000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [api])
+  const refreshGateway = useCallback((): void => {
+    setGatewayRefreshing(true)
+    void api.gatewayRefresh()
+      .then(snapshot => { setGatewaySnapshot(snapshot) })
+      .catch(() => undefined)
+      .finally(() => { setGatewayRefreshing(false) })
+  }, [api])
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   // Video queue summaries, polled here so both the video tab and the canvas see
   // one source of truth (the canvas matches its placeholder nodes by task id).
@@ -3641,6 +3666,16 @@ export function ImageGenPanel(props: {
           </span>
         </span>
       </header>
+
+      {gatewaySnapshot === null
+        ? null
+        : (
+          <GatewayStatus
+            snapshot={gatewaySnapshot}
+            refreshing={gatewayRefreshing}
+            onRefresh={refreshGateway}
+          />
+        )}
 
       {/* `data-studio-workspace` lets the stylesheet key the ≤760px
        * non-scrolling split on the canvas/ppt workspaces without a `:has()`

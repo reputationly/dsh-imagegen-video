@@ -40,7 +40,7 @@ import { clearDiagnostics, listDiagnostics } from './diagnostics-store.ts'
 import { allSignals, clearSignals, listSignals, promptBucketOf, recordSignal } from './signal-store.ts'
 import { buildReport, DEFAULT_WINDOW_DAYS } from './signal-report.ts'
 import { extractProductLink } from './link-extract.ts'
-import { MODEL_API, AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, LISTING_COPY_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, SIGNALS_API, STAGE_ASSETS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, USAGE_API, VIDEO_API, isChannelProtocolPreference, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type VideoDirectorPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type ListingCopyRequest, type PptRunRequest, type PptRuntimeStatus, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type CanvasVideoTaskMeta, type VideoGenerateRequest, type VideoHistoryEntry } from './protocol.ts'
+import { GATEWAY_API, type GatewayCatalogSnapshot, MODEL_API, AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, LISTING_COPY_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, SIGNALS_API, STAGE_ASSETS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, USAGE_API, VIDEO_API, isChannelProtocolPreference, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type VideoDirectorPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type ListingCopyRequest, type PptRunRequest, type PptRuntimeStatus, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type CanvasVideoTaskMeta, type VideoGenerateRequest, type VideoHistoryEntry } from './protocol.ts'
 import { buildCanvasBundle, CANVAS_BUNDLE_API, MAX_CANVAS_BUNDLE_BYTES, parseCanvasBundle } from './canvas-bundle.ts'
 import { probeCodeRender } from './code-render-runtime.ts'
 import { makeOutfitRoutes } from './outfit-reference-routes.ts'
@@ -252,6 +252,16 @@ export interface ImageGenRoutesDeps {
     remove: (id: string) => Promise<VideoHistoryEntry[]>
     clear: () => Promise<VideoHistoryEntry[]>
     readFile: (file: string) => Promise<{ path: string; size: number; mime: string } | undefined>
+  }
+  /**
+   * 网关媒体目录（插件视角的快照与刷新）。
+   *
+   * 宿主没有挂载目录服务时缺省：两条路由仍然存在，返回 `not-configured`，工作台据此
+   * 显示「当前版本未配置模型网关」而不是报错。
+   */
+  gateway?: {
+    snapshot: () => GatewayCatalogSnapshot
+    refresh: () => Promise<GatewayCatalogSnapshot>
   }
   /** Subscription login/status manager; absent on hosts without Credentials. */
   subscriptions?: SubscriptionManager
@@ -916,6 +926,29 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     { kind: 'exact', path: MODEL_API.save, handler: async (req, res) => { if (!guard(req, res, 'POST')) return; try { const body = await readJsonBody(req, MAX_JSON_BODY_BYTES); const model = await saveModel({ name: String(body?.name ?? ''), data: String(body?.data ?? ''), mime: String(body?.mime ?? 'image/png') }); writeJson(res, 200, { ok: true, model }) } catch (error) { writeJson(res, 400, { ok: false, code: 'model-save-failed', message: messageOf(error) }) } } },
     { kind: 'prefix', path: MODEL_API.image, handler: async (req, res) => { if (!guard(req, res, 'GET')) return; const file = imageFileFrom(req.url, MODEL_API.image); const found = file === undefined ? undefined : await readModel(file); if (!found) { writeJson(res, 404, { error: 'not found' }); return } res.writeHead(200, { 'content-type': found.mime }); res.end(found.data) } },
   ]
+  /** 宿主未挂载目录服务时两条网关路由仍应答，工作台据此渲染 not-configured。 */
+  const noGateway: GatewayCatalogSnapshot = { status: 'not-configured', version: null, fetchedAt: null, image: [], video: [] }
+  const gatewayRoutes: WebRoute[] = [
+    {
+      kind: 'exact',
+      path: GATEWAY_API.catalog,
+      handler: (req, res) => {
+        if (!guard(req, res, 'GET')) return
+        writeJson(res, 200, { ok: true, snapshot: deps.gateway?.snapshot() ?? noGateway })
+      },
+    },
+    {
+      kind: 'exact',
+      path: GATEWAY_API.refresh,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        // 刷新失败也返回 200：失败原因写在快照的 status 里，前端按状态渲染，
+        // 不是把一次网关抖动变成一个 HTTP 错误。
+        const snapshot = deps.gateway === undefined ? noGateway : await deps.gateway.refresh()
+        writeJson(res, 200, { ok: true, snapshot })
+      },
+    },
+  ]
   const stageAssetRoutes: WebRoute[] = [{
     kind: 'prefix',
     path: STAGE_ASSETS_API,
@@ -1121,6 +1154,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
 
   return [
     ...modelRoutes,
+    ...gatewayRoutes,
     ...makeOutfitRoutes({ guard, readJsonBody, writeJson }),
     // ---------------------------- composer image for /edit_image (exact)
     ...(deps.attachments?.saveImage === undefined || deps.pendingConversationImages === undefined ? [] : [{

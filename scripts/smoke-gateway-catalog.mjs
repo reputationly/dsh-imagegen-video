@@ -3,8 +3,16 @@
 import assert from 'node:assert/strict'
 import {
   displayNameOf, entriesOfKind, gatewayChannel, gatewayOrigin, gatewayUrl, GATEWAY_CHANNEL_ID,
-  hasRenderableEntries, isCredentialRefName, pluginSnapshotOf, selectDefaultModel,
+  hasRenderableEntries, isCredentialRefName, modelOptionsOf, pluginSnapshotOf, selectDefaultModel,
 } from '../src/gateway-catalog.ts'
+// 路由来自已构建的宿主包：`src/routes.ts` 用到 Node 的类型剥离不支持的语法，
+// 只能在构建产物上跑；`pnpm test` 的链条先 build 再跑本脚本。
+import { existsSync } from 'node:fs'
+if (!existsSync(new URL('../lib/index.js', import.meta.url))) {
+  console.error('smoke-gateway-catalog: lib/index.js is missing; run `pnpm build` first')
+  process.exit(1)
+}
+const { makeRoutes } = await import('../lib/index.js')
 
 let passed = 0
 let failed = 0
@@ -156,6 +164,85 @@ await check('凭据名按宿主同一套语法校验', () => {
   assert.equal(isCredentialRefName(''), false)
   assert.equal(isCredentialRefName('aurora-api-key'), false)
   assert.equal(isCredentialRefName('1INVALID'), false)
+})
+
+
+/** 路由套件用的假请求：回环来源 + 本机 Host 头才能通过 guard。 */
+function fakeRequest (method, path) {
+  return {
+    method,
+    url: path,
+    headers: { host: '127.0.0.1:3080' },
+    socket: { remoteAddress: '127.0.0.1', remotePort: 50000 },
+  }
+}
+
+/** 收集 handler 写出的 JSON。 */
+function fakeResponse () {
+  const chunks = []
+  return {
+    statusCode: 0,
+    headers: {},
+    writeHead (code, headers) { this.statusCode = code; this.headers = headers ?? {} },
+    end (body) { if (body !== undefined) chunks.push(String(body)) },
+    get json () { return JSON.parse(chunks.join('') || '{}') },
+  }
+}
+
+/** 一条路由的 handler。 */
+function routeHandler (routes, path) {
+  const route = routes.find(candidate => candidate.kind === 'exact' && candidate.path === path)
+  assert.ok(route !== undefined, `the route family serves ${path}`)
+  return route.handler
+}
+
+const SNAPSHOT = { status: 'ready', version: 'v1', fetchedAt: 7, image: [{ model: 'minimax-h3-image-enhanced', label: 'H3 图像增强', isDefault: true }], video: [{ model: 'minimax-h3-2k', label: 'H3 2K', isDefault: false }] }
+
+await check('目录路由返回宿主快照', async () => {
+  const routes = makeRoutes({ settings: {}, resolve: () => ({ apiUrl: '', apiKey: '' }), gateway: { snapshot: () => SNAPSHOT, refresh: async () => SNAPSHOT } })
+  const res = fakeResponse()
+  await routeHandler(routes, '/api/dsh-imagegen/gateway/catalog')(fakeRequest('GET', '/api/dsh-imagegen/gateway/catalog'), res)
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json.snapshot, SNAPSHOT)
+})
+
+await check('刷新路由先请宿主刷新，再返回刷新后的快照', async () => {
+  let refreshed = 0
+  const after = { ...SNAPSHOT, version: 'v2' }
+  const routes = makeRoutes({
+    settings: {},
+    resolve: () => ({ apiUrl: '', apiKey: '' }),
+    gateway: { snapshot: () => SNAPSHOT, refresh: async () => { refreshed += 1; return after } },
+  })
+  const res = fakeResponse()
+  await routeHandler(routes, '/api/dsh-imagegen/gateway/refresh')(fakeRequest('POST', '/api/dsh-imagegen/gateway/refresh'), res)
+  assert.equal(refreshed, 1)
+  assert.equal(res.json.snapshot.version, 'v2')
+})
+
+await check('宿主没有目录服务时两条路由仍应答 not-configured', async () => {
+  const routes = makeRoutes({ settings: {}, resolve: () => ({ apiUrl: '', apiKey: '' }) })
+  for (const [method, path] of [['GET', '/api/dsh-imagegen/gateway/catalog'], ['POST', '/api/dsh-imagegen/gateway/refresh']]) {
+    const res = fakeResponse()
+    await routeHandler(routes, path)(fakeRequest(method, path), res)
+    assert.equal(res.statusCode, 200, path)
+    assert.equal(res.json.snapshot.status, 'not-configured', path)
+    assert.deepEqual(res.json.snapshot.image, [], path)
+  }
+})
+
+await check('模型选项带展示名与默认标记', () => {
+  assert.deepEqual(modelOptionsOf(entriesOfKind(ENTRIES, 'images')), [
+    { model: 'minimax-h3-image-enhanced', label: 'H3 图像增强', isDefault: true },
+    { model: 'relayvsr', label: '超分', isDefault: false },
+  ])
+})
+
+await check('目录响应里不含密钥', async () => {
+  const routes = makeRoutes({ settings: {}, resolve: () => ({ apiUrl: '', apiKey: 'sk-secret' }), gateway: { snapshot: () => SNAPSHOT, refresh: async () => SNAPSHOT } })
+  const res = fakeResponse()
+  await routeHandler(routes, '/api/dsh-imagegen/gateway/catalog')(fakeRequest('GET', '/api/dsh-imagegen/gateway/catalog'), res)
+  assert.equal(JSON.stringify(res.json).includes('sk-secret'), false)
 })
 
 console.log(`\n# smoke-gateway-catalog: ${passed} checks passed, ${failed} failed`)

@@ -26,7 +26,8 @@ import type {} from '@deepseek-ai/dsh-tools'
 // packages at runtime, and this deployment does not resolve them at
 // type-check time either.
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { IMAGEGEN_SETTINGS_NAMESPACE, isChannelProtocolPreference, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
+import { entriesOfKind, modelOptionsOf, pluginSnapshotOf, type GatewayCatalogHost } from './gateway-catalog.ts'
+import { IMAGEGEN_SETTINGS_NAMESPACE, type GatewayCatalogSnapshot, isChannelProtocolPreference, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
 import { SubscriptionManager } from './subscription/manager.ts'
 import { syncAllTemplates } from './templates-store.ts'
@@ -1175,6 +1176,19 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
         // header. The published type advertises just the two literals, so read
         // the runtime value as a plain string rather than narrowing it away.
         const bindHost = (sctx.webServer as { host?: unknown } | undefined)?.host
+        // 网关目录：宿主读取、缓存并持久化能力清单，这里只把它翻成工作台要的快照。
+        // 宿主没挂目录服务（Web / headless）时快照为 not-configured，两条路由照样应答。
+        const gatewaySnapshot = (): GatewayCatalogSnapshot => {
+          const host = sctx.get('suanliModels') as GatewayCatalogHost | undefined
+          const snapshot = pluginSnapshotOf(host)
+          return {
+            status: snapshot.status,
+            version: snapshot.version,
+            fetchedAt: snapshot.fetchedAt,
+            image: modelOptionsOf(entriesOfKind(snapshot.entries, 'images')),
+            video: modelOptionsOf(entriesOfKind(snapshot.entries, 'videos_task')),
+          }
+        }
         const routes = makeRoutes({
           settings: seam,
           settingsNamespace,
@@ -1198,6 +1212,15 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
           skills: skillRunner,
           pptRuntime,
           skillLibrary,
+          gateway: {
+            snapshot: gatewaySnapshot,
+            refresh: async () => {
+              const host = sctx.get('suanliModels') as GatewayCatalogHost | undefined
+              // 刷新的失败不抛给浏览器：宿主保留上一份目录并把原因写进 status。
+              if (host !== undefined) await host.refresh().catch(() => undefined)
+              return gatewaySnapshot()
+            },
+          },
         })
         const disposeRoutes = sctx.provide(ROUTE_SERVICE, { routes })
         const disposers = routes.filter(route => routeComponent(route.path) === 'core').map(route => sctx.webServer.register(route))

@@ -1,0 +1,67 @@
+/* 状态条：网关目录现在处于什么状态，以及用户能对它做什么。 */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.bar[data-gateway-status='ready'] .dot {
+  background: var(--dsw-alias-state-success, #16a34a);
+}
+
+.bar[data-gateway-status='unreachable'] .dot,
+.bar[data-gateway-status='rate-limited'] .dot {
+  background: var(--dsw-alias-state-warning, #d97706);
+}
+
+.bar[data-gateway-status='unauthorized'] .dot,
+.bar[data-gateway-status='kyc-required'] .dot,
+.bar[data-gateway-status='empty'] .dot {
+  background: var(--dsw-alias-state-danger, #dc2626);
+}
+
+.text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hint {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
