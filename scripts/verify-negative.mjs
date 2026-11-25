@@ -261,6 +261,15 @@ const CASES = [
     expect: /data-quick-card|empty canvas shows the six quick-start cards/,
   },
   {
+    // AC-5.3：重任务技能默认必须关着——它在本机跑无头 Agent 流水线、持续数分钟还烧额度。
+    name: 'heavy canvas skills come back on by default',
+    runner: 'panel-contracts',
+    file: 'src/index.ts',
+    from: 'allowHeavySkills: z.boolean().default(false).volatile()',
+    to: 'allowHeavySkills: z.boolean().default(true).volatile()',
+    expect: /defaults heavy skills to off/,
+  },
+  {
     // 设置页重新长出渠道配置，等于让用户填一份插件不会读的东西。
     name: 'the settings page asks for a gateway again',
     runner: 'panel-contracts',

@@ -113,6 +113,16 @@ await check('C6 the settings page offers no gateway, channel, or storage configu
   if (secrets !== '') assert.ok(true, 'settings-form keeps its generic helpers for other surfaces')
 })
 
+await check('C7 heavy canvas skills are off unless the user turns them on', async () => {
+  // AC-5.3：重任务技能会启动一个无头 Agent 在本机跑流水线、持续数分钟并消耗额度。
+  // 默认必须是关的，并且两处都要关——schema 的默认值（新装用户）与 resolve() 的兜底
+  // （旧设置里没有这个字段时），只改一处就只对一半用户生效。
+  const host = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+  assert.ok(/allowHeavySkills: z\.boolean\(\)\.default\(false\)/.test(host), 'the config schema defaults heavy skills to off')
+  assert.ok(/allowHeavy: value\.allowHeavySkills \?\? false/.test(host), 'the resolve() fallback also defaults heavy skills to off')
+  assert.ok(!/allowHeavy: value\.allowHeavySkills \?\? true/.test(host), 'no fallback still turns heavy skills on')
+})
+
 console.log(results.join('\n'))
 console.log(process.exitCode === 1 ? '\nPANEL CONTRACT CHECK FAILED' : '\nPANEL CONTRACT CHECK OK')
 process.exit(process.exitCode === 1 ? 1 : 0)
