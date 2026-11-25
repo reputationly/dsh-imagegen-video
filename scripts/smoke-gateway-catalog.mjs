@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import {
   displayNameOf, entriesOfKind, gatewayChannel, gatewayOrigin, gatewayUrl, GATEWAY_CHANNEL_ID,
-  hasRenderableEntries, isCredentialRefName, modelOptionsOf, pluginSnapshotOf, selectDefaultModel,
+  hasRenderableEntries, isCredentialRefName, modelOptionsOf, pluginSnapshotOf, selectDefaultAlias, selectDefaultModel,
 } from '../src/gateway-catalog.ts'
 // 路由来自已构建的宿主包：`src/routes.ts` 用到 Node 的类型剥离不支持的语法，
 // 只能在构建产物上跑；`pnpm test` 的链条先 build 再跑本脚本。
@@ -126,6 +126,15 @@ await check('默认模型：目录没有标记默认项时取第一条', () => {
 
 await check('默认模型：候选为空时是空串', () => {
   assert.equal(selectDefaultModel([], 'anything'), '')
+})
+
+await check('默认模型的比较口径是展示名（面板与设置里存的就是它）', () => {
+  const candidates = entriesOfKind(ENTRIES, 'images')
+  // 用户上次选的是「超分」这个展示名，仍在目录里就沿用。
+  assert.equal(selectDefaultAlias(candidates, '超分'), '超分')
+  // 上游模型名不是面板里的值，不能当成已选。
+  assert.equal(selectDefaultAlias(candidates, 'relayvsr'), 'H3 图像增强')
+  assert.equal(selectDefaultAlias([], 'x'), '')
 })
 
 await check('没有目录服务（Web / headless 构建）时状态是 not-configured', () => {

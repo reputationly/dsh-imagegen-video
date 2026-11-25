@@ -26,7 +26,10 @@ import type {} from '@deepseek-ai/dsh-tools'
 // packages at runtime, and this deployment does not resolve them at
 // type-check time either.
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { entriesOfKind, modelOptionsOf, pluginSnapshotOf, type GatewayCatalogHost } from './gateway-catalog.ts'
+import {
+  displayNameOf, entriesOfKind, gatewayChannel, isCredentialRefName, modelOptionsOf, pluginSnapshotOf,
+  selectDefaultAlias, type GatewayCatalogHost, type GatewayCredentialsHost, type GatewayEndpoint,
+} from './gateway-catalog.ts'
 import { IMAGEGEN_SETTINGS_NAMESPACE, type GatewayCatalogSnapshot, isChannelProtocolPreference, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
 import { SubscriptionManager } from './subscription/manager.ts'
@@ -702,54 +705,52 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
   // The live source the surfaces read: the settings section once the settings
   // service is attached, the composition entry otherwise.
   let current: () => Config = () => config ?? {}
+  /**
+   * 网关凭据：账号凭据随登录变化，缓存只服务于同步读取（resolve() 是同步的），
+   * 每次提交由 `resolveApiKey` 重新解析——凭据服务的约定是不跨操作缓存。
+   */
+  let gatewayKey = ''
+  const gatewayHost = (): GatewayCatalogHost | undefined => ctx.get('suanliModels') as GatewayCatalogHost | undefined
+  const gatewayEndpoint = (): GatewayEndpoint | undefined => {
+    const endpoint = gatewayHost()?.endpoint()
+    return endpoint !== undefined && isCredentialRefName(endpoint.credential) ? endpoint : undefined
+  }
+  const reloadGatewayKey = async (): Promise<string> => {
+    const endpoint = gatewayEndpoint()
+    if (endpoint === undefined) {
+      gatewayKey = ''
+      return ''
+    }
+    const credentials = ctx.get('credentials') as GatewayCredentialsHost | undefined
+    gatewayKey = (await credentials?.resolve(endpoint.credential))?.value ?? ''
+    return gatewayKey
+  }
+  void reloadGatewayKey().catch(() => { gatewayKey = '' })
+  ctx.effect(() => ctx.on('credentials/reference-updated', () => {
+    void reloadGatewayKey().catch(() => undefined)
+  }), 'dsh-imagegen: gateway credential')
+
   const resolve = (): EffectiveConfig => {
     const value = unwrapConfig(current())
     setImageDataRoot(value.localStoragePath)
-    let channels = normalizeChannels(value.channels)
-    // Settings scopes are deep-frozen by the host. Legacy migration adds the
-    // synthesized default-channel secret, so always work on a detached copy.
-    const secrets: Record<string, string> = { ...(value.channelSecrets ?? {}) }
-    // Legacy single-endpoint migration: no channels yet → synthesize the
-    // default channel from the old flat fields so upgrades never break.
-    if (channels.length === 0) {
-      const legacyUrl = typeof value.apiUrl === 'string' ? value.apiUrl.trim() : ''
-      const legacyModels: ModelMapping[] = Array.isArray(value.imageModels)
-        ? value.imageModels
-          .filter((model): model is string => typeof model === 'string' && model.trim() !== '')
-          .map(model => ({ alias: model.trim(), id: model.trim() }))
-        : []
-      if (legacyUrl !== '' || legacyModels.length > 0) {
-        channels = [{ id: 'default', preset: '', name: '默认渠道', apiUrl: legacyUrl, apiUrlFull: false, models: legacyModels }]
-        const legacyKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
-        if (legacyKey !== '') secrets['default'] = legacyKey
-      }
-    }
-    const named = channels.map(channel => ({
-      ...channel,
-      name: channel.name === '' ? (presetById(channel.preset)?.name ?? '未命名渠道') : channel.name,
-    }))
-    const defaultChannelId = typeof value.defaultChannelId === 'string' && named.some(channel => channel.id === value.defaultChannelId)
-      ? value.defaultChannelId
-      : named[0]?.id ?? ''
-    const aliases = [...new Set(named.flatMap(channel => channel.models.map(model => model.alias)))]
-    const defaultModel = typeof value.defaultModel === 'string' && aliases.includes(value.defaultModel.trim())
-      ? value.defaultModel.trim()
-      : ''
-    // Video aliases are namespaced separately: a stale defaultVideoModel must
-    // not silently leak into the image path, and vice versa.
-    const videoAliases = [...new Set(named.flatMap(channel => (channel.videoModels ?? []).map(model => model.alias)))]
-    const defaultVideoModel = typeof value.defaultVideoModel === 'string' && videoAliases.includes(value.defaultVideoModel.trim())
-      ? value.defaultVideoModel.trim()
-      : ''
+    // 渠道只有一个来源：宿主的网关能力清单。地址按宿主的 origin 拼，模型与玩法由
+    // 目录决定，密钥在提交时按凭据名现取——插件不再有自己的渠道、预设或密钥配置。
+    const snapshot = pluginSnapshotOf(gatewayHost())
+    const endpoint = gatewayEndpoint()
+    const gateway = endpoint === undefined ? undefined : gatewayChannel({ entries: snapshot.entries, baseURL: endpoint.baseURL })
+    const channels = gateway === undefined ? [] : [{ ...gateway, apiKey: gatewayKey, resolveApiKey: () => reloadGatewayKey() }]
+    const defaultChannelId = gateway?.id ?? ''
+    const imageEntries = entriesOfKind(snapshot.entries, 'images')
+    const videoEntries = entriesOfKind(snapshot.entries, 'videos_task')
+    const defaultModel = selectDefaultAlias(imageEntries, typeof value.defaultModel === 'string' ? value.defaultModel.trim() : '')
+    // 视频默认模型与图像分开比较：一个过期的 defaultVideoModel 不能漏到图像路径上。
+    const defaultVideoModel = selectDefaultAlias(videoEntries, typeof value.defaultVideoModel === 'string' ? value.defaultVideoModel.trim() : '')
     return {
       enabled: value.enabled ?? DEFAULT_ENABLED,
       announceToAgent: value.announceToAgent ?? DEFAULT_ANNOUNCE,
       allowAgentImageGeneration: value.allowAgentImageGeneration ?? DEFAULT_ALLOW_AGENT_IMAGE_GENERATION,
       allowAgentVideoGeneration: value.allowAgentVideoGeneration ?? true,
-      channels: named.map(channel => ({
-        ...channel,
-        apiKey: typeof secrets[channel.id] === 'string' ? secrets[channel.id] : '',
-      })),
+      channels,
       defaultChannelId,
       defaultModel,
       defaultVideoModel,

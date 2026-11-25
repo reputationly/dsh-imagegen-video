@@ -29,13 +29,33 @@ import type { ChannelConfig, GeneratedImage, GenerateRequest, GenerateResult, Hi
 /** A channel with its resolved API key (the settings doc holds the key
  *  separately so redacted reads never expose it). */
 export interface RuntimeChannel extends ChannelConfig {
+  /** 上一次解析到的密钥。网关渠道的密钥随时可能变，提交前以 `resolveApiKey` 为准。 */
   apiKey: string
+  /**
+   * 提交前重新解析密钥。
+   *
+   * 网关渠道的凭据属于账号而不是配置：凭据服务约定使用方不跨操作缓存，所以每次提交
+   * 都要重新解析。缺省时用 `apiKey` 字段（自带密钥的渠道）。
+   * @returns 本次提交要用的密钥。
+   */
+  resolveApiKey?: () => Promise<string>
 }
 
 /** The resolved channels view the runtime picks upstream credentials from. */
 export interface ChannelsView {
   channels: RuntimeChannel[]
   defaultChannelId: string
+}
+
+/**
+ * 本次提交要用的密钥。
+ * @param channel - 解析到的渠道。
+ * @returns 重新解析到的密钥，或渠道自带的固定密钥。
+ */
+async function apiKeyOf(channel: RuntimeChannel): Promise<string> {
+  if (channel.resolveApiKey === undefined) return channel.apiKey
+  const resolved = await channel.resolveApiKey()
+  return resolved === '' ? channel.apiKey : resolved
 }
 
 export interface HistorySink {
@@ -239,8 +259,9 @@ export class ImageGenerationRuntime {
       effective = applyPlan(effective, plan)
     }
 
+    const videoKey = await apiKeyOf(channel)
     const result = await generateVideo(
-      { apiUrl: channel.apiUrl, apiKey: channel.apiKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, preset: channel.preset, autoReferenceLimit: channel.autoReferenceLimit !== false, channelName: channel.name } satisfies UpstreamConfig,
+      { apiUrl: channel.apiUrl, apiKey: videoKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, preset: channel.preset, autoReferenceLimit: channel.autoReferenceLimit !== false, channelName: channel.name } satisfies UpstreamConfig,
       effective,
       { ...signal === undefined ? {} : { signal }, family },
     )
@@ -479,7 +500,7 @@ export class ImageGenerationRuntime {
     }
     const result = channel.auth === 'subscription' && channel.subscription !== undefined
       ? { images: await this.generateSubscription(channel.subscription, request, signal) }
-      : await generateImage({ apiUrl: channel.apiUrl, apiKey: channel.apiKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, preset: channel.preset, autoReferenceLimit: channel.autoReferenceLimit !== false, channelName: channel.name, watermark: channel.watermark } satisfies UpstreamConfig, request, { signal })
+      : await generateImage({ apiUrl: channel.apiUrl, apiKey: await apiKeyOf(channel), apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, preset: channel.preset, autoReferenceLimit: channel.autoReferenceLimit !== false, channelName: channel.name, watermark: channel.watermark } satisfies UpstreamConfig, request, { signal })
     try {
       // Same contract as the code path: the id must exist before the append so
       // the caller can echo it back as `embedId` and resolve the written files.

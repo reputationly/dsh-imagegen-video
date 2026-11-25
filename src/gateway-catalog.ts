@@ -188,7 +188,6 @@ export function gatewayChannel(inputs: {
   autoReferenceLimit: boolean
   protocol: 'auto'
   auth: 'api-key'
-  subscription: string
   models: { alias: string; id: string }[]
   videoModels: { alias: string; id: string }[]
 } {
@@ -208,7 +207,6 @@ export function gatewayChannel(inputs: {
     autoReferenceLimit: true,
     protocol: 'auto',
     auth: 'api-key',
-    subscription: '',
     models: modelsOf('images', 'generate_image'),
     videoModels: modelsOf('videos_task', 'generate_video'),
   }
@@ -236,6 +234,21 @@ export function selectDefaultModel(candidates: readonly GatewayEntry[], previous
   if (candidates.length === 0) return ''
   if (previous !== '' && candidates.some(entry => entry.model === previous)) return previous
   return (candidates.find(entry => entry.default) ?? candidates[0]!).model
+}
+
+/**
+ * 在一组候选里选默认模型，按展示名（渠道里的 alias）返回。
+ *
+ * 面板与设置里存的是 alias，不是上游模型名：两者不一致时按 alias 比较才是用户看到的
+ * 那一个。
+ * @param candidates - 同一传输方式下的条目。
+ * @param previous - 用户上次选择的展示名。
+ * @returns 选中的展示名，候选为空时为空串。
+ */
+export function selectDefaultAlias(candidates: readonly GatewayEntry[], previous: string): string {
+  if (candidates.length === 0) return ''
+  if (previous !== '' && candidates.some(entry => displayNameOf(entry) === previous)) return previous
+  return displayNameOf(candidates.find(entry => entry.default) ?? candidates[0]!)
 }
 
 /**
