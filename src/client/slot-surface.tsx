@@ -1,22 +1,21 @@
 /**
- * 工作室的对外挂载面：右侧栏入口 + 主面板。
+ * 创作工作台的对外挂载面：侧栏入口 + 主面板。
  *
- * 上游用 DOM 接管中心列（`mount.tsx`），理由写在那个文件的 NATIVE-GAP 注释里：
- * 它当时无法声明槽位。接管会让外壳自己的中心列视图（会话 / 任务 / 频道）被整块
- * 盖住，外壳一改版还会直接白屏。这里改用外壳自己的两个座位：
+ * 插件只通过外壳自己的两个座位出现，中心列归外壳所有：
  *
- *  - `sidebar.panellist` —— 侧栏的全局面板入口行，选中它就是切到本面板；
+ *  - `sidebar.panellist` —— 侧栏的全局面板入口行，`order: 20` 排在外壳自己的
+ *    任务（10）之后，选中它就是切到本面板；
  *  - `main`（key `imagegen`）—— 中心列的键控座位，按侧栏入口 id 分发。
  *
- * 这样「生图」和「任务」「频道」是同级的并列视图，切换交给外壳，插件不碰别人
- * 的 DOM。
+ * 这样「创作」和「任务」「频道」是同级的并列视图，切换交给外壳，插件不碰别人
+ * 的 DOM。曾经的 DOM 接管（中心列里插容器、侧栏上方插两栏切换器、拿侧栏区域
+ * 当历史宿主）已经随 WP4 删除，不再是一条可选路径。
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { ImageGenPanel } from './ImageGenPanel.tsx'
 import type { ImageGenApi } from './api.ts'
-import type { ImageGenController } from './controller.ts'
 import type { ConversationService } from './conversation-sync.ts'
 import { tt } from './helpers.ts'
 import type { ImageGenScope } from './settings-scope.ts'
@@ -34,7 +33,12 @@ export interface ImageGenSurfaceInputs {
   readonly pickDirectory?: () => Promise<string | null>
 }
 
-/** 侧栏行里的图标：与外壳其它面板行一样，直接返回 SVG，不套额外包装元素。 */
+/**
+ * 侧栏行里的图标：与外壳其它面板行一样，直接返回 SVG，不套额外包装元素。
+ *
+ * 与包图标（`icon.png`）同一字形：圆角画框 + 右上角四角星，星芒压在画框的
+ * 右上角上。单色，只用 `currentColor`，颜色随外壳行自己的墨色走。
+ */
 function ImageGenPanelIcon({ size }: { readonly size?: number }) {
   const edge = size ?? 16
   return (
@@ -49,9 +53,12 @@ function ImageGenPanelIcon({ size }: { readonly size?: number }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="2" y="3" width="12" height="10" rx="2" />
-      <circle cx="5.75" cy="6.5" r="1" />
-      <path d="M3.5 12.5 6.75 9l2 2.25L11 8.75l2 3.75" />
+      <rect x="2.1" y="5.2" width="9.9" height="8" rx="1.8" />
+      <path
+        d="M12.1 1.2Q12.35 3.25 14.4 3.6Q12.35 3.95 12.1 6Q11.85 3.95 9.8 3.6Q11.85 3.25 12.1 1.2Z"
+        fill="currentColor"
+        stroke="none"
+      />
     </svg>
   )
 }
@@ -86,12 +93,12 @@ export function registerImageGenSlotSurface(
   // 结构与该版本 register/inject 的实际签名一致。
   const slots = ctx.slots as unknown as SlotSurfaceRegistry
   const disposers = [
-    slots.inject('main', () => slots.register({ name: 'main', key: PANEL_ID, label: () => tt('entry.image') }, Panel)),
+    slots.inject('main', () => slots.register({ name: 'main', key: PANEL_ID, label: () => tt('entry.creative') }, Panel)),
     slots.inject('sidebar.panellist', () => slots.register({
       name: 'sidebar.panellist',
       id: PANEL_ID,
       order: 20,
-      label: () => tt('entry.image'),
+      label: () => tt('entry.creative'),
     }, ImageGenPanelIcon)),
   ]
   return () => {

@@ -3,9 +3,8 @@
  * nothing leaks into the rest of the GUI; colors ride the dsh --dsw-* tokens
  * and interactive controls reuse the system primitives (Button / Pill), so
  * the studio follows the active theme (light/dark and skins) by construction.
- * The center-column hide rules are attribute-scoped and must stay in this
- * stylesheet (it is imported by mount.tsx, so the styles load with the
- * plugin).
+ * Every rule addresses the plugin's own subtree: the studio renders inside the
+ * shell's keyed `main` slot and never styles the shell's columns.
  */
 
 /* ------------------------------------------------------------ stacking order
@@ -45,21 +44,13 @@
  *   35  composer          the floating composer
  *   40  topbar            canvas title bar and the panel's model strip
  *   45  anchored-menu     a menu anchored to the canvas background
- *   60  takeover          the container that takes over a shell column. Its
- *                          value is fixed: sibling panels from other plugins
- *                          are measured against it, so it keeps its HEAD value
  *   61  notice            the canvas error / notice toast (was 60, tied with
- *                          the takeover and the picker backdrop; the tie meant
- *                          the winner depended on insertion order)
+ *                          the picker backdrop; the tie meant the winner
+ *                          depended on insertion order)
  *   62  picker-backdrop   the video picker's own backdrop (was 60; it must
  *                          cover the notice, which it only did by tree order)
- *   63  shell-seat        the shell's macOS window-chrome seat, which holds
- *                          打开侧边栏 while the sidebar is collapsed. The shell
- *                          draws it at 15, so without this rung the takeover
- *                          covers it and 生图 has no way back to a wide sidebar
  *   70  scrim             the canvas modal scrim
  *   71  popover-raised    the skills menu / dialog above that scrim
- *   72  chat-resizer      the column resize handle, above the takeover
  *   86  file-overlay      the full-screen file reader
  *   90  context-menu      canvas context menu
  *   92  diagnostics       the retained-attempt record, opened from the task
@@ -102,25 +93,14 @@
   --z-composer: 35;
   --z-topbar: 40;
 
-  /* anchored menus, notices, takeovers */
+  /* anchored menus and notices */
   --z-anchored-menu: 45;
-  --z-takeover: 60;
   --z-notice: 61;
-
-  /* The shell's own macOS window-chrome seat (`[data-shell-leading]`): the
-     shell draws it at 15 so it clears ordinary main panels, which is not enough
-     under this plugin's takeover. It holds 打开侧边栏 / New Session and exists
-     only while the sidebar is collapsed, so it must clear the takeover (60) and
-     nothing else in this scale competes with it. Its own rung because the value
-     it has to clear is a host-facing number. 63, not 61, because every rung in
-     this scale is unique — sharing one is the bug the scale prevents. */
-  --z-shell-seat: 63;
   --z-picker-backdrop: 62;
 
   /* popovers and their scrims */
   --z-scrim: 70;
   --z-popover-raised: 71;
-  --z-chat-resizer: 72;
 
   /* canvas overlays above the scrim */
   --z-file-overlay: 86;
@@ -146,432 +126,7 @@
   --z-fullscreen: 1200;
 }
 
-/* --- center-column takeover (global rules, attribute-scoped) ----------------- */
-
-/* The panel container rides inside the conversation grid item as an extra
-   trailing child; hidden unless the panel is active. The position rule covers
-   both shells: the legacy `[data-pane="conversation"]` and the rc.6+
-   AppFrame class-based column ([class*="centerCol"]) — without a positioned
-   ancestor the absolutely-positioned view resolves against the frame. */
-[data-pane='conversation'],
-[data-dsh-imagegen-center-col] {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-}
-
-/* The panel container rides inside the conversation grid item as an extra
-   trailing child; hidden unless the panel is active. */
-[data-dsh-imagegen-view] {
-  position: relative;
-  grid-column: 1;
-  grid-row: 1;
-  display: none;
-  z-index: var(--z-takeover);
-  min-width: 0;
-  min-height: 0;
-  background: var(--dsw-alias-bg-base);
-}
-
-/* The center column is single-occupant; the :not() guards keep the sibling
-   panels (task board / ssh) from fighting over visibility if both activation
-   attributes ever coexist. */
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-center-col] {
-  display: grid !important;
-  grid-template-columns: minmax(0, 1fr) 8px minmax(320px, clamp(320px, var(--dsh-imagegen-chat-width, 36%), 70%));
-  grid-template-rows: minmax(0, 1fr);
-  gap: 1px;
-  overflow: hidden;
-  background: var(--dsw-alias-border-l1);
-}
-
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-view] {
-  display: block;
-}
-
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'] {
-  grid-column: 3;
-  grid-row: 1;
-  align-items: stretch;
-  display: flex !important;
-  width: auto;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--dsw-alias-bg-base);
-}
-
-/* DSH's native conversation root is a flex item with an intrinsic width.
-   Stretch it to the complete chat column so its hero composer
-   can center itself inside the resized pane instead of leaving a blank rail
-   on the right. */
-html[data-dsh-imagegen-active] [data-slot='conversation'] > [data-phase],
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
-  align-self: stretch;
-  flex: 1 1 auto;
-  width: 100%;
-  max-width: none;
-  min-width: 0;
-}
-
-/* 0.1.5+ seats the Conversation in the keyed `main` slot instead of a
-   `conversation` slot, so the chat column arrives as
-   `[data-slot="main"] > [data-slot="main.conversation"] > [data-phase]`.
-   Both anchors are layout-neutral (`display: contents`) by contract: the
-   Conversation root itself is the grid item, so the chat track places it
-   directly instead of re-boxing the shell's anchors. */
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
-  grid-column: 3;
-  grid-row: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--dsw-alias-bg-base);
-}
-
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-chat-resizer] {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.chatResizer {
-  position: relative;
-  z-index: var(--z-chat-resizer);
-  display: none;
-  width: 8px;
-  min-width: 8px;
-  align-items: center;
-  justify-content: center;
-  color: var(--dsw-alias-label-tertiary);
-  background: var(--dsw-alias-border-l1);
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.chatResizer::before {
-  width: 3px;
-  height: 36px;
-  border-radius: var(--dsw-radius-xs);
-  background: currentColor;
-  content: '';
-  opacity: .55;
-}
-
-.chatResizer:hover,
-.chatResizer:focus-visible {
-  color: var(--dsw-alias-brand-primary);
-  outline: none;
-  background: var(--dsw-alias-bg-layer-2);
-}
-
-/* Keep the handle above shell defaults: some skins set display:none on
-   unrecognised children of the conversation frame. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-chat-resizer] {
-  display: flex !important;
-}
-
-/* Hide unrelated center-column plugin children on the `>` direct-child axis.
-   The keyed `main` anchor is deliberately let through: the Conversation lives
-   inside it, and the rule below then hides whichever entry is NOT the chat. */
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]),
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-center-col] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]) {
-  display: none !important;
-}
-
-/* The keyed `main` slot is single-occupant: the shell renders EITHER the
-   Conversation OR a global panel (the plugin market page registers itself into
-   `main` with its own key). Letting the anchor through above keeps the
-   Conversation alive, but it also let the plugin page keep rendering inside the
-   anchor while the studio claimed the column — two live occupants of one cell,
-   which is why the reporter of #38 saw the studio "stuck behind the plugin".
-   An anchor is `display: contents` per contract, so hide its entry instead.
-
-   Addressing rules, learned the hard way in the jsdom suite:
-   - A dotted attribute VALUE inside :not() is escaped by the minifier
-     (`main\.conversation`), and one branch a parser rejects voids the ENTIRE
-     selector list. So the chat entry below is matched POSITIVELY instead.
-   - :has() inside a selector list has the same all-or-nothing effect, so it is
-     avoided here as well.
-
-   A slot entry renders straight into the anchor (renderOutletContent returns
-   the entry element itself), so the plugin page is a DIRECT child of the
-   anchor. Only the Conversation may stay: its entry is the phase-bearing root,
-   or the `main.conversation` anchor that wraps one. */
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main'] > :not([data-dsh-imagegen-view]):not([data-phase]):not([data-slot='main.conversation']) {
-  display: none !important;
-}
-
-/* Keep the Session/Image switcher and the native New Session action visible,
-   including shells that wrap the action in a container. Other plugin entries
-   between the switcher and workspace region stay hidden in the studio.
-
-   The spared blocks are the shell's own chrome, resolved from slot anchors and
-   marked by `sidebar-entry.ts`. The rule is gated on `shell-blocks`: a shell
-   that exposes no brand anchor leaves that attribute off and keeps its sidebar
-   fully intact, instead of losing whole rows to a rule it cannot satisfy. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root][data-dsh-imagegen-shell-blocks] > :not([data-dsh-imagegen-session-tabs]):not([data-dsh-imagegen-new-session]):not([data-dsh-imagegen-sidebar-block]) {
-  display: none !important;
-}
-
-/* DSH 0.2.2-rc.2 nests the workspace seat under a scrolling container
-   (`root > scrollRegion > scrollArea > regionArea`), so the root-child rule
-   above can only spare or hide the whole scroll container. The history host
-   lives inside the region, next to the panel navigation inside the same
-   container; hiding the navigation at its own level keeps both the header
-   chrome and the history surface. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root][data-dsh-imagegen-shell-blocks] [data-dsh-imagegen-sidebar-hide] {
-  display: none !important;
-}
-
-@media (max-width: 760px) {
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-center-col] {
-    grid-template-columns: minmax(0, 1fr);
-    /* The chat row used to claim `minmax(340px, 0.9fr)` even when the chat was
-       collapsed and nothing rendered in it. At 664×768 that left the studio
-       404px tall while its config column needed 787px, so everything below
-       "尺寸" was clipped and unreachable (#3). The chat row now sizes to its
-       content: zero when collapsed, its own height when open. */
-    grid-template-rows: minmax(0, 1fr) auto;
-    overflow-y: auto;
-  }
-
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'],
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
-    grid-column: 1;
-    grid-row: 2;
-    min-height: 0;
-  }
-
-  /* An open chat keeps a usable height without stealing the studio's; the
-     studio keeps at least one screen's worth of the column. */
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'] {
-    min-height: min(340px, 45vh);
-  }
-
-  html[data-dsh-imagegen-active] [data-dsh-imagegen-chat-resizer] {
-    display: none !important;
-  }
-}
-
-/* --- sidebar entry row ------------------------------------------------------- */
-
-.entry {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 32px;
-  padding: 0 12px;
-  background: transparent;
-  border: none;
-  border-radius: var(--dsw-radius-sm);
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.entry:hover {
-  /* `--dsw-specific-sidebar-nav-item-hover` 从未定义（宿主只定义了
-     `-nav-item-active` 与 `-nav-item-active-accent`）：整条 background 声明被
-     浏览器丢弃，于是侧栏入口悬停时毫无反应——看起来像不可点的纯文本。用契约里
-     给的通用交互色，它在侧栏的两种主题下都成立。 */
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
-.entry[data-active] {
-  background: var(--dsw-specific-sidebar-nav-item-active);
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
-}
-
-.entryIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-}
-
-.entryLabel {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Session + Image Generation tabs share the shell's top action row. */
-.sessionTabs {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 2px;
-  /* A sibling of the shell's New Session button, so it follows that button's
-     alignment rather than inventing one: border-box sizing, and the 8px gap
-     below it on every seat (issue #25).
-     
-     The horizontal inset is NOT set here. It used to be
-     `calc(var(--dsh-sidebar-paint-inset, 3px) + 1px)`, which assumed the shell
-     publishes its paint inset as a custom property. Measured in a live shell
-     (0.2.1-rc.5), that property is undefined on every ancestor and the button
-     carries a hard-coded `margin: 2px` — so the fallback branch was the only
-     branch, and the switcher sat 2px inside the button on both sides. The
-     inset is now measured off the button itself and written inline; see
-     `alignToSeat`. A stylesheet cannot see a sibling's used margin. */
-  box-sizing: border-box;
-  width: auto;
-  min-width: 0;
-  margin: 0 0 8px;
-  padding: 3px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-1);
-}
-
-/* Fallback seat: another plugin took the shell's sidebar over and hid the New
-   Session row this switcher normally sits above, so it became the column's first
-   child instead. There is no New Session button to align with, so the inline
-   inset `alignToSeat` writes is cleared here and the switcher spans the column;
-   the 8px gap below is shared with the seated row. */
-.sessionTabs[data-dsh-imagegen-tabs-seat='top'] {
-  margin-inline: 0 !important;
-}
-
-.sessionTab {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--dsw-radius-sm);
-  color: var(--dsw-alias-label-secondary);
-  background: transparent;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-/* Collapsed sidebar rail: the injected tabs become plain stacked icon
- * buttons that match the shell's native rail entries. */
-[data-sidebar-collapsed] .sessionTabs {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: auto;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-}
-
-[data-sidebar-collapsed] .sessionTab {
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border-radius: var(--dsw-radius-md);
-  /* Icon-only tab: the label is display:none and the glyph comes from the icon
-     font, so 0 here is the collapse idiom, not a half-pixel size. */
-  font-size: 0em;
-}
-
-[data-sidebar-collapsed] .sessionTabLabel {
-  display: none;
-}
-
-.sessionTab:hover,
-.sessionTab[data-active] {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-specific-sidebar-nav-item-active);
-}
-
-.sessionTabIcon {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-}
-
-.sessionTabLabel {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* DSH 0.2.2-rc.2 makes the sidebar's scroll viewport a grid whose last row
-   is max-content. The workspace tree used to define that row; in studio mode
-   the tree is replaced by the history host, which has to take the whole
-   remaining column — otherwise it stops at the old tree height (~264px) and
-   leaves the lower half of the sidebar blank (desktop and drawer alike). Only
-   the active studio is touched: the session view keeps the shell's own rows. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] [data-sidebar-scrollport] {
-  grid-template-rows: 8px max-content 2px minmax(0, 1fr);
-}
-
-/* The history surface occupies the shell's workspace/session region while
-   image generation is active. The shell's own tree stays mounted underneath
-   so closing the tab restores it without a React remount. */
-[data-dsh-imagegen-sidebar-region] {
-  position: relative;
-  min-height: 0;
-}
-
-.sidebarHistoryHost {
-  position: absolute;
-  z-index: var(--z-dock);
-  inset: 0;
-  display: none;
-  min-width: 0;
-  min-height: 0;
-  padding: 6px 4px;
-  overflow: hidden;
-  /* A shell or wallpaper theme may set --dsw-alias-bg-base to transparent, and
-     then this host shows whatever is painted underneath it. Canvas is the OS
-     system colour, so the host stays opaque without hardcoding a value. */
-  background-color: Canvas;
-  background-image:
-    linear-gradient(var(--dsw-alias-bg-base, transparent), var(--dsw-alias-bg-base, transparent)),
-    linear-gradient(var(--dsw-alias-bg-layer-1, Canvas), var(--dsw-alias-bg-layer-1, Canvas));
-}
-
-html[data-dsh-imagegen-active] .sidebarHistoryHost {
-  display: flex;
-}
-
-.sidebarHistoryHost .history {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  border-radius: var(--dsw-radius-sm);
-  background: transparent;
-}
-
-[data-dsh-frame][data-sidebar-collapsed] .sidebarHistoryHost,
-[data-sidebar-collapsed] .sidebarHistoryHost {
-  display: none;
-}
-
-/* Collapsed rail: icon-only, centered, matching the shell's 56px rail. */
-[data-dsh-frame][data-sidebar-collapsed] .entry {
-  justify-content: center;
-  padding: 0;
-  width: 100%;
-}
-
-[data-dsh-frame][data-sidebar-collapsed] .entryLabel {
-  display: none;
-}
-
 /* --- panel frame -------------------------------------------------------------- */
-
-.view {
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
 
 /* The shell does not ship a global `box-sizing: border-box` reset, so scope
    one to the panel subtree: without it, `height: 100%` + padding grows past
@@ -581,33 +136,6 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 .panel *::before,
 .panel *::after {
   box-sizing: border-box;
-}
-
-/* On macOS desktop a collapsed sidebar hides its column entirely, and the shell
-   mounts its window-chrome seat `[data-shell-leading]` at the frame's top-left —
-   beside the traffic lights, over every main panel — holding the 打开侧边栏 and
-   New Session controls. The shell draws that seat at z-index 15, which is high
-   enough only while every main panel stays below it. The studio takeover is 60,
-   so in 生图 the seat paints underneath the studio and the only visible way back
-   to a wide sidebar disappears; 会话 escapes this only because its view is
-   `display: none` there.
-   The takeover number is deliberately left alone: it is pinned to 60 because the
-   sibling panels were written against it. The seat is lifted instead — it exists
-   only in this state, holds two window controls, and is published by the shell
-   as a stable data attribute, not a hashed class. `--z-shell-seat` (63) clears
-   the takeover and still sits under this plugin's own modals, which live inside
-   the takeover's stacking context and never compete with the frame. */
-[data-platform='darwin'] [data-shell-leading] {
-  z-index: var(--z-shell-seat);
-}
-
-/* Lifting the seat alone would leave the studio's first row painted underneath
-   it, so the panel spends the clearance the shell publishes for exactly this
-   ("a main panel whose content reaches the top-left corner pads by it so
-   nothing lands under the lights or the controls"). 48px is the seat's own
-   bottom edge plus a hair, and the value is the shell's, not a guess. */
-[data-platform='darwin'] [data-sidebar-collapsed] [data-dsh-imagegen-view] .panel {
-  padding-top: calc(14px + var(--dsh-frame-top-clearance, 48px));
 }
 
 .panel {
@@ -1089,9 +617,9 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 .history {
   display: flex;
   flex-direction: column;
-  width: auto;
+  /* 三栏里的右栏：宽度随容器走，窄时先丢历史列（见 WP6 的容器断点）。 */
+  flex: 0 0 clamp(240px, 22%, 340px);
   min-width: 0;
-  max-width: none;
   min-height: 0;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: var(--dsw-radius-md);
@@ -2231,25 +1759,6 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
      (「对」/「话」) before the nav gave up any width of its own. */
   flex: none;
   white-space: nowrap;
-}
-
-/* Drop the conversation column entirely while the chat toggle is collapsed. */
-html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
-html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-center-col] {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-/* Drop the Conversation while the chat toggle is collapsed. Both shell
-   generations are hidden here: the legacy slot anchor, and the 0.1.5+ slot
-   pair's Conversation root (its `display: contents` anchors draw nothing on
-   their own). This must out-specify the base chat-track placement. */
-html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'],
-html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
-  display: none !important;
-}
-
-html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
-  display: none !important;
 }
 
 /* config panel drag handle */
@@ -4258,21 +3767,8 @@ a.galleryCardAction {
  * 3. E-commerce hints stop forcing a 414px min-content width that clipped
  *    every card off the right edge of a 402px phone.
  * 4. The gallery masonry lane stretches instead of holding a fixed 220px.
- * 5. The shell's sidebar hamburger is lifted above the takeover view and the
- *    panel reserves the corner row for it (it was painted under the panel).
  */
 @media (max-width: 760px) {
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-center-col] {
-    grid-template-rows: minmax(0, 1fr) minmax(min(340px, 45vh), 45vh);
-  }
-
-  html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
-  html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-center-col] {
-    grid-template-rows: minmax(0, 1fr) 0px;
-  }
-  html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active] [data-slot='conversation'] { display: none; }
-
   .panelHeader {
     flex-wrap: wrap;
     row-gap: 8px;
@@ -4312,16 +3808,6 @@ a.galleryCardAction {
     max-width: none;
   }
 
-  /* The shell hamburger lives in the frame's leading seat; the takeover view
-   * (z 60) paints over it. The seat itself is absolutely positioned at z 15,
-   * so the button's own z-index cannot escape that stacking context — lift
-   * the seat (:has over the stable shell slot) and reserve the corner row. */
-  html[data-dsh-imagegen-active] [data-sidebar-opener='true'] {
-    position: relative;
-    z-index: var(--z-shell-seat);
-  }
-  html[data-dsh-imagegen-active] div:has(> [data-slot='shell.leading']) { z-index: var(--z-shell-seat); }
-  html[data-dsh-imagegen-active] .panel { padding-top: 46px; }
 }
 
 /* dsh-imagegen-mobile-9 (canvas fills the studio): the ≤760px studio is the

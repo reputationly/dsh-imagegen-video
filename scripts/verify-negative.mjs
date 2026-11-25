@@ -467,19 +467,6 @@ const CASES = [
     expect: /inspiration wall yields to a clip/,
   },
   // ---------------------------------------- history list vs the shell handoff
-  {
-    // DSH 0.2.2's sidebar listens for `wheel` on an ancestor of the history
-    // host and, for anything that is not its own session tree, calls
-    // preventDefault() and scrolls that (in the studio: invisible) tree. Drop
-    // the host's stopPropagation and the event reaches that listener again —
-    // the reported "the list will not scroll, the session records scroll".
-    name: 'a wheel over the history list falls through to the shell handoff',
-    runner: 'smoke',
-    file: 'src/client/sidebar-entry.ts',
-    from: "  host.addEventListener('wheel', (event) => { event.stopPropagation() })",
-    to: "  host.addEventListener('wheel', () => {})",
-    expect: /never reaches the shell handoff|claims its own wheel events/,
-  },
   // ------------------------------------------------------- the shortcut legend
   {
     // Every binding existed before the legend; none was discoverable. Drop the
@@ -1016,14 +1003,6 @@ const CASES = [
   // second time inside the section (so the heading reads as duplicated copy),
   // and the purge confirmation loses the number the user is agreeing to.
   {
-    name: 'the shell window seat falls back under the studio takeover',
-    runner: 'contracts',
-    file: 'src/client/panel.module.css',
-    from: "[data-platform='darwin'] [data-shell-leading] {\n  z-index: var(--z-shell-seat);\n}\n",
-    to: '',
-    expect: /shell window seat is not lifted above the studio takeover|--z-shell-seat is not declared/,
-  },
-  {
     name: 'the trash restore button stops carrying its entry id',
     runner: 'smoke',
     file: 'src/client/ImageGenPanel.tsx',
@@ -1549,65 +1528,38 @@ const CASES = [
     expect: /renders an editable prompt input/,
   },
   {
-    // The sidebar switcher is built imperatively, so it is the one tablist the
-    // old `.tsx`-only scan could not see. Dropping its keydown wiring is
-    // exactly what shipped in #26 and stayed green.
-    //
-    // This single case proves both halves of the follow-up. The check it must
-    // turn red reads `sidebar-entry.ts`, which is a `.ts` file; if the scan were
-    // still `.tsx`-only there would be nothing to report and the case would be a
-    // FALSE GREEN. (A case that only reverts the extension and injects no defect
-    // proves nothing: the file is correct either way, so it can only ever be
-    // green. Do not add one.)
-    name: 'the sidebar switcher loses its arrow keys',
+    // The shell reserves `order: 20` for this row: 0 and 10 are its own rows, so
+    // anything else either displaces 任务 or hides 创作 below the fold. The
+    // registration is the whole product surface, and a number is the easiest
+    // part of it to "tidy".
+    name: 'the sidebar row moves out of the order the shell reserves',
     runner: 'contracts',
-    file: 'src/client/sidebar-entry.ts',
-    from: "    entry[0].addEventListener('keydown', event => {\n      onTablistKeyDown(event, {\n        count: entries.length,\n        index,\n        select: next => entries[next]?.[1](),\n      })\n    })\n",
+    file: 'src/client/slot-surface.tsx',
+    from: '      order: 20,',
+    to: '      order: 5,',
+    expect: /surface is no longer the two shell slots/,
+  },
+  {
+    // Reaching back into the shell's centre column is the takeover returning in
+    // one line. Nothing else in the plugin would notice: the query finds an
+    // element, the history renders, and the next shell release moves it.
+    name: 'the studio reads the shell centre column again',
+    runner: 'contracts',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: "document.querySelector<HTMLDivElement>('[data-dsh-imagegen-history-host]')",
+    to: "document.querySelector<HTMLDivElement>('[data-slot=\"main\"]')",
+    expect: /client module addresses the shell's own DOM/,
+  },
+  {
+    // Dropping the keydown wiring of a tablist that DECLARES its roles is
+    // exactly what shipped in #26 and stayed green: the roles are a keyboard
+    // promise, and the arrow keys are the half a review cannot see missing.
+    name: 'a workspace tablist loses its arrow keys',
+    runner: 'contracts',
+    file: 'src/client/ModuleTabs.tsx',
+    from: "          onKeyDown={event => {\n            onTablistKeyDown(event, {\n              count: props.items.length,\n              index,\n              select: props.onSelect,\n            })\n          }}\n",
     to: '',
-    expect: /sidebar-entry\.ts: declares 2 tab\(s\) but never calls onTablistKeyDown/,
-  },
-  {
-    // Issue #25 measured this in a real host: content-box sizing plus a
-    // width:100% is 16px of overflow. Source review cannot see it, and the
-    // whole point of the browser check is that it can.
-    name: 'the sidebar switcher goes back to content-box sizing',
-    runner: 'contracts',
-    file: 'src/client/panel.module.css',
-    from: '  box-sizing: border-box;\n  width: auto;\n  min-width: 0;\n  margin: 0 0 8px;',
-    to: '  width: 100%;\n  min-width: 0;\n  margin: 0 0 0;',
-    expect: /does not line up with the shell button|box-sizing: content-box|not the 8px/,
-  },
-  {
-    // The 2px drift the live shell actually had, and the exact shape it had it
-    // in. The host's New Session button carries a hard-coded `margin: 2px` and
-    // publishes no custom property; the old code assumed
-    // `--dsh-sidebar-paint-inset` and fell back to 3px, so the switcher sat 2px
-    // inside the button on both edges. Re-introduce the assumption and the
-    // browser check has to see the drift.
-    //
-    // This is injected into `alignToSeat` rather than into `placeTabs` on
-    // purpose: the fixture lifts `alignToSeat` out of the source and runs it, so
-    // the function IS the code under test. Removing a call site in `placeTabs`
-    // would prove nothing here -- that call site is covered by the jsdom smoke
-    // test, which mounts the real entry.
-    name: 'the switcher trusts a paint inset the shell never defines',
-    runner: 'contracts',
-    file: 'src/client/sidebar-entry.ts',
-    from: '  const style = getComputedStyle(seat)\n  const left = style.marginLeft\n  const right = style.marginRight\n',
-    to: "  const style = getComputedStyle(seat)\n  const inset = style.getPropertyValue('--dsh-sidebar-paint-inset').trim() || '3px'\n  const left = inset === '3px' ? '4px' : inset\n  const right = inset === '3px' ? '4px' : inset\n",
-    expect: /does not line up with the shell button/,
-  },
-  {
-    // The macOS shell renders its own collapse control in a window-chrome strip
-    // above the brand row. That strip owns no slot anchor, so a chrome set built
-    // only from the anchors hid it — and the 生图 pane lost the only visible way
-    // back to a wide sidebar. Dropping the mark puts that state back.
-    name: 'the studio hides the shell collapse control with the foreign entries',
-    runner: 'smoke',
-    file: 'src/client/sidebar-entry.ts',
-    from: '    toggle === undefined ? undefined : blockHolding(root, toggle),\n',
-    to: '',
-    expect: /the shell's own \.xUkysG_topStrip block stays visible in the studio/,
+    expect: /ModuleTabs\.tsx: declares 1 tab\(s\) but never calls onTablistKeyDown/,
   },
   {
     name: 'nothing reveals the node toolbar on focus',
@@ -1795,17 +1747,6 @@ const CASES = [
     from: '.diagnosticsPanel {\n  position: absolute;\n  z-index: var(--z-diagnostics);',
     to: '.diagnosticsPanel {\n  position: absolute;\n  z-index: 92;',
     expect: /z-index literals are back/,
-  },
-  {
-    // Measured in a real browser, because whether a shell panel yields the
-    // column is decided by the cascade over a `display: contents` anchor --
-    // source-level reasoning cannot see it.
-    name: 'a shell panel no longer yields the keyed main slot',
-    runner: 'contracts',
-    file: 'src/client/panel.module.css',
-    from: "html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main'] > :not([data-dsh-imagegen-view]):not([data-phase]):not([data-slot='main.conversation']) {\n  display: none !important;\n}",
-    to: '',
-    expect: /shell panel inside the keyed `main` slot is still rendered/,
   },
 
   // -------------------------------------------------- video diagnostics parity
@@ -3445,6 +3386,17 @@ const CASES = [
     to: "export * from './lib/index.js'\n// 团团TV 面板",
     expect: /brand-word/,
   },
+  // ---------------------------------------- 网关目录：默认模型三级回退
+  {
+    // 目录撤销一个模型后，界面不能还选着它，也不能悄悄换成列表最后一条。
+    // 把「目录标记的默认项 → 第一条」改成「最后一条」，smoke 必须变红。
+    name: 'the default media model falls back to the last entry',
+    runner: 'gateway-catalog',
+    file: 'src/gateway-catalog.ts',
+    from: 'return (candidates.find(entry => entry.default) ?? candidates[0]!).model',
+    to: 'return (candidates.find(entry => entry.default) ?? candidates[candidates.length - 1]!).model',
+    expect: /目录没有标记默认项时取第一条/,
+  },
 ]
 
 const RUNNERS = {
@@ -3455,6 +3407,8 @@ const RUNNERS = {
   // 品牌守卫读源码、包入口与本地化元数据，零构建：它守的是「用户看到的字」，
   // 而复原一个旧品牌词只需要改一处字符串，没有任何运行时症状。
   'no-brand': { script: 'scripts/verify-no-brand.mjs', build: false },
+  // 网关目录适配层是纯逻辑（条目 → 渠道、默认模型、地址规范化），读源码即可，零构建。
+  'gateway-catalog': { script: 'scripts/smoke-gateway-catalog.mjs', build: false },
   // The canvas's bottom chrome (dock / zoom dock / minimap) is a layout
   // question that only a real browser can answer: jsdom has no layout engine,
   // and `.canvasChrome` wraps based on the PANEL's width, which no media query

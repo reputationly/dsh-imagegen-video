@@ -2,10 +2,9 @@
  * Shoot the visual-acceptance screenshots for the image studio.
  *
  * What is REAL here:
- *  - the panel itself: the built `.studio-preview/preview.js` runs the same
- *    `mountSidebarEntry` + `mountPanel` calls the shipped plugin runs, renders
- *    the same `ImageGenPanel`, and uses the same `Button`/`Pill` primitives
- *    (bundled, not stubbed);
+ *  - the panel itself: the built `.studio-preview/preview.js` renders the same
+ *    `ImageGenPanel` the plugin registers into the shell's keyed `main` slot,
+ *    and uses the same `Button`/`Pill` primitives (bundled, not stubbed);
  *  - every colour, radius, shadow and font: the theme stylesheet is extracted
  *    from the INSTALLED DSH (`dsh-client-ui-theme`), not retyped;
  *  - the sidebar/layout chrome: likewise extracted from the installed
@@ -145,12 +144,6 @@ const PAGE = `<!doctype html>
   /* The layout puts the two columns side by side through an inline style on
      the frame; this fixture picks the same 264px the app uses by default. */
   .fixture-frame { grid-template-columns: 264px minmax(0, 1fr); }
-  .fixture-conversation {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 10px; height: 100%; padding: 24px; box-sizing: border-box; text-align: center;
-  }
-  .fixture-hero { font-size: 20px; font-weight: 600; letter-spacing: .01em; }
-  .fixture-sub { font-size: 13px; color: var(--dsw-alias-label-secondary); }
 </style>
 </head>
 <body>
@@ -208,14 +201,9 @@ const PAGE = `<!doctype html>
   </div>
 
   <div class="${L('centerCol')}">
-    <div data-slot="main" style="display: contents">
-      <div data-slot="main.conversation" style="display: contents">
-        <div data-phase="hero" class="fixture-conversation">
-          <div class="fixture-hero">今天想做点什么？</div>
-          <div class="fixture-sub">对话内容为夹具占位，用于标定原生排版与配色</div>
-        </div>
-      </div>
-    </div>
+    <!-- The shell renders the plugin's main-slot entry here; the preview
+         bundle mounts the studio into this container. -->
+    <div data-studio-preview-root style="height: 100%; min-width: 0"></div>
   </div>
 
 </div>
@@ -281,11 +269,11 @@ try {
   }
 
   await waitFor('document.readyState === "complete"', 'the page to load')
-  // The preview bundle renders the panel only after `mountPanel` resolves the
-  // centre column from its slot anchor, so this is the honest readiness signal.
+  // The preview bundle renders the panel directly, so its own controls are the
+  // honest readiness signal: the first paint is far smaller than this.
   await waitFor(
-    `document.querySelector('[data-dsh-imagegen-view] [data-dsh-imagegen-history]') !== null
-     || document.querySelectorAll('[data-dsh-imagegen-view] button').length > 5`,
+    `document.querySelectorAll('[data-studio-preview-root] button').length > 5
+     && document.querySelector('[data-studio-preview-root] header') !== null`,
     'the studio to render',
   )
   await waitFor('document.fonts.status === "loaded"', 'fonts to settle')
@@ -311,7 +299,7 @@ try {
   // measured here instead: does the studio fill its column, does anything get
   // clipped, is the type on DSH's scale, and does the text sit on real tokens.
   const audit = await page.evaluate(`(() => {
-    const view = document.querySelector('[data-dsh-imagegen-view]')
+    const view = document.querySelector('[data-studio-preview-root]')
     if (view === null) return { error: 'the studio never rendered' }
     const box = element => {
       const rect = element.getBoundingClientRect()
@@ -450,47 +438,6 @@ try {
   })()`)
   console.log('\nAudit (light theme):', JSON.stringify(audit, null, 2))
 
-  // The other half of "looks native" is the shell around the studio: the
-  // plugin's own switcher must be there, the shell's chrome must survive, and
-  // unrelated plugin entries must be gone. All three are injected/hidden by the
-  // real code, so this measures the shipped behaviour rather than a mock of it.
-  const sidebar = await page.evaluate(`(() => {
-    const root = document.querySelector('[data-dsh-imagegen-sidebar-root]')
-    const visible = element => {
-      if (element === null) return false
-      const rect = element.getBoundingClientRect()
-      return rect.width > 0 && rect.height > 0 && getComputedStyle(element).display !== 'none'
-    }
-    const tabs = document.querySelector('[data-dsh-imagegen-session-tabs]')
-    const host = document.querySelector('[data-dsh-imagegen-history-host]')
-    const history = document.querySelector('[data-dsh-imagegen-history]')
-    const newSession = document.querySelector('[data-dsh-imagegen-new-session]')
-    const blocks = [...document.querySelectorAll('[data-dsh-imagegen-sidebar-block]')]
-    // A slot anchor is display:contents by contract, so it has no box of its
-    // own; what must stay visible is whatever the shell renders INSIDE it.
-    const spare = selector => {
-      const anchor = document.querySelector(selector)
-      if (anchor === null) return 'missing'
-      if (visible(anchor)) return true
-      return [...anchor.querySelectorAll('*')].some(visible)
-    }
-    return {
-      sidebarRoot: visible(root),
-      rooted: root === null ? null : root.getAttribute('data-dsh-imagegen-shell-blocks') !== null,
-      tabs: visible(tabs),
-      tabLabels: tabs === null ? [] : [...tabs.querySelectorAll('[data-dsh-imagegen-tab]')].map(tab => tab.textContent.trim()),
-      newSessionSpared: newSession !== null && visible(newSession),
-      brandSpared: spare('[data-slot="sidebar.brand.mark"]'),
-      workspacesSpared: spare('[data-slot="sidebar.workspaces"]'),
-      settingsSpared: spare('[data-slot="sidebar.settings"]'),
-      historyHost: visible(host),
-      historyPortalLanded: history !== null && host !== null && host.contains(history),
-      historyRows: document.querySelectorAll('[data-dsh-imagegen-history-main]').length,
-      markedBlocks: blocks.length,
-      shellChromeHidden: blocks.filter(block => !visible(block)).length,
-    }
-  })()`)
-  console.log('\nSidebar audit:', JSON.stringify(sidebar, null, 2))
 
   // Text contrast against its own background, computed from the ACTUAL painted
   // colours (including inherited transparency), so a token that resolves to a
@@ -593,7 +540,7 @@ try {
       }
       return true
     }
-    const view = document.querySelector('[data-dsh-imagegen-view]')
+    const view = document.querySelector('[data-studio-preview-root]')
     const rows = []
     const skipped = []
     let worst = { ratio: Infinity }
@@ -643,7 +590,7 @@ try {
   // input so the handler runs exactly as it does under a user's finger.
   const dragCancel = await (async () => {
     const spot = await page.evaluate(`(() => {
-      const handle = document.querySelector('[data-dsh-imagegen-view] [class*="configResizer"]')
+      const handle = document.querySelector('[data-studio-preview-root] [class*="configResizer"]')
       if (handle === null) return null
       const rect = handle.getBoundingClientRect()
       return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
@@ -690,7 +637,7 @@ try {
   await shoot('dark')
 
   const report = await page.evaluate(`(() => {
-    const view = document.querySelector('[data-dsh-imagegen-view]')
+    const view = document.querySelector('[data-studio-preview-root]')
     const rect = view === null ? null : view.getBoundingClientRect()
     const body = getComputedStyle(document.body)
     return {
@@ -703,46 +650,25 @@ try {
     }
   })()`)
   console.log('\nMeasured:', JSON.stringify(report, null, 2))
-  // Disabling a plugin must leave the host exactly as it was found. Everything
-  // below is state this plugin wrote onto DSH's OWN elements: attributes, an
-  // inline custom property, injected nodes, and html-level flags. Measured
-  // after calling the real disposers, not by reading the source.
+  // Disabling a plugin must leave the host exactly as it was found. What is
+  // left here is the state the panel writes outside its own subtree: the
+  // language-independent flags it puts on <html>, and the nodes it renders.
+  // Measured after calling the real release, not by reading the source.
   const uninstall = await page.evaluate(`(() => {
     const count = selector => document.querySelectorAll(selector).length
     const htmlAttrs = () => Array.from(document.documentElement.attributes)
       .map(attribute => attribute.name).filter(name => name.startsWith('data-dsh-imagegen'))
     const htmlStyle = () => Array.from(document.documentElement.style)
       .filter(name => name.startsWith('--dsh-imagegen'))
-    const widthVar = () => Array.from(document.querySelectorAll('*'))
-      .filter(element => element.style.getPropertyValue('--dsh-imagegen-chat-width') !== '').length
     const snapshot = () => ({
-      centerCol: count('[data-dsh-imagegen-center-col]'),
-      view: count('[data-dsh-imagegen-view]'),
-      resizer: count('[data-dsh-imagegen-chat-resizer]'),
-      tabs: count('[data-dsh-imagegen-session-tabs]'),
-      historyHost: count('[data-dsh-imagegen-history-host]'),
-      sidebarRoot: count('[data-dsh-imagegen-sidebar-root]'),
-      blocks: count('[data-dsh-imagegen-shell-blocks]'),
-      blocksMarked: count('[data-dsh-imagegen-sidebar-block]'),
-      newSessionMark: count('[data-dsh-imagegen-new-session]'),
-      widthVar: widthVar(),
+      studioNodes: count('[data-studio-preview-root] *'),
       htmlAttrs: htmlAttrs(),
       htmlStyle: htmlStyle(),
     })
     const before = snapshot()
     const disposers = window.__studioDispose
-    if (disposers === undefined) return { error: 'the harness published no disposers' }
-    // Exercise the width path first: the custom property is only written once a
-    // drag (or an arrow key) has happened, so an untouched page cannot tell
-    // whether uninstall clears it.
-    document.documentElement.removeAttribute('data-dsh-imagegen-chat-collapsed')
-    const handle = document.querySelector('[data-dsh-imagegen-chat-resizer]')
-    if (handle !== null) {
-      handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
-    }
-    const widthVarAfterNudge = widthVar()
+    if (disposers === undefined) return { error: 'the harness published no release' }
     disposers.panel()
-    disposers.sidebar()
     const after = snapshot()
     after.cursor = document.documentElement.style.getPropertyValue('cursor')
     after.userSelect = document.documentElement.style.getPropertyValue('user-select')
@@ -750,35 +676,28 @@ try {
       const value = after[key]
       return Array.isArray(value) ? value.length > 0 : value !== 0 && value !== ''
     })
-    return { before, widthVarAfterNudge, after, residue }
+    return { before, after, residue }
   })()`)
   console.log('\nUninstall probe:', JSON.stringify(uninstall, null, 2))
 
-  // Same promise for the chat separator, but mid-gesture: its drag binds three
-  // window listeners that only `pointerup` unbinds, so pulling the plugin out
-  // while the pointer is down used to strand them and the <html> cursor. Driven
-  // with real trusted input so the handler runs exactly as it does for a user.
+  // Same promise for the config column's resize handle, but mid-gesture: its
+  // drag binds window listeners that only `pointerup` unbinds, so pulling the
+  // plugin out while the pointer is down used to strand them and the <html>
+  // cursor. Driven with real trusted input so the handler runs exactly as it
+  // does for a user.
   const midDrag = await (async () => {
     await page.evaluate(`window.__studioRemount()`)
-    await waitFor('document.querySelector("[data-dsh-imagegen-chat-resizer]") !== null',
-      'the separator to come back')
-    // The chat column starts collapsed (`readChatOpen()` defaults to false), and
-    // the separator is `display:none` in that state — pressing it would do
-    // nothing and the probe would report a fake pass. Open it the way a user
-    // does, then confirm the handle actually has a box to press.
+    // The config column starts collapsed, and the handle only paints while it is
+    // open — pressing a `display: none` handle would report a fake pass.
     await page.evaluate(`(() => {
-      const toggle = document.querySelector('[data-dsh-imagegen-view] [data-open]')
+      const toggle = document.querySelector('[data-studio-preview-root] [data-open]')
       if (toggle !== null && toggle.getAttribute('data-open') !== 'true') toggle.click()
     })()`)
-    await waitFor(
-      `(() => {
-        const handle = document.querySelector('[data-dsh-imagegen-chat-resizer]')
-        return handle !== null && handle.getBoundingClientRect().width > 0
-      })()`,
-      'the separator to become visible',
-    )
+    const handleSelector = '[data-studio-preview-root] [class*="configResizer"]'
+    await waitFor(`document.querySelector(${JSON.stringify(handleSelector)}) !== null`,
+      'the config resize handle to come back')
     const spot = await page.evaluate(`(() => {
-      const handle = document.querySelector('[data-dsh-imagegen-chat-resizer]')
+      const handle = document.querySelector(${JSON.stringify(handleSelector)})
       const rect = handle.getBoundingClientRect()
       return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
     })()`)
@@ -796,12 +715,11 @@ try {
       return {
         cursor: document.documentElement.style.getPropertyValue('cursor'),
         userSelect: document.documentElement.style.getPropertyValue('user-select'),
-        resizer: document.querySelectorAll('[data-dsh-imagegen-chat-resizer]').length,
+        studio: document.querySelectorAll('[data-studio-preview-root]').length,
       }
     })()`)
     return { during, after, cleared: after.cursor === '' && after.userSelect === '' }
   })()
-  console.log('\nUninstall-mid-drag probe:', JSON.stringify(midDrag, null, 2))
 
 } catch (error) {
   failure = error

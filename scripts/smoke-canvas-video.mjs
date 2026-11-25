@@ -755,6 +755,8 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
     createDrafts: () => [], releaseDraftAttachments: () => {},
     input: { for: () => ({ addAttachments: () => true, removeAttachment: () => {}, state: { getSnapshot: () => ({ draft: '' }) }, setDraft: () => {} }) },
   }
+  /** 槽位注册表：工作台只能通过外壳座位出现，套件按座位渲染它。 */
+  const registrations = []
   const ctx = {
     effect(fn) { return fn() },
     on() { return () => {} },
@@ -775,7 +777,10 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
       getLocale() { return { active: 'zh', locales: [], revision: 0 } },
       subscribe() { return () => {} },
     },
-    slots: { inject(key, callback) { callback(); return () => {} }, register() { return () => {} } },
+    slots: {
+      inject(key, callback) { callback(); return () => {} },
+      register(options, component) { registrations.push({ options, component }); return () => {} },
+    },
   }
 
   // react-dom (outer realm) reads the bare `window`/`document` globals at
@@ -876,10 +881,18 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
   })
 
     exportsOf.apply(ctx)
-    await waitForSelector(jsdomDocument, '[data-dsh-imagegen-session-tabs]')
-    click('[data-dsh-imagegen-tab="image"]')
-    await waitForSelector(jsdomDocument, '[data-dsh-imagegen-view]')
-    const view = jsdomDocument.querySelector('[data-dsh-imagegen-view]')
+    // 工作台通过外壳座位渲染：把注册到 `main#imagegen` 的面板挂进本套件自己的容器。
+    // 工作台在设置作用域加载完成后才注册座位，所以这里等注册而不是立刻断言。
+    const registered = await waitUntil(() => registrations.some(entry => entry.options.name === 'main' && entry.options.key === 'imagegen'))
+    assert.ok(registered, 'the surface registers the keyed main seat')
+    const seat = registrations.find(entry => entry.options.name === 'main' && entry.options.key === 'imagegen')
+    assert.ok(seat !== undefined, 'the keyed main seat is addressable')
+    const { createRoot } = await import('react-dom/client')
+    const view = jsdomDocument.createElement('div')
+    jsdomDocument.body.appendChild(view)
+    const root = createRoot(view)
+    root.render(react.createElement(seat.component))
+    await waitForSelector(view, '[role="tablist"]')
 
     // jsdom has no PointerEvent constructor in this setup, so pointer events are
     // dispatched as MouseEvents of the same type; React keys its listeners by

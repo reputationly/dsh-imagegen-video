@@ -1,11 +1,10 @@
 /**
  * Visual-acceptance entry for the image studio.
  *
- * Renders the REAL `ImageGenPanel` through the REAL mounting path
- * (`mountSidebarEntry` + `mountPanel`, the same two calls `src/client/index.ts`
- * makes), with the REAL `Button`/`Pill` primitives and the REAL DSH theme
- * tokens. Only the host is stubbed: it answers with fixed data instead of
- * calling a model.
+ * Renders the REAL `ImageGenPanel` — the same component the plugin registers
+ * into the shell's keyed `main` slot — with the REAL `Button`/`Pill` primitives
+ * and the REAL DSH theme tokens. Only the host is stubbed: it answers with fixed
+ * data instead of calling a model.
  *
  * WHY the primitives are bundled rather than stubbed: `scripts/smoke.mjs`
  * replaces `@deepseek-ai/dsh-client-ui-primitives` with
@@ -20,11 +19,10 @@
  */
 
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import { createRoot } from 'react-dom/client'
 import type { ImageGenApi } from '../src/client/api.ts'
 import type { ImageGenConfig, ImageGenScope } from '../src/client/settings-scope.ts'
-import { ImageGenController } from '../src/client/controller.ts'
-import { mountSidebarEntry } from '../src/client/sidebar-entry.ts'
-import { mountPanel } from '../src/client/mount.tsx'
+import { ImageGenPanel } from '../src/client/ImageGenPanel.tsx'
 import { tt } from '../src/client/helpers.ts'
 import type { CanvasDocument, HistoryEntry, TemplateCase, TemplateSample } from '../src/protocol.ts'
 
@@ -225,31 +223,50 @@ const sessions = {
   scope: () => ({ sessionId: 'preview-session' }),
 } as unknown as ISessions
 
-const controller = new ImageGenController()
-const disposeSidebar = mountSidebarEntry(
-  controller,
-  tt('entry.session'),
-  tt('entry.sessionTooltip'),
-  tt('entry.image'),
-  tt('entry.tooltip'),
-)
-const disposePanel = mountPanel(controller, api, scope, { sessions })
-controller.open()
+// The shell owns the column and hands the panel its slot entry lifetime; this
+// page stands in for that shell, so it renders the component into a container
+// of its own. The marker lets the screenshot probe find the studio without
+// depending on a CSS-module hash.
 
-// The shipped plugin hands both disposers to cordis. The harness has no
-// lifecycle service, so it publishes them instead — the acceptance probe calls
-// them to prove that disabling the plugin really does restore the host DOM, and
-// remounts afterwards so it can also probe a teardown in mid-gesture.
+/** The container the harness page reserves for the studio. */
+function hostNode(): HTMLDivElement {
+  const element = document.createElement('div')
+  element.dataset.studioPreviewRoot = ''
+  document.body.append(element)
+  return element
+}
+
+let host = hostNode()
+let root = createRoot(host)
+let mounted = true
+const render = (): void => {
+  root.render(<ImageGenPanel api={api} scope={scope} active sessions={sessions} />)
+}
+render()
+
+// The shipped plugin's registrations are released by cordis. The harness has no
+// lifecycle service, so it publishes the release instead — the acceptance probe
+// calls it to prove the studio unmounts cleanly, and remounts afterwards.
 const harness: {
-  dispose: { panel: () => void; sidebar: () => void }
+  dispose: { panel: () => void }
   remount: () => void
 } = {
-  dispose: { panel: disposePanel, sidebar: disposeSidebar },
+  dispose: {
+    panel: (): void => {
+      if (!mounted) return
+      mounted = false
+      root.unmount()
+      host.remove()
+    },
+  },
   remount: (): void => {
-    // The new mount owns a new disposer; the probe must release THAT one, or it
-    // tears down a mount whose nodes are already gone.
-    harness.dispose.panel = mountPanel(controller, api, scope, { sessions })
-    controller.open()
+    if (mounted) return
+    mounted = true
+    // A fresh container and root: a React root cannot be rendered again after
+    // it was unmounted, and the probe tears the studio down on purpose.
+    host = hostNode()
+    root = createRoot(host)
+    render()
   },
 }
 Object.assign(window, { __studioDispose: harness.dispose, __studioRemount: harness.remount })

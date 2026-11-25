@@ -509,23 +509,6 @@ function useCurrentWorkspace(sessions: ISessions | undefined): string | undefine
   return workspace
 }
 
-/** Find the host mounted in the shell's left navigation region. */
-function useSidebarHistoryHost(): HTMLDivElement | null {
-  const [host, setHost] = useState<HTMLDivElement | null>(() => (
-    document.querySelector<HTMLDivElement>('[data-dsh-imagegen-history-host]')
-  ))
-  useEffect(() => {
-    const sync = (): void => {
-      setHost(document.querySelector<HTMLDivElement>('[data-dsh-imagegen-history-host]'))
-    }
-    sync()
-    const observer = new MutationObserver(sync)
-    observer.observe(document.body, { childList: true, subtree: true })
-    return () => observer.disconnect()
-  }, [])
-  return host
-}
-
 /** Fetch persisted history image refs and decode them back to in-memory
  *  GeneratedImage[] (base64), so the canvas/preview can reuse the same
  *  rendering path as a fresh generation. */
@@ -1391,7 +1374,6 @@ export function ImageGenPanel(props: {
       window.setTimeout(() => { setConversationMessage(null) }, 2200)
     },
   })
-  const sidebarHistoryHost = useSidebarHistoryHost()
   const modeGroups: ImageModelGroup[] = tab === 'edit'
     ? modelGroups
         .map(group => ({ ...group, models: group.models.filter(candidate => describeModel(candidate).supportsEdit) }))
@@ -4826,13 +4808,11 @@ export function ImageGenPanel(props: {
             </div>
           ) : null}
           </section>
+          {/* 历史列：中心列归外壳所有之后，历史落在工作台自己的三栏里，不再接管侧栏区域。 */}
+          {workspace === 'normal' ? historyPanel : null}
         </div>
 
       </div>
-
-      {sidebarHistoryHost !== null && historyPanel !== null
-        ? createPortal(historyPanel, sidebarHistoryHost)
-        : null}
 
       {/* ------------------------------------------------ template library */}
       {libraryOpen ? (

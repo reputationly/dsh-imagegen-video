@@ -185,7 +185,7 @@ DSH 在 `@deepseek-ai/dsh-client-ui-primitives` 里导出了 **146 个组件/工
 
 188 个 `Icon*` 组件，命名规则 `Icon<名字><Outline|Fill><Regular|Medium>`，如 `IconCheckOutlineRegular`、`IconArchiveCheckOutlineMedium`。
 
-**禁止**再内联写 `<svg>`。现有 `sidebar-entry.ts`、`CanvasWorkspace` 里有一批内联 SVG，全部替换。
+**禁止**再内联写 `<svg>`，只有一处例外：侧栏入口行（`slot-surface.tsx` 的 `ImageGenPanelIcon`）。外壳的 `sidebar.panellist` 座位要求直接返回一个不带包装元素的 SVG，而且图标必须与包图标同一字形，因此它是本插件唯一应当手写的 `<svg>`。`CanvasWorkspace` 里仍有一批内联 SVG，逐步替换为 `Icon*`。
 
 ### 3.3 工具函数
 
@@ -225,24 +225,15 @@ new MutationObserver(ensure)   // 等待插入点
 
 DSH 的内部类名是构建期哈希（`Fw9vfq_trigger` 这种），**任何时候都可能变**。`[class*="..."]` 匹配的是语义名片段，而语义名是打包器保留的偶然产物。
 
-### 4.3 CSS 怎么找到宿主元素
+### 4.3 CSS 只选本插件自己的节点
 
-CSS 执行不了 JS，所以「禁止猜类名」在样式表这一侧必须有一个可执行的替代：**由 JS 从 slot 锚点解析出元素，打上本插件自己的属性，样式表只按属性选择。**
+工作台通过 `sidebar.panellist` 与 `main` 两个外壳座位渲染，**不再解析外壳 DOM**：曾经的 DOM 接管（给中心列、侧栏 root、品牌行、底栏与 New Session 行打 `data-dsh-imagegen-*` 标记，再由样式表按属性选择）已经删除。它盖掉了外壳自己的会话、任务与频道视图，外壳一改版还会让整个中心列白屏。
 
-| 样式表要选的东西 | 谁打标记 | 属性 |
-|---|---|---|
-| 中心列（会话所在的 grid item） | `mount.tsx` 的 `conversationColumn()` | `data-dsh-imagegen-center-col` |
-| 侧栏 shell root | `sidebar-entry.ts` | `data-dsh-imagegen-sidebar-root` |
-| 侧栏自有 chrome 区块（品牌行 / 底栏 / 设置区 / 历史区 / 含 New Session 的那一行 / 含折叠控件的窗口条） | `sidebar-entry.ts` 的 `markBlocks()` | `data-dsh-imagegen-sidebar-block`、`data-dsh-imagegen-sidebar-region` |
-| 「本 shell 的 chrome 已全部解析」的门控 | 同上，解析到品牌块才设 | `data-dsh-imagegen-shell-blocks` |
+现在的规则只有一条：**样式表只按本插件自己创建的节点上的 `data-*` 属性选择**，例如媒体面板的 `data-media-panel`、外观校正的 `data-canvas-workspace`、抽屉与浮层自己的锚点。这些属性由工作台自己的 JSX 直接写出，不依赖任何外壳结构。
 
-三条约束：
+随之作废的做法（不要重新引入）：从 slot 锚点反查外壳元素并打标记、`html[data-dsh-imagegen-active]` 这类全局状态属性、以及给外壳 chrome 区块设的隐藏与避让规则。需要跨节点状态时，由 React 在组件树内传下去，不要往 `document.documentElement` 上挂。
 
-1. **门控优先于隐藏**。某个 shell 若没有品牌锚点，`shell-blocks` 不设，「隐藏外来条目」规则整体不生效——宁可另一个插件的条目短暂叠一下，也不能把 shell 自己的品牌行和底栏藏掉（那是坏界面）。
-2. **不要用 `:has()` 表达「包含某节点」**。走 `:not(:has(...))` 的选择器在 jsdom 里既不解析也没有判别力，等于把规则排除在测试之外。需要这个语义时，由 JS 把外层区块一起标记，样式表只读属性。
-3. **标记必须可回收**。React 重建会换掉列/根节点，旧标记要摘掉，否则两个元素同时带标记，规则会作用到已脱离的树上。
-
-`scripts/verify-native-ui.mjs` 的规则 5 同时扫 `.ts`/`.tsx` 和 `.css`，违反即失败。
+`scripts/verify-native-ui.mjs` 的规则 5 同时扫 `.ts`/`.tsx` 和 `.css`，违反即失败；`scripts/verify-ui-contracts.mjs` 另外断言客户端模块里不出现任何外壳标记（`data-slot=`、`data-pane=`、`data-sidebar`、`centerCol`、`data-shell-leading`、`data-window-drag`）。
 
 ### 4.4 例外与降级
 

@@ -8,15 +8,13 @@
  *
  * // NATIVE-GAP: the contract-preferred source is the injected `theme` service
  * (snapshot field `active.colorScheme`, event `theme/change`, provided by
- * dsh-client-ui-theme). This surface cannot reach it: the panel's React root is
- * created imperatively from `mount.tsx`, which receives only the services
- * `src/client/index.ts` hands it, and that file is outside this change's scope.
- * Wiring it is three lines there — add `'theme'` to `inject`, then pass
- * `theme: { getSnapshot: () => ctx.get('theme').getTheme(), subscribe }` into
- * `mountPanel` — after which the subscription below is the secondary path.
- * Until then this measures the surface and re-measures when the host publishes
- * the switch, which is what keeps the nav readable instead of asking the user
- * to reload.
+ * dsh-client-ui-theme). This surface cannot reach it: the panel is rendered by
+ * the shell's `main` slot from `src/client/slot-surface.tsx`, which receives
+ * only the inputs `src/client/index.ts` hands it. Wiring it is three lines
+ * there — add `'theme'` to `inject`, then hand the scope down to the panel —
+ * after which the subscription below is the secondary path. Until then this
+ * measures the surface and re-measures when the host publishes the switch,
+ * which is what keeps the nav readable instead of asking the user to reload.
  */
 
 /**
