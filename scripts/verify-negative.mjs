@@ -678,28 +678,12 @@ const CASES = [
     expect: /SB8: a board with problems shows the check summary/,
   },
   // --------------------------------------------- the jsdom teardown ordering
-  {
-    // The bug this round was about, restored verbatim: `ReferenceError: window
-    // is not defined` printed four times while the suite still reported green.
-    // jsdom notifies mutation observers from a MICROTASK, so the old teardown --
-    // delete the globals, then `close()` -- ran every queued callback with no
-    // `window` in scope. Both halves are needed to reproduce it: closing last
-    // (this edit) without the collector would only print to stderr again, so
-    // this case is also the proof that the virtual-console collector is wiring
-    // the error into `results` instead of letting it escape as noise.
-    name: 'the jsdom globals are torn down before the observers are drained',
-    runner: 'canvas-video',
-    file: 'scripts/smoke-canvas-video.mjs',
-    from: [
-      '      await new Promise(resolve => setTimeout(resolve, 25))\n      dom.window.close()\n      await new Promise(resolve => setTimeout(resolve, 25))\n',
-      '      else globalThis.document = previousDocument\n    })',
-    ],
-    to: [
-      '      await new Promise(resolve => setTimeout(resolve, 25))\n',
-      '      else globalThis.document = previousDocument\n      dom.window.close()\n    })',
-    ],
-    expect: /escaped into the jsdom console: window is not defined/,
-  },
+  // 已删除：「the jsdom globals are torn down before the observers are drained」。
+  // 它守的是接管式挂载（E1 那一大块）在 window 先关、globals 后还原时会漏出
+  // 「window is not defined」。08ee48c 之后面板改由收到的座位组件渲染，根部在关窗前
+  // 就被卸载，这条注入在今天的套件里不再产生任何失败（实测：注入后「jsdom console
+  // stayed quiet」仍然通过），也就是说没有可守的失败模式了。任何在收尾之后仍触发的
+  // 观察者仍由那条 quiet 检查抓住。
   // ------------------------------------------------- PPT agent error passthrough
   {
     // A failure inside the host Agent used to be swallowed and reported as
@@ -816,7 +800,7 @@ const CASES = [
     // offers one tier and a board that sees nothing offers all four. The length
     // lines above it also go red, but they go red for a weaker reason (the
     // "no declared durations" fallback happens to be a longer list too).
-    expect: /SB6: the board follows the 720P-only model it will actually run on/,
+    expect: /SB6: the generic family keeps its three tiers, and the saved 720P is one of them/,
   },
   // -------------------------------------------------------- storyboard-spec
   {
