@@ -1483,8 +1483,11 @@ const CASES = [
     name: 'the studio reads the shell centre column again',
     runner: 'contracts',
     file: 'src/client/ImageGenPanel.tsx',
-    from: "import { gatewayChannel, gatewayDefaultAlias, gatewayUpstreamId } from './gateway-models.ts'",
-    to: "import { gatewayChannel, gatewayDefaultAlias, gatewayUpstreamId } from './gateway-models.ts'\nconst shellHost = document.querySelector('[data-slot=\"main\"]')",
+    // 注入文本必须与源码逐字一致；拼起来写是为了不让 verify-tracked 把这行字符串
+    // 当成一次真实 import 去解析（它扫描静态 import/export 字面量）。
+    from: "import { gatewayChannel, gatewayDefaultAlias, gatewayUpstreamId } from " + "'./gateway-models.ts'",
+    to: "import { gatewayChannel, gatewayDefaultAlias, gatewayUpstreamId } from " + "'./gateway-models.ts'"
+      + "\nconst shellHost = document.querySelector('[data-slot=\"main\"]')",
     expect: /client module addresses the shell's own DOM/,
   },
   {
@@ -3032,8 +3035,8 @@ const CASES = [
     name: 'the old brand returns to the shipped entry',
     runner: 'no-brand',
     file: 'index.js',
-    from: "export * from './lib/index.js'",
-    to: "export * from './lib/index.js'\n// 团团TV 面板",
+    from: "export * from " + "'./lib/index.js'",
+    to: "export * from " + "'./lib/index.js'" + "\n// 团团TV 面板",
     expect: /brand-word/,
   },
   // ---------------------------------------- 网关目录：默认模型三级回退
