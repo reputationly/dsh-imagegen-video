@@ -187,43 +187,302 @@ const bumped = (version, by) => {
 }
 
 const CASES = [
-  // ------------------------------------------------------------ the smoke group
+  // ------------------------------------- the panel interaction groups
   //
-  // 这一组现在只有 9 条，因为 `scripts/smoke.mjs` 里那块 jsdom 面板断言在
-  // 08ee48c（WP4，入口只走外壳槽位）被整块删掉了：那次改动删掉 4703 行，
-  // 而当时只复核了 `contracts` 组，于是下面这些用例一直是假绿——注入的缺陷
-  // 照旧应用，但套件里已经没有任何断言会红。
+  // 08ee48c（WP4，入口只走外壳槽位）把 `scripts/smoke.mjs` 里那块 jsdom 面板
+  // 断言整块重写掉了：那次改动删掉 4703 行，而当时只复核了 `contracts` 组，
+  // 于是 `smoke` 组里的用例一直是假绿——注入的缺陷照旧应用，但那个套件里
+  // 已经没有任何断言会红。
   //
-  // 被删掉的那些用例所守的行为**都还在产品里**，只是今天没有任何套件断言
-  // 它们（下面每一条的括号是代码所在处）。它们不是「行为随表面一起消失」，
-  // 所以没有一条该由我在这里改写成别的东西：要做的是把断言加回某个套件，
-  // 然后把对应用例连同原注入点一起恢复。恢复时的清单：
+  // 那些行为**都还在产品里**，现在各自有了家：
   //
-  //   空画布六张快捷卡随节点出现/消失（CanvasWorkspace 的 `emptyState`；
-  //     契约的「空画布不再提供载入示例」只按源码守住了那一张卡）
+  //   `panel-contracts`    — scripts/smoke-panel-contracts.mjs，零构建、不渲染。
+  //     只守纯结构事实：手势匹配哪个选择器、d3-zoom 被告知哪两个键、拖入上限
+  //     的常量与用法、输入条与视口是不是兄弟。jsdom 看不见的正是这一类：没有
+  //     布局引擎、拒绝给 file input 赋值、不实现 preventDefault 的默认行为。
+  //   `panel-interactions` — scripts/smoke-panel-interactions.mjs，把真实面板挂进
+  //     外壳的 `main#imagegen` 座位再驱动：真指针、真键盘、真 change 事件。
+  //
+  // 逐条对照（括号是代码所在处）：
+  //
+  //   空画布六张快捷卡随节点出现/消失（CanvasWorkspace 的 `emptyState`）
+  //     → P1
   //   框选不把 `data-canvas-no-zoom` 面当空白（`isBackground`）
+  //     → C3 源码不变式 + P2 真指针（两种都红，注入一处就够）
   //   按住 Space/Control 时框选让位给 d3-zoom（`temporaryPanTool`）
+  //     → P2
   //   `panActivationKeyCode` 必须含 Control（d3-zoom 拒绝 ctrlKey 拖拽）
+  //     → C2
   //   灵感墙不画在播放中的片段上（ImageGenPanel 的 `viewingVideoEntry`）
+  //     → P13
   //   `?`/F1 打开快捷键表；工具条的提示带键位（`shortcutKeysFor`）
+  //     → P5：表从底栏与 `?` 各开一次，撤销按钮念出 Ctrl/⌘+Z。
+  //     `shortcutKeysFor` 与 JSX 同文件（ShortcutHelp.tsx），没有可 import 的
+  //     构建产物，所以它由 DOM 上的提示文本守，而不是一条单独的函数断言。
   //   回收站三件：还原按钮带自己的 id、不重复印计数、清空前说清条数
+  //     → P8
   //   生成输入条必须落在视口之外（overlay 是 viewport 的兄弟）
-  //   双指捏合缩放；Space 不吃聚焦按钮；Esc 关掉画内视频预览；选图后清
-  //     `<input>` 的 value
-  //   视频工作台的诊断记录 / 行为报告入口常驻（零任务时也要在）
-  //   钉住的角色写进保存的文档（`patchNode(castNode.id, { cast: member })`）
-  //   Esc 关掉时间线编辑器
-  //   促销提交一次只发一次请求（`type="submit"` 又挂 onClick 会双发）
-  //   画布拖入图片的尺寸/数量上限（`DROP_IMAGE_MAX_*`）
-  //   角色搭配的 `<fieldset>` 不因草稿读失败恒禁用（`formLocked`）
+  //     → C5 + P4（结构是对的、行为也是对的）
+  //   双指捏合缩放 → P12；Space 不吃聚焦按钮 → P3；Esc 关掉画内视频预览 → P6
+  //   选图后清 `<input>` 的 value → C4（jsdom 拿不到 file input 的 value）
+  //   视频工作台的诊断记录 / 行为报告入口常驻（零任务时也要在）→ P9
+  //   钉住的角色写进保存的文档（`patchNode(castNode.id, { cast: member })`）→ P7
+  //   Esc 关掉时间线编辑器 → P6
+  //   促销提交一次只发一次请求（`type="submit"` 又挂 onClick 会双发）→ P11
+  //   画布拖入图片的尺寸/数量上限（`DROP_IMAGE_MAX_*`）→ C1
+  //   角色搭配的 `<fieldset>` 不因草稿读失败恒禁用（`formLocked`）→ P10
   //
-  // 真正随表面一起消失的只有一条，已删：模型检测的族正则（「检测模型」整条
-  // 链路随渠道改由宿主网关目录提供而去掉）。同类里还在的「表外 id 靠命名约定
-  // 归族」由 smoke-model-baseline 的命名约定用例守着。
+  // 真正随表面一起消失的、**不恢复**的这几条，留在此处作为记录：
+  //
+  //   - 「模型检测」的族正则：整条链路随渠道改由宿主网关目录提供而去掉。同类
+  //     里还在的「表外 id 靠命名约定归族」由 smoke-model-baseline 守着。
+  //   - 侧栏接管的两条（`src/client/sidebar-entry.ts` 与 `mount.tsx` 在 WP4 删除）：
+  //     历史列自己吃掉 wheel、macOS 折叠控件不被当外来项隐藏。
+  //   - 渠道密钥与协议四条（WP3 删掉第三方渠道 / 订阅 / 自有协议）：删除渠道后
+  //     `channelSecrets` 不残留、删除前键入的 key 不写回已删 id、客户端协议选择器
+  //     里 google-native 的两条。
+  //
+  // 于是：`smoke` 组当年被删掉 29 条，这里恢复了 22 条（17 条进
+  // `panel-interactions`、5 条进 `panel-contracts`），剩下 7 条即上面那两类加
+  // 模型检测，它们的断言对象已经不在仓库里。
   //
   // 另有三条换了断言所在：就绪徽标与运行前预告改挂 `geometry`（同一条取值链
   // 现在由 smoke-canvas-geometry 直接断言），对齐改挂 `contracts`（`alignSelection`
   // 必须恰好一次 `mutate`）——用例名与缺陷都没变，只是跟着断言走。
+  // ---------------------------------------------------- the empty canvas cards
+  {
+    // 空态条件写成永假：画布无节点时不再渲染六张快捷卡。
+    name: 'the empty canvas loses its quick-start cards',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: 'const emptyState = document !== null && document.nodes.length === 0',
+    to: 'const emptyState = document !== null && document.nodes.length === -1',
+    // 卡不渲染时 waitForSelector 先抛 "selector did not render: …"。
+    expect: /data-quick-card|empty canvas shows the six quick-start cards/,
+  },
+  {
+    // 框选把 no-zoom 面当空白：pointerdown preventDefault+指针捕获抢走卡片
+    // click。守卫退回旧选择器后，结构不变式必须变红。
+    name: 'the marquee swallows quick-card clicks',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "const isBackground = closestOf(target, '[data-node-id],[data-connection-hit],[data-canvas-no-zoom]') === null",
+    to: "const isBackground = closestOf(target, '[data-node-id],[data-connection-hit]') === null",
+    expect: /marquee must ignore no-zoom surfaces/,
+  },
+  {
+    // 1.30.x 的真机回归：按住空格/Control 时框选分支照样在 pointerdown 上
+    // preventDefault + 抓指针，浏览器因此不再派发兼容 mousedown，而 d3-zoom
+    // 只靠 mousedown 起平移——画布拖不动，节点拖动（自定义引擎）却正常。
+    name: 'the marquee steals the pointer back from the pan gesture',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "tool === 'select' && !temporaryPanTool",
+    to: "tool === 'select'",
+    expect: /leaves the pointer to d3-zoom/,
+  },
+  {
+    // d3-zoom 默认拒绝带 ctrlKey 的拖拽（当成捏合缩放），所以 Control 必须
+    // 出现在 panActivationKeyCode 里，快捷键表的「Ctrl/⌘ + Space」才成立。
+    name: 'the pan activation keys forget Control',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "panActivationKeyCode={['Space', 'Control']}",
+    to: 'panActivationKeyCode="Space"',
+    expect: /configures its pan activation keys|both Space and Control as pan activation keys/,
+  },
+  {
+    // Opening a clip returns to the image tab with `images` emptied — the exact
+    // state the empty-canvas inspiration wall renders in — so without the video
+    // guard the prompt suggestions drew over the playing clip.
+    name: 'the inspiration wall returns on top of a clip that is playing',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: 'images.length === 0 && viewingVideoEntry === null ? (',
+    to: 'images.length === 0 ? (',
+    expect: /inspiration wall yields to a clip/,
+  },
+  {
+    // Every binding existed before the legend; none was discoverable. Drop the
+    // `?` branch and the shortcut whose whole point is "you can always get back
+    // to the list" is gone.
+    name: 'the ? key stops opening the shortcut legend',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "      } else if (event.key === '?' || (event.key === 'F1')) {",
+    to: "      } else if (event.key === 'F1' && shortcutHelpOpen) {",
+    expect: /\? opens the shortcut table too/,
+  },
+  {
+    // The undo tooltip is the only place a user learns the key without opening
+    // the legend. Drop the bridge back to the action label and the tooltip
+    // collapses to a bare verb.
+    name: 'the dock stops naming the key on its own controls',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "  const keys = shortcutKeysFor(key)\n  return keys === '' ? text : `${text} (${keys})`",
+    to: "  const keys = ''\n  return keys === '' ? text : `${text} (${keys})`",
+    expect: /the undo control names its key/,
+  },
+  // --------------------------------------------------- the gallery trash window
+  {
+    name: 'the trash restore button stops carrying its entry id',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: 'data-gallery-restore={entry.id}',
+    to: 'data-gallery-restore="gallery-trashed"',
+    expect: /carries its own id, not one repeated id/,
+  },
+  {
+    // The heading is the toggle; printing the count again inside the section
+    // makes the copy read as duplicated.
+    name: 'the open trash repeats the count heading it sits under',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: "                <section className={css.gallerySelectionBar} data-gallery-trash=\"\" aria-label={tt('gallery.trash')}>\n                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 auto', minWidth: 0, maxHeight: 180, overflowY: 'auto' }}>",
+    to: "                <section className={css.gallerySelectionBar} data-gallery-trash=\"\" aria-label={tt('gallery.trash')}>\n                  <strong>{tt('gallery.trashCount', { count: galleryTrash.length })}</strong>\n                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 auto', minWidth: 0, maxHeight: 180, overflowY: 'auto' }}>",
+    expect: /does not repeat the count heading/,
+  },
+  {
+    // Purge is the one action that really unlinks, so it must say how many
+    // entries the user is agreeing to drop.
+    name: 'the trash purge confirmation forgets how many entries will go',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: "if (!window.confirm(tt('gallery.purgeConfirm', { count: galleryTrash.length }))) return",
+    to: "if (!window.confirm(tt('gallery.purge'))) return",
+    expect: /states how many entries will go/,
+  },
+  // -------------------------------------------------- the composer overlay
+  {
+    // The overlay guarantee is STRUCTURAL: every overlay is a sibling of the
+    // viewport, so a pointerdown on it never reaches the viewport handler and
+    // cannot clear the selection that opened it.
+    name: 'the overlay stops being outside the viewport',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "return <div className={css.composer} data-canvas-no-zoom=\"\" style={{ left: clampedX - 280, top }}>",
+    to: "return <div className={`${css.composer} ${css.viewport}`} data-canvas-no-zoom=\"\" style={{ left: clampedX - 280, top }}>",
+    expect: /composer sits outside the viewport/,
+  },
+  // ------------------------------------------------ pointer, keys and overlays
+  {
+    name: 'touch pinch is gone again',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "    if (event.pointerType === 'touch') {\n      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })",
+    to: '    if (false) {\n      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })',
+    expect: /two touch pointers moving apart zoom in/,
+  },
+  {
+    // Space is the standard activation key of every button; treating it as a
+    // canvas gesture ate half of the keyboard's way through the panel.
+    name: 'Space eats a focused button again',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "      if (event.code === 'Space' && !isEditingTarget(event.target) && !isActivatableTarget(event.target)) {",
+    to: "      if (event.code === 'Space' && !isEditingTarget(event.target)) {",
+    expect: /Space on a focused button/,
+  },
+  {
+    // The video preview's only other exit is the × button.
+    name: 'Esc no longer closes the in-canvas video preview',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: '        if (videoPreviewNodeId !== null) { setVideoPreviewNodeId(null); return }\n',
+    to: '',
+    expect: /Escape closes the in-canvas video preview/,
+  },
+  {
+    // jsdom refuses a non-empty `value` on a file input and reports '' either
+    // way, so this one is asserted from the source: a stale value makes the
+    // retry look like a dead button, and only the handler's own text can prove
+    // it is cleared.
+    name: 'the image picker keeps its stale file value',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "        event.target.value = ''\n        if (files.length > 0) uploadFiles(files)",
+    to: '        if (files.length > 0) uploadFiles(files)',
+    expect: /clears its file input/,
+  },
+  // ------------------------------------------------- the video studio parity
+  {
+    // The parity claim fails in the direction that actually shipped upstream:
+    // the entry lives only where a TASK already exists, which is exactly the
+    // state a user with zero tasks is in.
+    name: 'the video studio stops offering the diagnostics record',
+    runner: 'panel-interactions',
+    file: 'src/client/VideoPanel.tsx',
+    from: '      <div className={css.videoDiagnosticsRow}>\n        <DiagnosticsButton open={diagnosticsOpen} onToggle={() => { setDiagnosticsOpen(open => !open) }} />\n        <SignalsButton open={signalsOpen} onToggle={() => { setSignalsOpen(open => !open) }} />\n      </div>',
+    to: '',
+    expect: /did not render: \[data-diagnostics-button\]|exactly one diagnostics entry/,
+  },
+  {
+    // The report exists on the host but nothing opens it: a correct aggregator
+    // behind a button rendered nowhere.
+    name: 'the video studio stops offering the behaviour report',
+    runner: 'panel-interactions',
+    file: 'src/client/VideoPanel.tsx',
+    from: '        <SignalsButton open={signalsOpen} onToggle={() => { setSignalsOpen(open => !open) }} />\n',
+    to: '',
+    expect: /exactly one behaviour-report entry/,
+  },
+  // ------------------------------------------------------ what the canvas saves
+  {
+    // 钉住只改了界面不上保存：刷新一下就没了，所有后续生成也带不上参考。
+    name: 'pinning an identity never reaches the saved document',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: '        patchNode(castNode.id, { cast: member })',
+    to: '        void castNode',
+    expect: /the pin reaches the saved document|the node shows it is pinned/,
+  },
+  {
+    // 没有 Esc 分支时时间线只能靠点「关闭」退出，而 Esc 会继续往下走清掉选区
+    // ——面板后面的东西被改掉了，面板还在。
+    name: 'Escape no longer closes the timeline editor',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: '        if (timelineOpen) { setTimelineOpen(false); return }\n',
+    to: '',
+    expect: /Escape closes the timeline editor/,
+  },
+  // -------------------------------------------------------- one press, one charge
+  {
+    // One press, one charge. The submit buttons carried `type="submit"` AND an
+    // `onClick` calling the same handler, so a click ran both paths and every
+    // generate was billed twice.
+    name: 'a submit button also fires its own click handler',
+    runner: 'panel-interactions',
+    file: 'src/client/PromoWorkspace.tsx',
+    from: '            <button type="submit" className={css.primary} disabled={!ready}>',
+    to: '            <button type="submit" className={css.primary} disabled={!ready} onClick={() => void generate()}>',
+    expect: /one click on promo's submit must issue one generation/,
+  },
+  {
+    // A canvas drop used to read every dropped image at once with Promise.all
+    // and no size or count cap, which seized the page on a large selection.
+    name: 'a canvas drop reads every image at once with no caps',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: '    const oversized = allImages.filter(file => file.size > DROP_IMAGE_MAX_BYTES)\n    const withinSize = allImages.filter(file => file.size <= DROP_IMAGE_MAX_BYTES)\n    const images = withinSize.slice(0, DROP_IMAGE_MAX_COUNT)',
+    to: '    const oversized = []\n    const withinSize = allImages\n    const images = allImages',
+    expect: /dropped image over the size cap|drop is capped to a maximum|read sequentially/,
+  },
+  {
+    // 草稿读失败曾经把整张 <fieldset> 永久禁用：模式按钮、图库入口、上传全部
+    // 点不动，而提示只说「无法读取草稿」——用户看到的就是「角色搭配点不了」。
+    name: 'the outfit form goes back to a permanently disabled fieldset',
+    runner: 'panel-interactions',
+    file: 'src/client/OutfitWorkspace.tsx',
+    from: "  const formLocked = !draftLoaded && draftError === ''",
+    to: '  const formLocked = true',
+    expect: /the outfit form is interactive, not stuck waiting on a draft read/,
+  },
+  // ------------------------------------- what still runs in `scripts/smoke.mjs`
+  //
+  // 这几条从来就不是面板交互，所以 WP4 没有动它们：宿主侧的数据往返与
+  // jsdom 之外的结构断言。新增的面板用例在上面两组，别再往这里放。
   // ---------------------------------------- history prompt and host drag overlay
   {
     // The prompt one: the result prompt above the image must preserve newlines
@@ -3075,6 +3334,11 @@ const RUNNERS = {
   // 不是它跑出什么。这条的存在理由是 2026-10-13~15 那三天攒下的 1408 条残渣。
   isolation: { script: 'scripts/verify-test-isolation.mjs', build: false },
   contracts: { script: 'scripts/verify-ui-contracts.mjs', build: false },
+  // 面板的结构契约：手势匹配哪个选择器、d3-zoom 被告知哪两个键、拖入上限的
+  // 常量与用法、输入条与视口是不是兄弟。读源码 + import 纯模块，零构建。
+  'panel-contracts': { script: 'scripts/smoke-panel-contracts.mjs', build: false },
+  // 把真实面板挂进外壳的 `main#imagegen` 座位再驱动，读的是构建产物，所以要重建。
+  'panel-interactions': { script: 'scripts/smoke-panel-interactions.mjs', build: true },
   // 品牌守卫读源码、包入口与本地化元数据，零构建：它守的是「用户看到的字」，
   // 而复原一个旧品牌词只需要改一处字符串，没有任何运行时症状。
   'no-brand': { script: 'scripts/verify-no-brand.mjs', build: false },
