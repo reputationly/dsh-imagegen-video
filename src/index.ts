@@ -1,15 +1,16 @@
 /**
- * dsh-imagegen — host half. Mounts the plugin's settings section (channels
- * with per-channel model catalogs on the host settings seam), the
- * /api/dsh-imagegen route family (loopback-only settings bridge + presets /
- * usage / image-generation proxy that keeps every API key host-side), and a
- * system-prompt announcement. The browser half (./client) renders the sidebar
- * entry and the split-pane generation studio.
+ * dsh-imagegen — host half. Mounts the plugin's settings section on the host
+ * settings seam, the /api/dsh-imagegen route family (loopback-only settings
+ * bridge + usage / image-generation proxy), and a system-prompt announcement.
+ *
+ * 渠道只有一个来源：宿主的网关能力清单（见 `gateway-catalog.ts`），密钥由宿主凭据
+ * 服务持有、提交前现取。插件不再有自己的端点、预设、订阅账号或对象存储配置。
+ * The browser half (./client) renders the sidebar entry and the split-pane
+ * generation studio.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { COMPONENT_SERVICE, ROUTE_SERVICE, routeComponent, type Feature, type ComponentRuntime } from './components.ts'
-import { readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { installSettingsSectionCompat, resolveSettingsNamespaceCompat, settingsNamespaceCompat } from './settings-compat.ts'
@@ -25,16 +26,14 @@ import type {} from '@deepseek-ai/dsh-tools'
 // structurally (see CanvasSkillServices): the host half must not import those
 // packages at runtime, and this deployment does not resolve them at
 // type-check time either.
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import {
-  displayNameOf, entriesOfKind, gatewayChannel, isCredentialRefName, modelOptionsOf, pluginSnapshotOf,
+  entriesOfKind, gatewayChannel, isCredentialRefName, modelOptionsOf, pluginSnapshotOf,
   selectDefaultAlias, type GatewayCatalogHost, type GatewayCredentialsHost, type GatewayEndpoint,
 } from './gateway-catalog.ts'
-import { IMAGEGEN_SETTINGS_NAMESPACE, type GatewayCatalogSnapshot, isChannelProtocolPreference, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
+import { IMAGEGEN_SETTINGS_NAMESPACE, isChannelProtocolPreference, type GatewayCatalogSnapshot, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
-import { SubscriptionManager } from './subscription/manager.ts'
 import { syncAllTemplates } from './templates-store.ts'
-import { setStorageSyncHandler, putObject, type StorageSyncConfig } from './storage-sync.ts'
 
 /**
  * The concrete driver contract behind `ctx.agents`. The registry's published
@@ -302,25 +301,14 @@ export function createSkillRegistryBackend(
   }
 }
 
-/** Content type for a saved image file name (object uploads). */
-function mimeOfPath(filePath: string): string {
-  switch (path.extname(filePath).toLowerCase()) {
-    case '.jpg':
-    case '.jpeg': return 'image/jpeg'
-    case '.webp': return 'image/webp'
-    case '.gif': return 'image/gif'
-    default: return 'image/png'
-  }
-}
-import { ImageGenerationRuntime, type ChannelsView, type HostChatSeam, type RuntimeChannel } from './generation-runtime.ts'
+import { ImageGenerationRuntime, type ChannelsView, type HostChatSeam, type RuntimeChannel, type VideoDirectorSeam } from './generation-runtime.ts'
 import { createHostChatSeam, type HostAgentPresets, type HostAgentsService, type HostDefaultModel } from './host-chat.ts'
 import { registerAgentCanvasTools } from './agent-canvas-tools.ts'
 import { registerAgentImageTools } from './agent-image-tools.ts'
 import { registerAgentVideoTools } from './agent-video-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
 import { setImageDataRoot, imageDataRoot } from './image-storage-path.ts'
-import { presetById } from './presets.ts'
-import { chatComplete, type PromptModelConfig } from './prompt-enhancer.ts'
+import type { ChatOptions, ChatTarget } from './prompt-enhancer.ts'
 import { SkillRunner, setSkillTranslate, canvasSkillCopy, type SkillAgentBackend, type SkillAgentHandle, type SkillCanvasBackend, type SkillChatBackend, type SkillRegistryBackend } from './skill-runner.ts'
 import { installFromArchive, installFromUrl, knownSkillUrl, listLibrary, listLocalSkills, readLocalSkill, removeSkill, SkillStoreError, skillsRoot, type LocalSkill, type LocalSkillIssue } from './skill-store.ts'
 import { applySkillConfigSteps, asConfigDict, configNote, configView, missingFields, parseSkillConfigManifest, readSkillConfigFile, skillConfigKey, valuesFor, type SkillConfigDeclaration, type SkillConfigIssue, type SkillConfigStore } from './skill-config.ts'
@@ -328,7 +316,7 @@ import { recipeFor } from './skill-config-recipes.ts'
 import { createClipComposer } from './clip-compose.ts'
 import { PptRuntime } from './ppt-runtime.ts'
 import { EDITABLE_PPT_SKILL, type ExternalSkillSummary } from './skills-catalog.ts'
-import { redactDiagnosticText } from './diagnostics-store.ts'
+import { recordDiagnostic, redactDiagnosticText } from './diagnostics-store.ts'
 import { canvasStore } from './canvas-store.ts'
 import { imageGenLanguageOf, interpolate } from './locale-tables.ts'
 
@@ -341,22 +329,18 @@ export const inject = ['webServer', 'systemPrompt', 'commands']
 // Internals re-exported for smoke tests and host-side debugging; the plugin
 // contract only requires name / inject / Config / apply.
 export { makeRoutes } from './routes.ts'
-export { SubscriptionManager, vendorOf, subscriptionOauthRef } from './subscription/manager.ts'
 export { generateImage, ImageGenError } from './engine.ts'
 export { generateVideo, VideoGenError, isVideoModel } from './video-engine.ts'
-export { describeVideoModel, DEFAULT_VIDEO_MODELS, durationsOf, isSnapgenVideoModel, normalizeVideoResolution, parseVideoResolution, resolutionRank, resolveVideoModelId, videoDurationsFor, VIDEO_RESOLUTIONS } from './video-model-catalog.ts'
-// The snapgen protocol is hand-rolled, so its primitives are exported too: the
-// offline smoke suite pins the guard bytes and the wire vocabulary against the
-// values measured from the real site, with no network and no browser.
-export { parseSnapgenCredentials, snapgenGuard, snapgenWire, snapgenWireParams } from './snapgen-engine.ts'
+export { describeVideoModel, durationsOf, normalizeVideoResolution, parseVideoResolution, resolutionRank, resolveVideoModelId, videoDurationsFor, VIDEO_RESOLUTIONS } from './video-model-catalog.ts'
 export { applyPlan, hasMotion, looksChinese, MAX_PLANNED_PROMPT_CHARS, MAX_PROMPT_CHARS, parsePlanAnswer, planVideo, planVideoLocally, requirePrompt, VideoPlanError, type ChatCompleter, type VideoPlan, type VideoPlanInput } from './video-director.ts'
 export { appendVideoHistory, backfillVideoPosters, clearVideoHistory, listVideoHistory, readVideoFile, removeVideoHistory, VIDEO_HISTORY_MAX } from './video-store.ts'
 export { VideoTaskQueue } from './video-task-queue.ts'
 export { promptCharLimit } from './model-catalog.ts'
 export { generateListingCopy, listingTitleLimit } from './listing-copy.ts'
 export { analyzeLayers, normalizeLayerPlan, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
-export { ImageGenerationRuntime, type HostChatSeam } from './generation-runtime.ts'
+export { ImageGenerationRuntime, type HostChatSeam, type VideoDirectorSeam } from './generation-runtime.ts'
 export { createHostChatSeam } from './host-chat.ts'
+export { enhancePrompt, polishPrompt, stripReasoning, type ChatPart, type ChatTarget, type HostChatClient } from './prompt-enhancer.ts'
 export { runCodeRender, codeRenderPlan, probeCodeRender, validateCodeInput, type CodeRenderInput, type CodeRenderOutcome, type CodeChatCompleter } from './code-render-runtime.ts'
 export { renderCode, dimensionsFor, locateFfmpeg, extractRenderSource, looksLikeCode, CodeRenderError, MAX_CODE_CHARS, DEFAULT_RENDER_TIMEOUT_MS, type CodeRenderKind, type CodeRenderRequest, type CodeRenderResult } from './code-render.ts'
 export { codeRenderSystemPrompt, codeRenderUserPrompt, readGeneratedCode, fallbackRendererSource, type CodeBrief, type CodeTarget } from './code-prompt.ts'
@@ -369,7 +353,6 @@ export { pptActivity, PptProgressMonitor } from './ppt-progress.ts'
 export { appendGallery, appendGalleryVideo, clearGallery, GALLERY_TRASH_RETENTION_MS, listGallery, listGalleryTrash, purgeGallery, readGalleryImage, readGalleryVideo, removeGallery, restoreGallery, updateGalleryTags } from './gallery-store.ts'
 export { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates, syncAllTemplates, clearTemplateMemo } from './templates-store.ts'
 export { addTemplateFavorite, clearTemplateFavoritesMemo, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
-export { putObject, setStorageSyncHandler, testStorage, type StorageSyncConfig } from './storage-sync.ts'
 export { agentSessionFailure, SkillRunner, setSkillTranslate, setSkillLanguage, canvasSkillCopy } from './skill-runner.ts'
 export { builtinCanvasSkills, canvasSkillCatalog, EDITABLE_PPT_SKILL, findCanvasSkill, isEditablePptSkill, mergeExternalSkills, tierOfExternalSkill } from './skills-catalog.ts'
 export { extractFileText, MAX_EXTRACTED_CHARS } from './file-text.ts'
@@ -381,7 +364,7 @@ export { createClipComposer, findTool, localVideoToolDirs } from './clip-compose
 export { isZipDirectory, readZipDirectory, readZipEntry } from './zip.ts'
 export { canvasStore, isBlockedFileName, fileKindOf, MAX_CANVAS_FILE_BYTES, mimeFromFileName, safeFileName } from './canvas-store.ts'
 export { ProposalStore, proposalStore } from './canvas-proposal-store.ts'
-export { clearDiagnostics, listDiagnostics, networkErrorFields, redactDiagnosticText, recordDiagnostic, DIAGNOSTIC_MAX, type DiagnosticEntry } from './diagnostics-store.ts'
+export { bodyShapeOf, clearDiagnostics, diagnoseNonJsonBody, listDiagnostics, networkErrorFields, redactDiagnosticText, recordDiagnostic, requestAddress, DIAGNOSTIC_MAX, type DiagnosticEntry } from './diagnostics-store.ts'
 
 /** The branded settings namespace of this plugin (the card edits it). */
 export const ImageGenSettingsNamespace = settingsNamespaceCompat(IMAGEGEN_SETTINGS_NAMESPACE)
@@ -389,11 +372,12 @@ export const ImageGenSettingsNamespace = settingsNamespaceCompat(IMAGEGEN_SETTIN
 /**
  * Plugin config, validated by the same-named schemastery schema.
  *
- * Channels own the endpoint + model catalog. The API key of each channel lives
- * in `channelSecrets` (a secret dict keyed by channel id) instead of inside the
- * channel objects — dsh-settings redaction supports dict/array containers, but
- * path ops cannot reach inside arrays, so a whole-array write must never carry
- * secrets it would clobber.
+ * Everything the deployment itself owns — the gateway endpoint, its model
+ * catalog and the credential that authenticates it — comes from the host's
+ * gateway catalog, not from this document. The fields below that once carried
+ * those values stay DECLARED so an older settings document still parses; the
+ * deprecated ones are read by nothing and their secrets are cleared by the
+ * migration in `apply`.
  */
 export interface Config {
   /** Master switch for the plugin (routes, prompt section). */
@@ -402,41 +386,59 @@ export interface Config {
   announceToAgent?: boolean
   /** Allow Agents to submit and retrieve image-generation tasks. */
   allowAgentImageGeneration?: boolean
-  /** Configured channels (each: name, endpoint, model catalog). */
+  /**
+   * @deprecated Channels come from the host gateway catalog. Kept so an older
+   * settings document still parses; the value is never read.
+   */
   channels?: ChannelConfig[]
-  /** Per-channel API keys, keyed by channel id. */
+  /**
+   * @deprecated The gateway credential lives in the host credential service.
+   * Kept so an older settings document still parses; the migration empties it.
+   */
   channelSecrets?: Record<string, string>
-  /** Channel used when a request does not name one. */
+  /**
+   * @deprecated The single gateway channel is the only channel. Kept so an
+   * older settings document still parses; the value is never read.
+   */
   defaultChannelId?: string
-  /** Model alias selected by default for GUI, canvas and Agent generation. Empty uses the first configured model. */
+  /** Model alias selected by default for GUI, canvas and Agent generation. Empty uses the gateway's default. */
   defaultModel?: string
-  /** Optional OpenAI-compatible chat endpoint for prompt enhancement. */
+  /**
+   * @deprecated Prompt editing runs on the host conversation model. Kept so an
+   * older settings document still parses; the value is never read.
+   */
   promptApiUrl?: string
-  /** Optional secret for the prompt enhancement endpoint. */
+  /**
+   * @deprecated Prompt editing runs on the host conversation model. Kept so an
+   * older settings document still parses; the migration empties it.
+   */
   promptApiKey?: string
-  /** Chat model used to expand short image prompts. */
+  /**
+   * @deprecated Prompt editing runs on the host conversation model. Kept so an
+   * older settings document still parses; the value is never read.
+   */
   promptModel?: string
-  /** Model alias selected by default for video generation. Empty uses the first video model. */
+  /** Model alias selected by default for video generation. Empty uses the gateway's default. */
   defaultVideoModel?: string
   /** Allow Agents to submit and retrieve video-generation tasks. */
   allowAgentVideoGeneration?: boolean
   /** Local root for generated/history/gallery/canvas images. Empty keeps the default under DSH_HOME. */
   localStoragePath?: string
-  /** Sync saved images to an S3-compatible object store (COS / OSS / Qiniu S3 …). */
+  /** @deprecated Object-storage sync was removed. Kept so an older settings document still parses. */
   storageEnabled?: boolean
-  /** S3-compatible endpoint URL including the bucket (virtual-hosted or path style). */
+  /** @deprecated Object-storage sync was removed. Kept so an older settings document still parses. */
   storageEndpoint?: string
-  /** Provider region for SigV4 scope, e.g. ap-guangzhou / oss-cn-hangzhou. */
+  /** @deprecated Object-storage sync was removed. Kept so an older settings document still parses. */
   storageRegion?: string
-  /** Object key prefix, default 'dsh-imagegen'. */
+  /** @deprecated Object-storage sync was removed. Kept so an older settings document still parses. */
   storagePrefix?: string
-  /** S3 access key id. */
+  /** @deprecated Object-storage sync was removed. Kept so an older settings document still parses. */
   storageAccessKey?: string
-  /** S3 secret access key (stored redacted). */
+  /** @deprecated Object-storage sync was removed; the migration empties this secret. */
   storageSecretKey?: string
-  /** Upload gallery additions (default on when storage is enabled). */
+  /** @deprecated Object-storage sync was removed. Kept so an older settings document still parses. */
   storageSyncGallery?: boolean
-  /** Also upload history images. */
+  /** @deprecated Object-storage sync was removed. Kept so an older settings document still parses. */
   storageSyncHistory?: boolean
   /* ------------------------- infinite-canvas skills ------------------------- */
   /** Master switch for canvas skills (menu, runs, produced nodes). */
@@ -460,12 +462,12 @@ export interface Config {
   skillConfig?: Record<string, string>
   /** Secret half of the skill configuration, stored redacted. */
   skillConfigSecrets?: Record<string, string>
-  /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
-  /** Legacy base URL; synthesized into the default channel on upgrade. */
+  /* ----- deprecated legacy single-endpoint fields (no longer read) ----- */
+  /** @deprecated The gateway endpoint comes from the host catalog. */
   apiUrl?: string
-  /** Legacy secret; migrated into channelSecrets on upgrade. */
+  /** @deprecated The gateway credential lives in the host credential service; the migration empties this secret. */
   apiKey?: string
-  /** Legacy allow-list; migrated into the default channel's catalog. */
+  /** @deprecated Model catalogs come from the host catalog. Kept so an older settings document still parses. */
   imageModels?: string[]
 }
 
@@ -479,12 +481,18 @@ const configSchema = z.object({
     name: z.string().default(''),
     apiUrl: z.string().default(''),
     apiUrlFull: z.boolean().default(false),
-    /** Seedream watermark opt-out (#56): absent/true keeps the badge on. */
+    /** @deprecated 该协议族已移除。保留声明只为旧文档照旧解析。 */
     watermark: z.boolean().default(true),
-    /** Use the selected adapter's reference ceiling; false pins 5. */
+    /** @deprecated 适配器参考图上限：族已移除。保留声明只为旧文档照旧解析。 */
     autoReferenceLimit: z.boolean().default(true),
+    /**
+     * 传输协议。旧的 `google-native` / `qwen-draw` 也留在联合里：它们解析得出，
+     * 但归一化时会被丢掉，退回 `auto`（OpenAI 兼容 images）。
+     */
     protocol: z.union([z.const('auto'), z.const('images'), z.const('chat-completions'), z.const('google-native'), z.const('qwen-draw')]).default('auto'),
+    /** @deprecated 订阅账号已移除。保留声明只为旧文档照旧解析。 */
     auth: z.union([z.const('api-key'), z.const('subscription')]).default('api-key'),
+    /** @deprecated 订阅账号已移除。保留声明只为旧文档照旧解析。 */
     subscription: z.string().default(''),
     models: z.array(z.object({
       alias: z.string(),
@@ -497,20 +505,27 @@ const configSchema = z.object({
       id: z.string(),
     })).default([]),
   })).default([]).volatile(),
+  /** @deprecated 旧版按渠道存的密钥；迁移会把它清空。保留声明只为旧文档照旧解析。 */
   channelSecrets: z.dict(z.string().role('secret')).default({}).volatile(),
+  /** @deprecated 渠道只来自宿主目录。保留声明只为旧文档照旧解析。 */
   defaultChannelId: z.string().default('').volatile(),
   defaultModel: z.string().default('').volatile(),
   defaultVideoModel: z.string().default('').volatile(),
   allowAgentVideoGeneration: z.boolean().default(true).volatile(),
+  /** @deprecated 提示词增强走宿主对话模型。保留声明只为旧文档照旧解析。 */
   promptApiUrl: z.string().default('').volatile(),
+  /** @deprecated 提示词增强走宿主对话模型；迁移会把它清空。 */
   promptApiKey: z.string().role('secret').default('').volatile(),
+  /** @deprecated 提示词增强走宿主对话模型。保留声明只为旧文档照旧解析。 */
   promptModel: z.string().default('').volatile(),
   localStoragePath: z.string().default('').volatile(),
+  /** @deprecated 对象存储同步已移除。保留声明只为旧文档照旧解析。 */
   storageEnabled: z.boolean().default(false).volatile(),
   storageEndpoint: z.string().default('').volatile(),
   storageRegion: z.string().default('').volatile(),
   storagePrefix: z.string().default('dsh-imagegen').volatile(),
   storageAccessKey: z.string().default('').volatile(),
+  /** @deprecated 对象存储同步已移除；迁移会把它清空。 */
   storageSecretKey: z.string().role('secret').default('').volatile(),
   storageSyncGallery: z.boolean().default(true).volatile(),
   storageSyncHistory: z.boolean().default(false).volatile(),
@@ -522,8 +537,11 @@ const configSchema = z.object({
   skillAgentPreset: z.string().default('').volatile(),
   skillConfig: z.dict(z.string()).default({}).volatile(),
   skillConfigSecrets: z.dict(z.string().role('secret')).default({}).volatile(),
+  /** @deprecated 端点来自宿主目录。保留声明只为旧文档照旧解析。 */
   apiUrl: z.string().default('').volatile(),
+  /** @deprecated 密钥由宿主凭据服务持有；迁移会把它清空。 */
   apiKey: z.string().role('secret').default('').volatile(),
+  /** @deprecated 模型目录来自宿主目录。保留声明只为旧文档照旧解析。 */
   imageModels: z.array(z.string()).default([]).volatile(),
 })
 
@@ -561,12 +579,12 @@ const DEFAULT_ALLOW_AGENT_IMAGE_GENERATION = true
 const SECTION_ORDER = 150
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-export const IMAGEGEN_GUIDANCE = '本机已安装「创作」工作台（包名 dsh-imagegen）：「设置 → 生图配置」，以及侧边栏「新会话 / 生图」工作台。能力：通过「渠道」对接 OpenAI 兼容图像生成 API（每个渠道 = 一个 API 端点 + 各自的模型目录），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送，nanobanana 系列按 aspect_ratio / image_size 参数协议发送；seedream 系列统一走 /images/generations，参考图以 JSON image 数组发送；Agnes 图像模型（`agnes-image-*`）的文生图与图生图也统一走 /images/generations，编辑时参考图放在 `extra_body.image`（URL 或 data URI，可多张），尺寸用 `1K/2K/3K/4K` 档位配 `ratio`，上游不接受 OpenAI 的 `quality` 字段；智谱 `glm-image` 使用官方 `/api/paas/v4/images/generations`，当前仅支持文生图；qwen-image 系列使用阿里云 DashScope 原生接口（api_url 填 https://dashscope.aliyuncs.com/api/v1，不支持 OpenAI 兼容模式，该渠道不可复用于提示词增强，尺寸自动映射为宽*高）。MiniMax `image-01` 使用 MiniMax 原生 `/image_generation` 接口（api_url 填 https://api.minimax.io/v1 或国内站 https://api.minimaxi.com/v1，支持 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9 宽高比，一次最多 9 张；图生图为单张 subject_reference 主体参考（保持人物/主体一致，非像素级局部编辑）；其 /models 只列聊天模型，图片模型需用预设目录）。API 地址与密钥在 GUI 设置中按渠道配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载。模型只能使用用户在各渠道配置目录中的模型；检测模型时会过滤聊天、Embedding 等非图片模型，但模型出现在 /models 中仍不等于其网关原生支持生图协议，遇到 Qwen、MiniMax、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：多来源标签页（精选案例库 / 沧河案例库 / 手绘模板库 / Prompt-Signal / GPT Image 2 案例库），内置多个社区库的数千条提示词案例，可搜索、筛选、收藏（星标，宿主持久化）与复用；在线来源可独立刷新并每 12 小时后台同步，手绘、Prompt-Signal 与 GPT Image 2 案例库使用随插件版本更新的固定快照。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。用户也可以使用 `/edit_image <修改描述>`，命令会直接读取当前对话最近图片并调用插件图片模型，不经过对话模型的图片能力检查。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库参考图首次加载需要访问对应来源站点（vibeui.top / gpt-image2.canghe.ai / cdn.jsdelivr.net / raw.githubusercontent.com / pbs.twimg.com / mosaic.fxtwitter.com）。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。插件同时支持 AI 生视频：在「设置 → 生图配置」的渠道里为渠道单独配置「视频模型」目录（与图片模型分开，因为视频走异步提交+轮询协议），面板「生视频」标签页可文生视频、图生视频、首尾帧与多参考图生成。视频按协议族适配：Agnes 视频模型（`agnes-video-*`，提交 POST /v1/videos，轮询 GET /v1/videos/{id}，取 metadata.url，支持 mode=text/keyframe/reference、seconds、size、seed）；算力萌 comemoe 模型（`wan2.2-t2v` 仅文生视频、`zhimeng-h3-local` 支持图生视频；提交响应为扁平结构、状态含官方文档未写的 `processing`、结果在顶层 `url`，aspect_ratio 仅接受 16:9/9:16/1:1，5 秒片子实测约 9 分钟）；其余视频模型按通用 OpenAI 兼容视频端点尽力适配。Agent 可直接调用 `generate_video` 提交视频生成（默认等待完成，完成视频以文件落盘并通过同源 URL 播放），也可传 `wait_for_completion: false` 后用 `get_video_generation_task` 查询；视频渲染通常需要数分钟，不要反复轮询。视频文件保存在本机数据目录的 videos/ 下，不占用对话上下文。无限画布的图片节点还有四个纯界面能力（标注局部改图：画框后挂一张跟随图片移动的提示词卡片、本地抠图去背景、按视觉模型拆分图层、为节点指定模型），它们由用户在画布上操作，Agent 无需也无法触发。无限画布现在还支持「技能」：任意图片/文本/文件节点（生成配置节点除外）的悬浮工具条或右键菜单都有「技能」入口，内置动作包括文本润色（polish.text，可指定 formal/casual/shorter/expand 或自定义指令）、图片描述（describe.image）、内容抽取（extract.content：文本/代码/OOXML/PDF 抽取为文本节点），以及重任务「图片转可编辑 PPT」（ppt.fromImages）；同时会列出本机 ~/.dsh/skills 下所有可被模型调用的技能（id 形如 skill:<名称>）。轻量技能直接调用「提示词增强」所配置的聊天模型；重任务技能会启动一个无头 DSH Agent 在本机执行真实流水线（读写文件、跑 CLI），可能持续数分钟到数十分钟并消耗较多额度，因此界面会先弹确认框。`image-to-editable-ppt` 需要用户自行安装该技能，并按它的文档配置 OCR Token 与图片后端，未安装时运行会返回可操作的 skill-missing 提示；底部 Dock 的「技能库」面板可以在线安装（粘贴仓库/压缩包/SKILL.md 链接，支持 GitHub、裸 git、raw 与 zip）或上传本地技能压缩包，也可以卸载，装好后宿主会热加载、无需重启。技能可以在 SKILL.md 旁边放 skill.config.json 声明自己需要的配置（字段 + apply 步骤：command 调技能自带 CLI、或写一份配置文件），技能库面板据此渲染「配置」表单并支持保存 / 保存并应用，密钥走设置脱敏存储、不会进入运行目录或提示词；已知技能（image-to-editable-ppt 的 editppt config）插件内置了配方，所以用户不需要手敲配置命令。文件节点支持拖拽或菜单上传任意文件（单文件 ≤50MB，脚本/可执行文件被拒绝），并在节点内直接预览内容：文本/代码/CSV/TSV/JSON 原文、XLSX 表格、DOCX/PPTX/ODT/ODS 抽取文本、ZIP 目录清单都由宿主解码成有限的预览数据返回，图片、PDF、音频、视频由宿主以 inline 响应（支持 HTTP Range，可拖动播放进度）交给浏览器渲染；双击节点或点悬浮工具条的「放大预览」会在全屏阅读器里显示全文并支持复制与下载，无法内联的二进制类型仍以下载方式提供（宿主以 application/octet-stream + attachment 返回，HTML/SVG 一类的标记永远不会内联渲染）。技能运行只产出节点与连线草稿，由浏览器端写入画布文档。相关设置在「设置 → 生图配置」的「无限画布技能」（总开关、是否允许重任务、技能白名单、重任务工作目录、超时分钟数、Agent 预设，并可一键检测技能环境）。汇报格式：Agent 工具完成图片生成/改图后，工具结果 JSON 的 files 字段给出图片落盘绝对路径；最终回复必须在最前面用 Markdown 图片语法内嵌展示（![生成图片](files 里的第一个路径)），图片在前、说明文字在后，多张图逐张列出。不要用 dsh-ui 组件、代码块或外链包裹图片。'
+export const IMAGEGEN_GUIDANCE = '本机已安装「创作」工作台（包名 dsh-imagegen）：入口在侧边栏「新会话 / 生图」工作台，设置项在插件自己的设置页。能力：工作台只对接部署自己的模型网关（new-api），渠道、模型目录与默认模型都来自宿主的能力清单，密钥由宿主凭据服务持有、提交前现取，插件不保存任何密钥。图像走 OpenAI 兼容的 /images/generations 与 /images/edits；网关的 `minimax-h3-image*` 家族（含聚合模型 `minimax-h3-image-enhanced`）同样走这两个路径，但尺寸只认 `size` 且必须落在 2K 计费档（2048x2048、2368x1760、2720x1536 等），低于 2K 网关直接 400，插件会把面板比例换成对应的交付尺寸；聚合模型由网关侧自动定画幅，因此客户端不传尺寸。视频走网关统一的异步任务接口：提交 POST /videos，轮询 GET /videos/{id}，成品在轮询返回的 metadata.url；metadata.image_mode 区分文生视频 / 首尾帧 / 参考族，参考图放 metadata.src_ref_images。模型名保留 minimax-h3 前缀（`minimax-h3-2k`、`minimax-h3-ref-2k`、`minimax-h3-fl2va`、`minimax-h3-ref2va` 是网关侧的聚合模型），插件据此选协议；视频只有 768P 一档，2K 由网关侧超分完成。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：多来源标签页（精选案例库 / 沧河案例库 / 手绘模板库 / Prompt-Signal / GPT Image 2 案例库），内置多个社区库的数千条提示词案例，可搜索、筛选、收藏（星标，宿主持久化）与复用；在线来源可独立刷新并每 12 小时后台同步，手绘、Prompt-Signal 与 GPT Image 2 案例库使用随插件版本更新的固定快照。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。用户也可以使用 `/edit_image <修改描述>`，命令会直接读取当前对话最近图片并调用插件图片模型，不经过对话模型的图片能力检查。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗账户额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；参考图会发送至部署的模型网关；模板库参考图首次加载需要访问对应来源站点（vibeui.top / gpt-image2.canghe.ai / cdn.jsdelivr.net / raw.githubusercontent.com / pbs.twimg.com / mosaic.fxtwitter.com）。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。插件同时支持 AI 生视频：面板「生视频」标签页可文生视频、图生视频、首尾帧与多参考图生成。Agent 可直接调用 `generate_video` 提交视频生成（默认等待完成，完成视频以文件落盘并通过同源 URL 播放），也可传 `wait_for_completion: false` 后用 `get_video_generation_task` 查询；视频渲染通常需要数分钟，不要反复轮询。视频文件保存在本机数据目录的 videos/ 下，不占用对话上下文。无限画布的图片节点还有几个纯界面能力（标注局部改图：画框后挂一张跟随图片移动的提示词卡片、本地抠图去背景、按视觉模型拆分图层、为节点指定模型），它们由用户在画布上操作，Agent 无需也无法触发。无限画布还支持「技能」：任意图片/文本/文件节点（生成配置节点除外）的悬浮工具条或右键菜单都有「技能」入口，内置动作包括文本润色（polish.text，可指定 formal/casual/shorter/expand 或自定义指令）、图片描述（describe.image）、内容抽取（extract.content：文本/代码/OOXML/PDF 抽取为文本节点），以及重任务「图片转可编辑 PPT」（ppt.fromImages）；同时会列出本机 ~/.dsh/skills 下所有可被模型调用的技能（id 形如 skill:<名称>）。轻量技能与提示词增强都走本机对话面板里选定的那个对话模型（不再需要单独配置接口），重任务技能会启动一个无头 DSH Agent 在本机执行真实流水线（读写文件、跑 CLI），可能持续数分钟到数十分钟并消耗较多额度，因此界面会先弹确认框。`image-to-editable-ppt` 需要用户自行安装该技能，并按它的文档配置 OCR Token 与图片后端，未安装时运行会返回可操作的 skill-missing 提示；底部 Dock 的「技能库」面板可以在线安装（粘贴仓库/压缩包/SKILL.md 链接，支持 GitHub、裸 git、raw 与 zip）或上传本地技能压缩包，也可以卸载，装好后宿主会热加载、无需重启。技能可以在 SKILL.md 旁边放 skill.config.json 声明自己需要的配置（字段 + apply 步骤：command 调技能自带 CLI、或写一份配置文件），技能库面板据此渲染「配置」表单并支持保存 / 保存并应用，密钥走设置脱敏存储、不会进入运行目录或提示词；已知技能（image-to-editable-ppt 的 editppt config）插件内置了配方，所以用户不需要手敲配置命令。文件节点支持拖拽或菜单上传任意文件（单文件 ≤50MB，脚本/可执行文件被拒绝），并在节点内直接预览内容：文本/代码/CSV/TSV/JSON 原文、XLSX 表格、DOCX/PPTX/ODT/ODS 抽取文本、ZIP 目录清单都由宿主解码成有限的预览数据返回，图片、PDF、音频、视频由宿主以 inline 响应（支持 HTTP Range，可拖动播放进度）交给浏览器渲染；双击节点或点悬浮工具条的「放大预览」会在全屏阅读器里显示全文并支持复制与下载，无法内联的二进制类型仍以下载方式提供（宿主以 application/octet-stream + attachment 返回，HTML/SVG 一类的标记永远不会内联渲染）。技能运行只产出节点与连线草稿，由浏览器端写入画布文档。汇报格式：Agent 工具完成图片生成/改图后，工具结果 JSON 的 files 字段给出图片落盘绝对路径；最终回复必须在最前面用 Markdown 图片语法内嵌展示（![生成图片](files 里的第一个路径)），图片在前、说明文字在后，多张图逐张列出。不要用 dsh-ui 组件、代码块或外链包裹图片。'
 
 /** Append the live channel × model table so an Agent can honor user choices. */
 function guidanceFor(channels: RuntimeChannel[], defaultChannelId: string, defaultModel: string, defaultVideoModel = ''): string {
   if (channels.length === 0) {
-    return `${IMAGEGEN_GUIDANCE} 尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥。`
+    return `${IMAGEGEN_GUIDANCE} 网关目录还没有就绪：请先在宿主里登录部署账号（渠道、模型与密钥都来自宿主的能力清单）。`
   }
   const table = channels.map(channel => {
     const aliases = channel.models.map(model => model.alias).join('、')
@@ -583,10 +601,7 @@ function guidanceFor(channels: RuntimeChannel[], defaultChannelId: string, defau
   const videoFallback = defaultVideoModel === ''
     ? '视频模型未设默认，未指定时应先与用户确认。'
     : `视频未指定模型时默认使用「${defaultVideoModel}」。`
-  const qihangNote = channels.some(channel => (channel.videoModels ?? []).some(model => /^wan[-_.]?3(?:[-_.]|$)/i.test((model.id || model.alias).trim())))
-    ? ' 启航AIGC 的 Wan 3.0（`wan-3-0`）走扁平异步协议：提交 POST /v1/videos/generations（参数在顶层，参考图放 images），轮询 GET /v1/tasks/{id}，以 is_final 判终点、结果取 output_url；支持文生视频、首帧、首尾帧与多参考图，时长 4–30 秒。'
-    : ''
-  return `${IMAGEGEN_GUIDANCE} 当前渠道与模型：${table}。用户指定模型名时取该模型所属渠道（多渠道同名用默认渠道）；${fallback}${videoFallback}${qihangNote}`
+  return `${IMAGEGEN_GUIDANCE} 当前渠道与模型：${table}。用户指定模型名时取该模型所属渠道；${fallback}${videoFallback}`
 }
 
 /** Normalize raw channel entries into the wire shape (schema-adjacent guard). */
@@ -622,15 +637,10 @@ function normalizeChannels(value: unknown): ChannelConfig[] {
     }
     out.push({
       id,
-      preset: typeof raw.preset === 'string' ? raw.preset : '',
       name: typeof raw.name === 'string' ? raw.name.trim() : '',
       apiUrl: typeof raw.apiUrl === 'string' ? raw.apiUrl.trim() : '',
       apiUrlFull: raw.apiUrlFull === true,
-      watermark: raw.watermark !== false,
-      autoReferenceLimit: raw.autoReferenceLimit !== false,
       ...isChannelProtocolPreference(raw.protocol) ? { protocol: raw.protocol } : {},
-      ...raw.auth === 'subscription' ? { auth: 'subscription' as const } : {},
-      ...isSubscriptionProvider(raw.subscription) ? { subscription: raw.subscription } : {},
       models,
       videoModels,
     })
@@ -638,7 +648,7 @@ function normalizeChannels(value: unknown): ChannelConfig[] {
   return out
 }
 
-/** Effective config (schema defaults applied + legacy migration). */
+/** Effective config (schema defaults applied). */
 export interface EffectiveConfig {
   enabled: boolean
   announceToAgent: boolean
@@ -650,10 +660,6 @@ export interface EffectiveConfig {
   defaultVideoModel: string
   /** Allow Agents to submit and retrieve video-generation tasks. */
   allowAgentVideoGeneration: boolean
-  promptApiUrl: string
-  promptApiKey: string
-  promptModel: string
-  storage: StorageSyncConfig & { enabled: boolean; syncGallery: boolean; syncHistory: boolean }
   /** Infinite-canvas skill settings. */
   skills: {
     enabled: boolean
@@ -667,32 +673,49 @@ export interface EffectiveConfig {
   skillConfig: SkillConfigStore
 }
 
-/** Whether a channel can back the optional chat model without subscription routing. */
-function isReusablePromptChannel(channel: RuntimeChannel): boolean {
-  return channel.auth !== 'subscription'
-    && channel.apiUrlFull !== true
-    && channel.apiUrl.trim() !== ''
-}
+/** 旧版本按渠道存的明文密钥字典。 */
+const LEGACY_SECRET_DICTS = ['channelSecrets'] as const
+
+/** 旧版本按单值存的明文密钥。 */
+const LEGACY_SECRET_TEXTS = ['apiKey', 'promptApiKey', 'storageSecretKey'] as const
 
 /**
- * Resolve the optional chat endpoint. Keeping this separate from image
- * generation matters when subscription channels appear first: blank prompt
- * fields must reuse a real API-key channel, not the first configured row.
+ * Clear the plaintext secrets an older release wrote into this plugin's
+ * settings document.
+ *
+ * 第三方渠道、订阅账号、插件自有提示词端点和对象存储在合并进部署时全部移除，
+ * 旧文档里那些密钥不该继续以明文留在磁盘上。迁移只做减法：字典置空、字符串置空，
+ * 其余字段一律不碰，所以老文档照旧解析。
+ *
+ * Idempotency is part of the contract, not a nicety: a pass over an already
+ * clean document issues no write at all, so the host importing a settings file
+ * twice costs nothing and never loops through its own update event.
+ * @param seam - the settings read/write seam.
+ * @param namespace - this plugin's settings namespace.
+ * @returns whether the document changed (false = nothing to clear).
  */
-export function resolvePromptModelConfig(value: EffectiveConfig): PromptModelConfig {
-  const modelChannel = value.defaultModel === ''
-    ? undefined
-    : value.channels.find(channel => isReusablePromptChannel(channel)
-      && channel.models.some(model => model.alias === value.defaultModel))
-  const defaultChannel = value.channels.find(channel => channel.id === value.defaultChannelId)
-  const reusable = [modelChannel, defaultChannel, ...value.channels].find(
-    (channel): channel is RuntimeChannel => channel !== undefined && isReusablePromptChannel(channel),
-  )
-  return {
-    apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : reusable?.apiUrl ?? '',
-    apiKey: value.promptApiKey !== '' ? value.promptApiKey : reusable?.apiKey ?? '',
-    model: value.promptModel,
+export async function clearLegacySecrets(seam: SettingsSeam, namespace: string): Promise<boolean> {
+  const descriptor = seam.describe({ redactSecrets: false })
+    .find(candidate => String(candidate.ns) === namespace)
+  const value = descriptor?.value
+  if (descriptor === undefined || value === null || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  const ops: Array<Record<string, unknown>> = []
+  for (const field of LEGACY_SECRET_DICTS) {
+    const dict = record[field]
+    if (dict !== null && typeof dict === 'object' && Object.keys(dict).length > 0) {
+      ops.push({ op: 'set', path: [field], value: {} })
+    }
   }
+  for (const field of LEGACY_SECRET_TEXTS) {
+    const text = record[field]
+    if (typeof text === 'string' && text.trim() !== '') {
+      ops.push({ op: 'set', path: [field], value: '' })
+    }
+  }
+  if (ops.length === 0) return false
+  await seam.mutate(namespace, ops)
+  return true
 }
 
 /**
@@ -754,19 +777,6 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
       defaultChannelId,
       defaultModel,
       defaultVideoModel,
-      promptApiUrl: typeof value.promptApiUrl === 'string' ? value.promptApiUrl.trim() : '',
-      promptApiKey: typeof value.promptApiKey === 'string' ? value.promptApiKey.trim() : '',
-      promptModel: typeof value.promptModel === 'string' ? value.promptModel.trim() : '',
-      storage: {
-        enabled: value.storageEnabled ?? false,
-        endpoint: typeof value.storageEndpoint === 'string' ? value.storageEndpoint.trim() : '',
-        region: typeof value.storageRegion === 'string' ? value.storageRegion.trim() : '',
-        accessKey: typeof value.storageAccessKey === 'string' ? value.storageAccessKey.trim() : '',
-        secretKey: typeof value.storageSecretKey === 'string' ? value.storageSecretKey.trim() : '',
-        prefix: typeof value.storagePrefix === 'string' && value.storagePrefix.trim() !== '' ? value.storagePrefix.trim() : 'dsh-imagegen',
-        syncGallery: value.storageSyncGallery ?? true,
-        syncHistory: value.storageSyncHistory ?? false,
-      },
       skills: {
         enabled: value.skillsEnabled ?? true,
         allowHeavy: value.allowHeavySkills ?? true,
@@ -792,50 +802,31 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     return { channels: value.channels, defaultChannelId: value.defaultChannelId }
   }
 
-  // Object-storage sync: the image stores announce every file they write; the
-  // handler resolves the live settings and uploads when enabled. Fire and
-  // forget — a sync failure never blocks the save path.
-  mounts.set('storage', componentCtx => {
-  componentCtx.effect(() => {
-  setStorageSyncHandler((kind, filePath) => {
-    const storage = resolve().storage
-    if (!storage.enabled || !storage.endpoint.trim() || storage.secretKey.trim() === '') return
-    if (kind === 'gallery' && !storage.syncGallery) return
-    if (kind === 'history' && !storage.syncHistory) return
-    const key = `${storage.prefix}/${kind === 'gallery' ? 'gallery' : 'images'}/${path.basename(filePath)}`
-    const data = readFileSync(filePath)
-    void putObject(storage, key, data, mimeOfPath(filePath)).catch(() => {
-      // Best-effort sync: surfaced through the settings test, never fatal here.
-    })
-  })
-
-  return () => setStorageSyncHandler(undefined)
-  }, 'dsh-imagegen: storage sync')
-  })
-
   // Browser endpoints and Agent tools share the exact same serial queue. This
   // keeps image persistence, cancellation, and retries coherent across both
   // entry points; Agent tools wait for their task result by default and render
   // images in the tool result instead of injecting a synthetic user message.
-  const subscriptions = new SubscriptionManager(ctx)
-  // The video director plans through the same chat endpoint prompt enhancement
-  // uses, so there is no second credential to configure. Resolved per call, so
-  // a settings change takes effect on the next render without a restart.
+  // The video director plans with the deployment's own conversation model, the
+  // same one the code path and the canvas light skills use — there is no second
+  // credential to configure, and no plugin-owned chat endpoint at all.
+  //
   // The host conversation model is reached through its `agents` service, which
   // this plugin only sees inside the injection block below; the runtime is
   // built before that. A holder keeps the wiring order honest: the seam the
   // runtime holds asks this holder per call instead of capturing a snapshot.
   let hostServices: { agents?: HostAgentsService; presets?: HostAgentPresets; defaultModel?: HostDefaultModel } | undefined
+  let saveImageService: ((input: SaveImageAttachment) => Promise<ImageAttachmentRef>) | undefined
   const hostChatService = (): HostChatSeam => createHostChatSeam({
     ...hostServices === undefined ? {} : hostServices,
+    ...saveImageService === undefined ? {} : { saveImage: async input => await saveImageService!(input) },
     cwd: () => process.cwd(),
     preset: () => resolveSkills().agentPreset,
   })
 
-  const runtime = new ImageGenerationRuntime(channelsView, undefined, subscriptions, {
-    resolveConfig: () => resolvePromptModelConfig(resolve()),
-    complete: async options => chatComplete(resolvePromptModelConfig(resolve()), options),
-  }, {
+  const runtime = new ImageGenerationRuntime(channelsView, undefined, {
+    resolveConfig: (): ChatTarget => ({ model: hostChatService().label() }),
+    complete: async (options: ChatOptions) => await hostChatService().complete(options),
+  } satisfies VideoDirectorSeam, {
     // The host's own conversation model, resolved lazily: `agents` mounts in
     // the injection block below, AFTER this runtime is built, and the selected
     // model can change at any time.
@@ -869,8 +860,10 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
   skillRunner = new SkillRunner({
     backend: {
       canvas: canvasStore as unknown as SkillCanvasBackend,
+      // The light tier asks the deployment's own conversation model. Image
+      // parts ride the same turn as attachment-backed content blocks.
       chat: {
-        complete: async options => chatComplete(resolvePromptModelConfig(resolve()), options),
+        complete: async options => await hostChatService().complete(options),
       },
     },
     enabled: () => resolve().enabled && resolveSkills().enabled,
@@ -900,7 +893,37 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
 
   /** Settings write path, installed by the settings injection further down. */
   let mutateSettings: ((ops: Array<Record<string, unknown>>) => Promise<void>) | undefined
+  /** Settings read/write seam, installed by the same injection. */
+  let settingsSeam: SettingsSeam | undefined
   let settingsNamespace = IMAGEGEN_SETTINGS_NAMESPACE
+
+  /**
+   * Run the legacy-secret migration once.
+   *
+   * Called when the plugin applies and again after the host imports a settings
+   * document (the import replaces the whole section, so a document written by an
+   * older release re-introduces secrets that the first pass already cleared).
+   * Only a pass that actually wrote something records a diagnostics line, so a
+   * clean document leaves no trace and no noise.
+   */
+  const migrateLegacySecrets = async (): Promise<void> => {
+    const seam = settingsSeam
+    if (seam === undefined) return
+    const changed = await clearLegacySecrets(seam, String(settingsNamespace))
+    if (!changed) return
+    recordDiagnostic({
+      phase: 'config',
+      channel: '',
+      model: '',
+      mode: '',
+      url: '',
+      method: '',
+      failureCode: 'legacy-secrets-cleared',
+      message: '已移除旧版第三方渠道配置',
+      durationMs: 0,
+      hadAuth: false,
+    })
+  }
 
   /** Entry paths the last library listing resolved, so lookups agree with it. */
   const entryPathByName = new Map<string, string>()
@@ -1169,6 +1192,23 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     // Skill configuration values are written through the same namespace the
     // settings card edits; the panel never crafts settings ops itself.
     mutateSettings = async ops => { await seam.mutate(settingsNamespace, ops) }
+    settingsSeam = seam
+    // Image parts of a host-model turn become durable attachments, so the image
+    // describe / layer-split actions can hand the model a picture.
+    saveImageService = sctx.attachments.saveImage === undefined
+      ? undefined
+      : async input => await sctx.attachments.saveImage!(input)
+    // Once on apply, then once per document import: the import replaces the
+    // section wholesale, so a legacy `settings.yaml` re-introduces the secrets.
+    void migrateLegacySecrets().catch(() => { /* a refused write is not fatal: the next pass retries */ })
+    sctx.effect(() => sctx.on('settings/document-updated', (ns) => {
+      if (String(ns) !== String(settingsNamespace)) return
+      void migrateLegacySecrets().catch(() => { /* see above */ })
+    }), 'dsh-imagegen: legacy settings migration')
+    sctx.effect(() => () => {
+      settingsSeam = undefined
+      saveImageService = undefined
+    }, 'dsh-imagegen: settings seam')
     sctx.effect(
       () => {
         // The guard needs the address this host listens on: with a LAN bind
@@ -1194,22 +1234,11 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
           settings: seam,
           settingsNamespace,
           bindHost: typeof bindHost === 'string' && bindHost !== '' ? bindHost : undefined,
-          resolve: () => {
-            const value = resolve()
-            const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
-            return { apiUrl: channel?.apiUrl ?? '', apiKey: channel?.apiKey ?? '' }
-          },
           resolveChannels: channelsView,
-          resolvePrompt: () => resolvePromptModelConfig(resolve()),
-          resolveImageModels: () => {
-            const value = resolve()
-            return [...new Set(value.channels.flatMap(channel => channel.models.map(model => model.alias)))]
-          },
+          chat: hostChatService(),
           attachments: sctx.attachments,
           pendingConversationImages,
           runtime,
-          subscriptions,
-          resolveStorage: () => resolve().storage,
           skills: skillRunner,
           pptRuntime,
           skillLibrary,

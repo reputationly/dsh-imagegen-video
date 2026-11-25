@@ -19,7 +19,7 @@ import { errorMessage, tt } from './helpers.ts'
 import { openImageGenConfig } from './config-entry.tsx'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { ReferenceImages } from './ReferenceImages.tsx'
-import { editReferenceLimit, useEditReferences, EDIT_REFERENCE_LIMIT } from './reference-images.ts'
+import { useEditReferences, EDIT_REFERENCE_LIMIT } from './reference-images.ts'
 import { ModuleTabs } from './ModuleTabs.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { CanvasWorkspace } from './CanvasWorkspace.tsx'
@@ -30,14 +30,15 @@ import PromoWorkspace from './PromoWorkspace.tsx'
 import { AplusWorkspace } from './AplusWorkspace.tsx'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import { DiagnosticsButton, DiagnosticsPanel } from './DiagnosticsPanel.tsx'
-import { GatewayStatus } from './gateway-status.tsx'
+import { GatewayStatus, gatewayCopyKey } from './gateway-status.tsx'
 import { SignalsButton, SignalsPanel } from './SignalsPanel.tsx'
 import { GenerationLoading } from './GenerationLoading.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
 import type { CanvasSummary, EcommerceRefRole, GatewayCatalogSnapshot, GenerateMode, GenerateRequest, GeneratedImage, GenerationTask, GenerationTaskStatus, GenerationTaskSummary, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, VideoHistoryEntry, VideoTaskSummary } from '../protocol.ts'
-import { AGENT_IMAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, type SubscriptionProvider } from '../protocol.ts'
+import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope, ImageModelGroup } from './settings-scope.ts'
 import { imageModelOptions, videoModelOptions } from './settings-scope.ts'
+import { gatewayChannel, gatewayDefaultAlias, gatewayUpstreamId } from './gateway-models.ts'
 import { VideoPanel } from './VideoPanel.tsx'
 import { clampGifFrameCount, clampGifFrameDurationMs, describeModel, GIF_FRAME_DEFAULT, GIF_FRAME_MAX, GIF_FRAME_MIN, GIF_FRAME_MS_DEFAULT, lifecycleNoticeKey, promptCharLimit, supportsGifOutput } from '../model-catalog.ts'
 import {
@@ -232,14 +233,6 @@ function readConfigCollapsed(): boolean {
 
 const CHAT_COLLAPSED_STORAGE_KEY = 'dsh-imagegen:chat-collapsed'
 
-type SubscriptionChannelState = 'logged-in' | 'logged-out' | 'unknown'
-
-const INITIAL_SUBSCRIPTION_STATES: Record<SubscriptionProvider, SubscriptionChannelState> = {
-  'chatgpt-sub': 'unknown',
-  'grok-sub': 'unknown',
-  'google-sub': 'unknown',
-  'openrouter-sub': 'unknown',
-}
 const CONFIG_WIDTH_STORAGE_KEY = 'dsh-imagegen:config-width'
 const CONFIG_WIDTH_MIN = 260
 const CONFIG_WIDTH_MAX = 480
@@ -271,11 +264,23 @@ function useConfig(scope: ImageGenScope): ImageGenConfig | undefined {
   return value
 }
 
-/** Track one redacted secret field without exposing its value to the panel. */
-function useSecretSet(scope: ImageGenScope, field: string): boolean {
-  const [isSet, setIsSet] = useState(scope.getSecretSetSnapshot(field))
-  useEffect(() => scope.subscribeSecretSets(() => { setIsSet(scope.getSecretSetSnapshot(field)) }), [field, scope])
-  return isSet
+/**
+ * Why image generation cannot start, in the status bar's own words.
+ *
+ * The bar renders the catalog states; the two cases it stays silent about —
+ * the plugin switch being off, and a ready catalog that only offers video
+ * models — get their own sentence here, because "no button" without a reason
+ * reads as a broken button.
+ *
+ * @param enabled - the plugin master switch.
+ * @param snapshot - the catalog snapshot the panel fetched, or null before the first read.
+ * @returns the sentence to show under the disabled button, or null when it can be pressed.
+ */
+function blockedReasonOf(enabled: boolean, snapshot: GatewayCatalogSnapshot | null): string | null {
+  if (!enabled) return tt('gateway.pluginDisabled')
+  if (snapshot === null) return tt('gateway.loading')
+  if (snapshot.status === 'ready') return tt('gateway.noImageModel')
+  return tt(gatewayCopyKey(snapshot))
 }
 
 /** Seconds one comparison task has been running, from its own start time.
@@ -680,40 +685,6 @@ function ecommerceSlotPrompt(draft: ProductSetDraft, slot: ProductSetSlot, index
   return override !== undefined && override.trim() !== '' ? override : ecommercePrompt(draft, slot, index, assets)
 }
 
-/**
- * How many reference images the selected model's channel can be relied on to
- * transmit. This mirrors src/engine.ts's edit branches, and it must stay in
- * step with them.
- *
- * Kept separate from editReferenceLimit() on purpose. That helper answers a
- * different question (how many canvas references the session should accept)
- * and is conservative by design, returning 1 for dall-e, qwen and minimax;
- * the engine's generic branch would in fact send those five. Reusing it here
- * would warn users on channels that are not losing anything.
- *
- * `unknown` counts as 1 rather than 5, and that is the deliberate asymmetry.
- * The engine's generic branch does send several references, so from "how many
- * does the host put on the wire" the answer for an unrecognised model really
- * is five. But this number is not a measurement — it is what the UI tells the
- * user they can rely on, and the notice it feeds warns about loss rather than
- * promising capacity. A gateway whose id describeModel() does not know is
- * exactly the case where we cannot see whether it keeps the extras or quietly
- * drops them, and a warning that fires one time too often is recoverable
- * ("switch model" is one click), while a coverless clip is not. Only the three
- * families whose branches are known to carry the primary plus four extras get
- * the larger number.
- */
-function ecommerceReferenceLimit(model: string): number {
-  const { family } = describeModel(model)
-  if (family === 'grok' || family === 'nanobanana' || family === 'unknown') return 1
-  // gpt-image / dall-e / zhipu / qwen / minimax all fall to the engine's
-  // generic OpenAI-style branch, which repeats `image[]` once per reference
-  // (`src/engine.ts`, `.slice(0, 4)` on the extras). Seedream has its own JSON
-  // array branch carrying the same count. Five is therefore the primary plus
-  // the engine's four extras — a coincidence of two limits, not one limit.
-  return EDIT_REFERENCE_LIMIT
-}
-
 /** Consistency prefix for slots generated after the main image exists. */
 function withAnchorNote(prompt: string): string {
   return '商品套图一致性约束：附件是本套商品的主图，图中商品（外形、颜色、材质、Logo、包装文字）必须与附件完全一致，不得重新发明商品。' + prompt
@@ -1086,83 +1057,6 @@ export function ImageGenPanel(props: {
   // library and the inspiration wall render inside this tree.
   useImageGenLanguageTick()
   const enabled = config?.enabled ?? true
-  // Channel-aware model options: every selector keeps the owning channel so
-  // repeated aliases can never route through the wrong endpoint.
-  const modelOptions = imageModelOptions(config)
-  // Video choices for the canvas composer: derived from the channels' video
-  // catalogs, which are configured separately from the image model list.
-  const videoOptions = useMemo(() => videoModelOptions(config), [config])
-  const imageModels = modelOptions.models
-  const modelGroups: ImageModelGroup[] = modelOptions.groups
-  const defaultChannelId = modelOptions.defaultChannelId
-  const defaultModel = modelOptions.defaultModel
-  const apiUrl = defaultChannelId !== undefined && (config?.channels ?? []).length > 0
-    ? (config!.channels!.find(channel => channel.id === defaultChannelId)?.apiUrl ?? '')
-    : (config?.apiUrl ?? '')
-  const configured = apiUrl.trim() !== ''
-  const legacyKeySet = useSecretSet(scope, 'apiKey')
-  const promptKeySet = useSecretSet(scope, 'promptApiKey')
-  const channelKeySet = (config?.channels ?? []).some(channel => scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
-  const apiKeySet = (config?.channels ?? []).length > 0 ? channelKeySet : legacyKeySet
-  const [subscriptionStates, setSubscriptionStates] = useState<Record<SubscriptionProvider, SubscriptionChannelState>>(INITIAL_SUBSCRIPTION_STATES)
-  const subscriptionChannelsKey = (config?.channels ?? [])
-    .filter(channel => channel.auth === 'subscription' && channel.subscription !== undefined)
-    .map(channel => `${channel.id}:${channel.subscription}`)
-    .sort()
-    .join('|')
-
-  useEffect(() => {
-    if (!active || subscriptionChannelsKey === '') return
-    let disposed = false
-    const refresh = (): void => {
-      void fetch(SUBSCRIPTION_API.status, { method: 'POST', cache: 'no-store' })
-        .then(async response => await response.json() as { ok?: boolean; statuses?: Record<string, { state?: string }> })
-        .then(body => {
-          if (disposed || body.ok !== true || body.statuses === undefined) return
-          setSubscriptionStates(current => {
-            const next = { ...current }
-            for (const provider of SUBSCRIPTION_PROVIDERS) {
-              const state = body.statuses?.[provider]?.state
-              if (state === 'logged-in' || state === 'logged-out' || state === 'unknown') next[provider] = state
-            }
-            return next
-          })
-        })
-        .catch(() => { /* status is advisory; generation still reports its real error */ })
-    }
-    refresh()
-    const timer = window.setInterval(refresh, 30_000)
-    return () => { disposed = true; window.clearInterval(timer) }
-  }, [active, subscriptionChannelsKey])
-
-  const connectedChannelIds = new Set(
-    (config?.channels ?? [])
-      .filter(channel => channel.auth === 'subscription' && channel.subscription !== undefined
-        ? subscriptionStates[channel.subscription] !== 'logged-out'
-        : channel.apiUrl.trim() !== '' && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
-      .map(channel => channel.id),
-  )
-  const connected = enabled && (config?.channels ?? []).length > 0
-    ? connectedChannelIds.size > 0
-    : enabled && configured && apiKeySet
-  /** Whether the channel behind one concrete model choice can submit now. */
-  const channelReady = (channelId: string): boolean => (config?.channels ?? []).length > 0
-    ? connectedChannelIds.has(channelId)
-    : enabled && configured && apiKeySet
-  const reusablePromptChannelIds = new Set(
-    (config?.channels ?? [])
-      .filter(channel => channel.auth !== 'subscription'
-        && channel.apiUrlFull !== true
-        && channel.apiUrl.trim() !== ''
-        && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
-      .map(channel => channel.id),
-  )
-  const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== '' || reusablePromptChannelIds.size > 0
-  const promptKeyConfigured = promptKeySet || reusablePromptChannelIds.size > 0
-  const promptReady = enabled
-    && (config?.promptModel ?? '').trim() !== ''
-    && promptEndpointConfigured
-    && promptKeyConfigured
 
   const [tab, setTab] = useState<PanelTab>('text')
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
@@ -1207,13 +1101,12 @@ export function ImageGenPanel(props: {
   /** Session-only edit references: the first one is the primary `image`, the
    *  rest travel as `images` (see GenerateRequest). Declared after `setError`
    *  because the hook reports validation warnings through it. */
-  const editReferenceCapacity = editReferenceLimit(model, (config?.channels ?? []).find(channel => channel.id === modelChannelId))
+  const editReferenceCapacity = EDIT_REFERENCE_LIMIT
   const refs = useEditReferences(setError, { limit: editReferenceCapacity })
   // Submission is brief; actual generation stays visible until the host
   // queue reports that every queued/running task has finished.
   const [submitting, setSubmitting] = useState(false)
   const [enhancing, setEnhancing] = useState(false)
-  const [configGuide, setConfigGuide] = useState<'generation' | 'enhancement' | 'disabled' | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   /**
    * Which saved generation the result board is showing, if any.
@@ -1289,7 +1182,9 @@ export function ImageGenPanel(props: {
     let cancelled = false
     const load = (): void => {
       void api.gatewayCatalog().then((snapshot) => {
-        if (!cancelled) setGatewaySnapshot(snapshot)
+        // A route that answers without a snapshot is not a catalog: keep the
+        // "not read yet" state instead of rendering an undefined one.
+        if (!cancelled) setGatewaySnapshot(snapshot ?? null)
       }).catch(() => {
         // 目录读不到不是面板的错误：宿主侧已经把原因写进 status，下一次轮询再试。
       })
@@ -1301,10 +1196,56 @@ export function ImageGenPanel(props: {
   const refreshGateway = useCallback((): void => {
     setGatewayRefreshing(true)
     void api.gatewayRefresh()
-      .then(snapshot => { setGatewaySnapshot(snapshot) })
+      .then(snapshot => { setGatewaySnapshot(snapshot ?? null) })
       .catch(() => undefined)
       .finally(() => { setGatewayRefreshing(false) })
   }, [api])
+  /**
+   * The catalog is the only model source.
+   *
+   * Channels, aliases and their upstream ids all come from the host media
+   * catalog the panel just fetched; the stored settings channel table is a
+   * deprecated leftover the host no longer reads. `gatewayConfig` is that
+   * catalog in the shape the request-shaping helpers and the child workspaces
+   * already consume, so none of them needs its own copy of the projection.
+   */
+  const gatewayChannelName = tt('model.gatewayChannel')
+  const channels = useMemo(() => gatewayChannel(gatewaySnapshot, gatewayChannelName), [gatewaySnapshot, gatewayChannelName])
+  const gatewayConfig = useMemo<ImageGenConfig | undefined>(() => config === undefined ? undefined : {
+    ...config,
+    channels,
+    defaultChannelId: channels[0]?.id ?? '',
+    defaultModel: gatewayDefaultAlias(gatewaySnapshot?.image ?? [], config.defaultModel),
+    defaultVideoModel: gatewayDefaultAlias(gatewaySnapshot?.video ?? [], config.defaultVideoModel),
+  }, [config, channels, gatewaySnapshot])
+  // Channel-aware model options: every selector keeps the owning channel so a
+  // selection names the channel it came from in the request.
+  const modelOptions = imageModelOptions(gatewayConfig)
+  const videoOptions = useMemo(() => videoModelOptions(gatewayConfig), [gatewayConfig])
+  const imageModels = modelOptions.models
+  const modelGroups: ImageModelGroup[] = modelOptions.groups
+  const defaultChannelId = modelOptions.defaultChannelId
+  const defaultModel = modelOptions.defaultModel
+  /** The catalog answered `ready` and offers at least one image / video model. */
+  const gatewayReady = enabled && gatewaySnapshot?.status === 'ready' && channels.length > 0
+  const imageReady = gatewayReady && (gatewaySnapshot?.image.length ?? 0) > 0
+  const connected = gatewayReady
+  const connectedChannelIds = useMemo(
+    () => new Set(imageReady ? channels.map(channel => channel.id) : []),
+    [imageReady, channels],
+  )
+  /** Whether the channel behind one concrete model choice can submit now. */
+  const channelReady = (channelId: string): boolean => imageReady && channels.some(channel => channel.id === channelId)
+  /**
+   * Why the generate button cannot be pressed, in the status bar's own words.
+   *
+   * One sentence, one source: the bar above the studio renders this same copy
+   * for the same state, so the button never disagrees with it.
+   */
+  const gatewayBlockedReason = imageReady ? null : blockedReasonOf(enabled, gatewaySnapshot)
+  // Prompt polishing runs on the host conversation model, so no local endpoint
+  // or key gates it; the host answers with its own error when it has none.
+  const promptReady = enabled
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   // Video queue summaries, polled here so both the video tab and the canvas see
   // one source of truth (the canvas matches its placeholder nodes by task id).
@@ -1401,14 +1342,14 @@ export function ImageGenPanel(props: {
   })
   const modeGroups: ImageModelGroup[] = tab === 'edit'
     ? modelGroups
-        .map(group => ({ ...group, models: group.models.filter(candidate => describeModel(candidate).supportsEdit) }))
+        .map(group => ({ ...group, models: group.models.filter(candidate => describeModel(gatewayUpstreamId(gatewaySnapshot, candidate)).supportsEdit) }))
         .filter(group => group.models.length > 0)
     : modelGroups
   const modeModels = [...new Set(modeGroups.flatMap(group => group.models))]
   /** GIF is a gpt-image-2.6 capability and a text-generation one: the upstream
    *  guide states /images/edits does not produce animated output. Compare mode
    *  hides it too — several models would mean mixed formats under one run. */
-  const gifAvailable = supportsGifOutput(model) && tab === 'text' && !compareEnabled && workspace === 'normal'
+  const gifAvailable = supportsGifOutput(gatewayUpstreamId(gatewaySnapshot, model)) && tab === 'text' && !compareEnabled && workspace === 'normal'
   const gifActive = outputFormat === 'gif' && gifAvailable
 
   /** A model that cannot answer GIF drops the format back to still. The mode
@@ -1417,7 +1358,7 @@ export function ImageGenPanel(props: {
    *  user's own click a frame later reads as a broken button. */
   useEffect(() => {
     if (outputFormat !== 'gif') return
-    if (!supportsGifOutput(model)) setOutputFormat('png')
+    if (!supportsGifOutput(gatewayUpstreamId(gatewaySnapshot, model))) setOutputFormat('png')
   }, [outputFormat, model])
   /** Current adapter's reference capacity. A one-image model with several
    *  thumbnails loaded would otherwise fail only at submit time, so the panel
@@ -1426,11 +1367,10 @@ export function ImageGenPanel(props: {
     ? tt('edit.modelLimit', { count: editReferenceCapacity })
     : null
   /** Same question for the product-set flow, where one role may carry up to
-   *  MAX_ECOMMERCE_ASSETS pictures. The number is the selected model's, not the
-   *  workflow's, because the host forwards the role's whole asset list and the
-   *  channel drops whatever it cannot carry. See ecommerceReferenceLimit for
-   *  why this does not reuse editReferenceLimit(). */
-  const ecommerceReferenceCapacity = ecommerceReferenceLimit(model)
+   *  MAX_ECOMMERCE_ASSETS pictures. The host forwards the role's whole asset
+   *  list and transmits the primary image plus four extras, so the ceiling is
+   *  the same one the edit form uses. */
+  const ecommerceReferenceCapacity = EDIT_REFERENCE_LIMIT
   /** Upstream lifecycle of the selected id, as a sentence the user can act on.
    *
    *  Computed here rather than inside the render so the branch is testable and
@@ -1442,7 +1382,7 @@ export function ImageGenPanel(props: {
    *  or rewrites the request. A user can be pointed at a gateway that still
    *  serves a model the vendor dropped, and blocking that would break a
    *  workflow that works. See `model-baseline.ts`. */
-  const modelLifecycle = describeModel(model)
+  const modelLifecycle = describeModel(gatewayUpstreamId(gatewaySnapshot, model))
   const modelLifecycleKey = lifecycleNoticeKey(modelLifecycle)
   const modelLifecycleNotice = modelLifecycleKey === null
     ? null
@@ -1967,15 +1907,20 @@ export function ImageGenPanel(props: {
     return () => { window.clearInterval(timer) }
   }, [refreshVideoTasks])
 
-  const openSettingsGuide = (kind: 'generation' | 'enhancement' | 'disabled'): void => {
-    setConfigGuide(kind)
-    openImageGenConfig(kind === 'enhancement' ? 'prompt' : kind === 'disabled' ? 'general' : 'channels')
-  }
+  /**
+   * Reveal the plugin's settings page.
+   *
+   * The gateway, its models and the conversation model behind prompt polishing
+   * belong to the deployment, so there is nothing on that page to "configure"
+   * them with; the only local answer left is the plugin switch and the canvas
+   * skills, which is what the general group holds.
+   */
+  const openSettings = (): void => { openImageGenConfig('general') }
 
   const enhanceCurrentPrompt = async (): Promise<void> => {
     if (prompt.trim() === '' || enhancing) return
     if (!promptReady) {
-      openSettingsGuide('enhancement')
+      openSettings()
       return
     }
     setEnhancing(true)
@@ -1993,7 +1938,7 @@ export function ImageGenPanel(props: {
   const ecommerceEnhanceInfo = async (): Promise<void> => {
     if (ecommerceEnhancing) return
     if (!promptReady) {
-      openSettingsGuide('enhancement')
+      openSettings()
       return
     }
     setEcommerceEnhancing(true)
@@ -2020,7 +1965,7 @@ export function ImageGenPanel(props: {
   const polishEcommercePrompt = async (slot: ProductSetSlot, index: number, key: string): Promise<void> => {
     if (ecommercePolishingKey !== null) return
     if (!promptReady) {
-      openSettingsGuide('enhancement')
+      openSettings()
       return
     }
     const source = ecommerce.promptOverrides?.[key]?.trim() || ecommerceSlotPrompt(ecommerce, slot, index, ecommerceAssets.filter(item => item.role === (slot.refRole ?? 'product')))
@@ -2093,14 +2038,14 @@ export function ImageGenPanel(props: {
   const handleGenerate = async (): Promise<void> => {
     if (submitting) return
     if (!enabled) {
-      openSettingsGuide('disabled')
+      openSettings()
       return
     }
+    // A catalog with no image model cannot be submitted to at all; the status
+    // bar above the studio is already saying why, and the button is disabled.
+    if (!imageReady) return
     const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
-    if (!channelReady(selectedChoice.channelId)) {
-      openSettingsGuide('generation')
-      return
-    }
+    if (!channelReady(selectedChoice.channelId)) return
     const promptText = prompt.trim()
     if (promptText === '') {
       setError(tt('prompt.required'))
@@ -2138,20 +2083,13 @@ export function ImageGenPanel(props: {
         setError(tt('compare.selectRequired'))
         return
       }
-      if (!targetChoices.every(choice => channelReady(choice.channelId))) {
-        openSettingsGuide('generation')
+      if (!targetChoices.every(choice => channelReady(choice.channelId))) return
+      // References beyond the host's primary-plus-four contract would be
+      // dropped upstream, so say so instead of sending a request that quietly
+      // loses them. In compare mode one ceiling covers every target.
+      if (tab === 'edit' && refs.images.length > EDIT_REFERENCE_LIMIT) {
+        setError(tt('edit.modelLimit', { count: EDIT_REFERENCE_LIMIT }))
         return
-      }
-      // A model whose adapter takes one reference cannot silently drop the
-      // extras: say which limit applies instead of sending a request the
-      // upstream will ignore. In compare mode the strictest target wins.
-      if (tab === 'edit' && refs.images.length > 0) {
-        const limit = Math.min(...targetChoices.map(choice =>
-          editReferenceLimit(choice.model, (config?.channels ?? []).find(channel => channel.id === choice.channelId))))
-        if (refs.images.length > limit) {
-          setError(tt('edit.modelLimit', { count: limit }))
-          return
-        }
       }
       const comparisonId = targetChoices.length > 1 ? newComparisonId() : undefined
       const comparisonFields = comparisonId === undefined ? {} : { comparisonId, comparisonModels: targetChoices.map(choice => choice.model) }
@@ -2174,7 +2112,7 @@ export function ImageGenPanel(props: {
   const handleEcommerceGenerate = async (): Promise<void> => {
     if (ecommerceGenerateDisabled) return
     const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
-    if (!enabled || !channelReady(selectedChoice.channelId)) { openSettingsGuide('generation'); return }
+    if (!imageReady || !channelReady(selectedChoice.channelId)) return
     const projectId = ecommerce.projectId || newComparisonId()
     const buildRequest = (slot: ProductSetSlot, index: number): GenerateRequest => {
       // Every asset of the slot's role goes to the model, in upload order —
@@ -3036,13 +2974,15 @@ export function ImageGenPanel(props: {
   // the button locks — the engine would fast-fail anyway, but the user sees
   // why before spending a click.
   const activeModel = modeModels.includes(model) ? model : modeModels[0] ?? ''
-  const promptLimit = promptCharLimit(activeModel)
+  const promptLimit = promptCharLimit(gatewayUpstreamId(gatewaySnapshot, activeModel))
   const promptOverLimit = promptLimit !== null && prompt.trim().length >= promptLimit
 
-  const generateDisabled = submitting || modeModels.length === 0 || promptOverLimit
+  // No image model in the catalog means there is nothing to submit to; the
+  // reason renders under the button (see gatewayBlockedReason).
+  const generateDisabled = submitting || !imageReady || modeModels.length === 0 || promptOverLimit
   const ecommerceSlots = ecommerce.slots.filter(slot => slot.enabled && slot.count > 0)
   const ecommerceTotal = ecommerceSlots.reduce((total, slot) => total + slot.count, 0)
-  const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === '' || (ecommerce.language === 'custom' && effectiveEcommerceLanguage(ecommerce) === '')
+  const ecommerceGenerateDisabled = !imageReady || submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === '' || (ecommerce.language === 'custom' && effectiveEcommerceLanguage(ecommerce) === '')
   const ecommerceFileInput = useRef<HTMLInputElement>(null)
   /** Which group (主图/风格) the shared file input uploads into. */
   const ecommerceUploadRoleRef = useRef<'product' | 'style'>('product')
@@ -4254,7 +4194,7 @@ export function ImageGenPanel(props: {
               <p
                 className={css.modelLifecycleNotice}
                 role="status"
-                data-model-lifecycle={describeModel(model).lifecycle}
+                data-model-lifecycle={describeModel(gatewayUpstreamId(gatewaySnapshot, model)).lifecycle}
               >
                 {modelLifecycleNotice}
               </p>
@@ -4285,6 +4225,9 @@ export function ImageGenPanel(props: {
                 </div>
               ) : null}
             </div> : null}
+            {isGeneration && gatewayBlockedReason !== null ? (
+              <p className={css.generateBlocked} role="status" data-gateway-blocked="">{gatewayBlockedReason}</p>
+            ) : null}
             {isGeneration ? <Button
               variant="primary"
               size="md"
@@ -4332,12 +4275,12 @@ export function ImageGenPanel(props: {
                   .then(entries => setVideoHistory(entries))
                   .catch(() => { /* the next stitch tries again */ })
               }}
-              onOpenSettings={(kind = 'generation') => { openSettingsGuide(kind) }}
+              onOpenSettings={() => { openSettings() }}
             />
           ) : null}
 
           {/* ----------------------------------------------- ppt conversion */}
-          {workspace === 'outfit' ? <OutfitWorkspace api={api} config={config} scope={scope} /> : null}
+          {workspace === 'outfit' ? <OutfitWorkspace api={api} config={gatewayConfig} scope={scope} /> : null}
 
           {workspace === 'ppt' ? (
             <PptWorkspace api={api} active={active && workspace === 'ppt'} onImported={() => { /* no queued import to clear */ }} />
@@ -4349,7 +4292,6 @@ export function ImageGenPanel(props: {
               active={active && workspace === 'replica'}
               modelGroups={modelGroups}
               defaultChannelId={defaultChannelId}
-              channels={config?.channels ?? []}
               connected={connected}
               galleryBusy={galleryAdding}
               conversationBusy={conversationBusy}
@@ -4363,12 +4305,12 @@ export function ImageGenPanel(props: {
 
           {/* --------------------------------------- promo image + copy */}
           {workspace === 'promo' ? (
-            <PromoWorkspace api={api} config={config} />
+            <PromoWorkspace api={api} config={gatewayConfig} />
           ) : null}
 
           {/* ---------------------------------------------- A+ detail page */}
           {workspace === 'aplus' ? (
-            <AplusWorkspace api={api} active={active && workspace === 'aplus'} modelGroups={modelGroups} defaultChannelId={defaultChannelId} channels={config?.channels ?? []} connected={connected} />
+            <AplusWorkspace api={api} active={active && workspace === 'aplus'} modelGroups={modelGroups} defaultChannelId={defaultChannelId} connected={connected} />
           ) : null}
 
           {/* -------------------------------------------------- video studio */}
@@ -4377,7 +4319,7 @@ export function ImageGenPanel(props: {
               <VideoPanel
                 api={api}
                 scope={scope}
-                config={config}
+                config={gatewayConfig}
                 active={active && tab === 'video'}
                 tasks={videoTasks}
                 onRefreshTasks={refreshVideoTasks}
@@ -4865,16 +4807,6 @@ export function ImageGenPanel(props: {
         />
       ) : null}
 
-      {configGuide !== null ? (
-        <div className={css.configGuide} role="dialog" aria-modal="true" aria-label={tt(`config.${configGuide}Title` as never)}>
-          <div className={css.configGuideBody}>
-            <strong>{tt(`config.${configGuide}Title` as never)}</strong>
-            <span>{tt(`config.${configGuide}Hint` as never)}</span>
-            <button type="button" onClick={() => { setConfigGuide(null) }}>{tt('preview.close')}</button>
-          </div>
-        </div>
-      ) : null}
-
       {comparisonFullscreen && comparison !== null ? createPortal(
         <div ref={comparisonFullscreenRef} tabIndex={-1} className={css.comparisonFullscreen} role="dialog" aria-modal="true" aria-label={tt('compare.title')} onClick={() => { setComparisonFullscreen(false) }}>
           <button type="button" className={css.lightboxClose} aria-label={tt('preview.close')} onClick={() => { setComparisonFullscreen(false) }}>×</button>
@@ -5064,4 +4996,3 @@ function extensionOf(mime: string): string {
     default: return 'png'
   }
 }
-

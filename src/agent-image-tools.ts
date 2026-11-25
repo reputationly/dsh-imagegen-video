@@ -80,7 +80,7 @@ export function ensureAgentImageConfigured(config: AgentImageToolConfig): void {
 export function resolveAgentImageModel(config: AgentImageToolConfig, requested: unknown): { channel: RuntimeChannel; alias: string; upstream: string } {
   const entries = config.channels.flatMap(channel => channel.models.map(model => ({ channel, alias: model.alias, upstream: model.id })))
   if (entries.length === 0) {
-    throw new ImageGenError('No image models are configured. Open Settings → Image / Video and add a service with at least one image model.', 'no-models-configured')
+    throw new ImageGenError('This account has no image model available. Sign in to the Create workbench and check that the account may use an image model.', 'no-models-configured')
   }
   const wanted = typeof requested === 'string' && requested.trim() !== ''
     ? requested.trim()
@@ -88,12 +88,12 @@ export function resolveAgentImageModel(config: AgentImageToolConfig, requested: 
   if (wanted === '') {
     if (entries.length === 1) return entries[0]!
     const options = config.channels.flatMap(channel => channel.models.map(model => `"${channel.name} · ${model.alias}"`)).join(', ')
-    throw new ImageGenError(`Multiple image models are available — ask the user which channel and model to use, then call this tool again with that exact model name. Options: ${options}.`, 'model-choice-required')
+    throw new ImageGenError(`Multiple image models are available — ask the user which one to use, then call this tool again with that exact model name. Options: ${options}.`, 'model-choice-required')
   }
   const hosting = entries.filter(entry => entry.alias === wanted)
   if (hosting.length === 0) {
     const available = [...new Set(entries.map(entry => entry.alias))].join(', ')
-    throw new ImageGenError(`Image model "${wanted}" is not configured in any channel. Choose one of: ${available}.`, 'image-model-not-configured')
+    throw new ImageGenError(`Image model "${wanted}" is not available to this account. Choose one of: ${available}.`, 'image-model-not-configured')
   }
   const preferred = hosting.find(entry => entry.channel.id === config.defaultChannelId)
   return preferred ?? hosting[0]!

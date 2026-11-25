@@ -24,7 +24,7 @@
  *    the report states the limit rather than implying more.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ChannelConfig, GeneratedImage, GenerationTask, GenerationTaskSummary } from '../protocol.ts'
+import type { GeneratedImage, GenerationTask, GenerationTaskSummary } from '../protocol.ts'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -87,8 +87,6 @@ export interface ReplicaWorkspaceProps {
   modelGroups: ImageModelGroup[]
   /** Undefined until a channel exists; `resolveModelChoice` handles that. */
   defaultChannelId: string | undefined
-  /** Configured channels: the transfer limit is an adapter capability, not a constant. */
-  channels: ChannelConfig[]
   /** False when no channel is configured; the form still renders, submit is blocked. */
   connected: boolean
   galleryBusy: boolean
@@ -135,7 +133,7 @@ function imageExtension(mime: string): string {
 
 export function ReplicaWorkspace(props: ReplicaWorkspaceProps): React.JSX.Element {
   const {
-    api, active, modelGroups, defaultChannelId, channels, connected,
+    api, active, modelGroups, defaultChannelId, connected,
     galleryBusy, conversationBusy, conversationBusyKey,
     onPreview, onAddToGallery, onAddToConversation, onCompleted,
   } = props
@@ -175,12 +173,11 @@ export function ReplicaWorkspace(props: ReplicaWorkspaceProps): React.JSX.Elemen
   // The resolved target drives BOTH the visible capacity line and the slice
   // applied to the request, so the promise and the payload cannot disagree.
   const resolved = resolveModelChoice(modelGroups, choice ?? undefined, defaultChannelId)
-  const channel: ChannelConfig | undefined = channels.find(item => item.id === resolved.channelId)
   // The product shot occupies one of the same slots, so it is counted here.
   // Telling the user "5 of 5 references" while silently dropping the product
   // would be the exact failure this block exists to prevent.
   const picked = references.length + (product === null ? 0 : 1)
-  const capacity = referenceCapacity(resolved.model, channel, picked)
+  const capacity = referenceCapacity(resolved.model, picked)
 
   const draft: ReplicaDraft = { kind, fidelity, product: productText, extra }
   const prompt = useMemo(
@@ -437,13 +434,14 @@ export function ReplicaWorkspace(props: ReplicaWorkspaceProps): React.JSX.Elemen
           </div>
 
           {/* The honesty block. Two states, both explicit: nothing dropped, or
-              exactly how many of the picked references will not be sent and why. */}
+              exactly how many of the picked references will not be sent, and the
+              host contract that decides it. */}
           <div className={css.capacity} data-replica-capacity="" data-tone={capacity.dropped > 0 ? 'warn' : 'info'}>
             {capacity.dropped > 0 ? (
               <span>
                 {tt('replica.capacity.dropped', { used: capacity.usable, picked })}
                 {' '}
-                <strong>{tt(`replica.capacity.reason.${capacity.reason}`)}</strong>
+                <strong>{tt('replica.capacity.reason.generic')}</strong>
               </span>
             ) : (
               <span>

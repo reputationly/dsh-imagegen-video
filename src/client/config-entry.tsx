@@ -13,7 +13,7 @@ export const IMAGE_GEN_SECTION_ID = 'dsh-imagegen'
 export const OPEN_IMAGE_GEN_CONFIG_EVENT = 'dsh-imagegen:open-config'
 
 /** Settings groups an in-app prompt can jump to directly. */
-export type ImageGenConfigSection = 'channels' | 'prompt' | 'storage' | 'skills' | 'ppt' | 'general'
+export type ImageGenConfigSection = 'storage' | 'skills' | 'ppt' | 'general'
 
 /** Ask the host to open Settings and select the dsh-imagegen section. */
 let requestedSection: ImageGenConfigSection | undefined

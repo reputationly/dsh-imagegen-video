@@ -19,7 +19,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { agentSessionFailure, lastAssistantText, type SkillAgentSession } from './skill-runner.ts'
+import type { ChatPart } from './prompt-enhancer.ts'
 import type { HostChatSeam } from './generation-runtime.ts'
 
 /** The host `agents` service, narrowed to what one plain turn needs. */
@@ -33,10 +35,15 @@ export interface HostAgentsService {
   }) => Promise<{ agent: HostAgent; dispose: () => Promise<void> }>
 }
 
+/** One user-message block: the brief, or an image the model must look at. */
+export type HostTurnBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; attachment: ImageAttachmentRef }
+
 /** One composed agent, narrowed to sending a turn and reading its answer. */
 export interface HostAgent {
   session: SkillAgentSession
-  followup: (message: { id: string; role: 'user'; content: Array<{ type: 'text'; text: string }>; source: { kind: string } }) => void
+  followup: (message: { id: string; role: 'user'; content: HostTurnBlock[]; source: { kind: string } }) => void
   whenIdle: () => Promise<void>
   cancel: (reason: { kind: string }) => void
 }
@@ -56,10 +63,31 @@ export interface HostChatOptions {
   agents?: HostAgentsService
   presets?: HostAgentPresets
   defaultModel?: HostDefaultModel
+  /**
+   * Attachment admission for image parts. Absent on hosts without the seam:
+   * a text-only ask still works, an ask that carries an image then refuses
+   * rather than dropping the picture the caller asked about.
+   */
+  saveImage?: (input: SaveImageAttachment) => Promise<ImageAttachmentRef>
   /** Working directory for the composed agent (the code render never reads it). */
   cwd: () => string
   /** Preset id to join; empty asks the roster for the deployment default. */
   preset: () => string
+}
+
+/** The media types attachment admission accepts from a data URL. */
+const IMAGE_MEDIA_TYPES: readonly ImageMediaType[] = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+
+/** Decode one `data:<mime>;base64,<payload>` part into attachment input. */
+function imageInputOf(part: { image_url: { url: string } }): SaveImageAttachment {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(part.image_url.url.trim())
+  if (match === null || match[1] === undefined || match[2] === undefined || match[2] === '') {
+    throw new Error('图片输入必须是 base64 data URL')
+  }
+  const mediaType = match[1].trim().toLowerCase()
+  const accepted = IMAGE_MEDIA_TYPES.find(type => type === mediaType)
+  if (accepted === undefined) throw new Error(`对话模型不接受这种图片格式：${mediaType || 'unknown'}`)
+  return { data: new Uint8Array(Buffer.from(match[2], 'base64')), mediaType: accepted }
 }
 
 /** Map a user-facing model name onto a filesystem-safe run id. */
@@ -80,6 +108,23 @@ export function createHostChatSeam(options: HostChatOptions): HostChatSeam {
     const provider = current?.provider?.trim() ?? ''
     const model = current?.model?.trim() ?? ''
     return provider === '' || model === '' ? undefined : { provider, model }
+  }
+  /** Turn the seam's content into the user-message blocks one turn carries. */
+  const blocksOf = async (content: string | readonly ChatPart[]): Promise<HostTurnBlock[]> => {
+    if (typeof content === 'string') return [{ type: 'text', text: content }]
+    const blocks: HostTurnBlock[] = []
+    for (const part of content) {
+      if (part.type === 'text') {
+        blocks.push({ type: 'text', text: part.text })
+        continue
+      }
+      const save = options.saveImage
+      if (save === undefined) {
+        throw new Error('当前部署没有图片附件服务：对话模型只能处理文字输入')
+      }
+      blocks.push({ type: 'image', attachment: await save(imageInputOf(part)) })
+    }
+    return blocks
   }
   return {
     available: () => options.agents !== undefined && selection() !== undefined,
@@ -118,12 +163,13 @@ export function createHostChatSeam(options: HostChatOptions): HostChatSeam {
           })
         },
       })
+      const blocks = await blocksOf(content)
       const agent = handle.agent
       try {
         agent.followup({
           id: `${sessionId}-turn`,
           role: 'user',
-          content: [{ type: 'text', text: content }],
+          content: blocks,
           source: { kind: 'plugin:dsh-imagegen' },
         })
         await agent.whenIdle()

@@ -38,7 +38,7 @@ export function GatewayStatus({ snapshot, refreshing, onRefresh }: GatewayStatus
   // 有缓存的加载中不打扰用户：上一份模型列表还在用。
   if (snapshot.status === 'ready') return null
   if (snapshot.status === 'loading' && hasModels) return null
-  const text = tt(copyKeyOf(snapshot))
+  const text = tt(gatewayCopyKey(snapshot))
   return (
     <div className={css.bar} data-gateway-status={snapshot.status} role="status">
       <span className={css.dot} aria-hidden="true" />
@@ -57,10 +57,12 @@ export function GatewayStatus({ snapshot, refreshing, onRefresh }: GatewayStatus
 
 /**
  * 状态对应的文案键。
+ *
+ * 导出给工作台用：生成按钮禁用时要说的那句话，必须和状态条说的是同一句。
  * @param snapshot - 目录快照。
  * @returns locale 字典里的键。
  */
-function copyKeyOf(snapshot: GatewayCatalogSnapshot): ImageGenKey {
+export function gatewayCopyKey(snapshot: Pick<GatewayCatalogSnapshot, 'status' | 'image' | 'video'>): ImageGenKey {
   const hasModels = snapshot.image.length > 0 || snapshot.video.length > 0
   switch (snapshot.status) {
     case 'not-configured': return 'gateway.notConfigured'

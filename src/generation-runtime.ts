@@ -15,16 +15,14 @@ import { generateVideo, VideoGenError } from './video-engine.ts'
 import { applyPlan, adoptPlan, planVideo, requirePrompt, VideoPlanError, type ChatCompleter } from './video-director.ts'
 import { describeVideoModel } from './video-model-catalog.ts'
 import { appendVideoHistory } from './video-store.ts'
-import { detectImageMime } from './image-format.ts'
-import { vendorOf, type SubscriptionManager, type SubscriptionReferenceImage } from './subscription/manager.ts'
 import { appendHistory } from './history-store.ts'
 import { GenerationTaskQueue } from './task-queue.ts'
 import { VideoTaskQueue, type VideoTask } from './video-task-queue.ts'
 import { recordDiagnostic } from './diagnostics-store.ts'
 import { runCodeRender, type CodeChatCompleter } from './code-render-runtime.ts'
 import { CodeRenderError } from './code-render.ts'
-import type { PromptModelConfig } from './prompt-enhancer.ts'
-import type { ChannelConfig, GeneratedImage, GenerateRequest, GenerateResult, HistoryEntry, HistoryEntryInput, SubscriptionProvider, VideoDirectorPlan, VideoGenerateRequest, VideoGenerateResult, VideoHistoryEntry, VideoResolution } from './protocol.ts'
+import type { ChatOptions, ChatTarget, HostChatClient } from './prompt-enhancer.ts'
+import type { ChannelConfig, GeneratedImage, GenerateRequest, GenerateResult, HistoryEntry, HistoryEntryInput, VideoDirectorPlan, VideoGenerateRequest, VideoGenerateResult, VideoHistoryEntry, VideoResolution } from './protocol.ts'
 
 /** A channel with its resolved API key (the settings doc holds the key
  *  separately so redacted reads never expose it). */
@@ -68,29 +66,22 @@ export interface HistorySink {
  *
  * Injected by the host entry (which is the only place that owns the `agents` /
  * `agentDefaultModel` services) so the runtime never composes an agent itself.
- * When absent the code path falls back to the prompt-enhancement endpoint, so a
- * minimal host still works — but on a normal DSH install this is what draws.
+ * Every chat-shaped call in this plugin (code render, video planning, prompt
+ * editing, canvas light skills) goes through it; a host that mounts no
+ * conversation model has no chat capability at all.
  */
-export interface HostChatSeam {
-  /** Whether a host model is currently reachable (services mounted + a model chosen). */
-  available: () => boolean
-  /** The label recorded on the history entry (the model the host will use). */
-  label: () => string
-  /** Run one turn and return the assistant's text. */
-  complete: (options: { system: string; content: string; signal?: AbortSignal }) => Promise<string>
-}
+export type HostChatSeam = HostChatClient
 
 /**
- * Seam for the director planning step: the chat endpoint a plan is written
- * with, and the call itself.
+ * Seam for the director planning step: the chat target a plan is recorded
+ * against, and the call itself.
  *
- * Injected rather than imported so the runtime stays free of network policy:
- * the host entry owns which credentials exist (`resolvePromptModelConfig`), and
- * a test can supply a scripted completer without a socket.
+ * Injected rather than imported so a test can supply a scripted completer
+ * without composing an agent.
  */
 export interface VideoDirectorSeam {
-  /** Resolve the current chat endpoint (the same one prompt enhancement uses). */
-  resolveConfig: () => PromptModelConfig
+  /** The model label the plan is recorded with. */
+  resolveConfig: () => ChatTarget
   /** Complete one chat turn. */
   complete: ChatCompleter
 }
@@ -103,13 +94,8 @@ export class ImageGenerationRuntime {
   constructor(
     private readonly resolve: () => ChannelsView,
     private readonly history: HistorySink = { append: appendHistory },
-    private readonly subscriptions?: SubscriptionManager,
     private readonly director?: VideoDirectorSeam,
-    /**
-     * The DSH host's own conversation model. Optional so a minimal host (and
-     * every existing test) keeps working; when present it wins over the
-     * prompt-enhancement endpoint for the code path.
-     */
+    /** The DSH host's own conversation model; the only chat model this plugin has. */
     private readonly hostChat?: HostChatSeam,
   ) {
     // Every task runs in parallel up to this small host-wide limit; a
@@ -151,10 +137,10 @@ export class ImageGenerationRuntime {
   }
 
   /**
-   * Resolve the chat endpoint used by the director step.
+   * Resolve the chat target used by the director step.
    *
-   * Absent on hosts that did not mount prompt enhancement: planning then runs
-   * on the offline backend rather than failing, so video still works.
+   * Absent on hosts that mount no conversation model: planning then runs on the
+   * offline backend rather than failing, so video still works.
    */
   private directorSeam(): VideoDirectorSeam | undefined {
     return this.director
@@ -205,7 +191,7 @@ export class ImageGenerationRuntime {
     const view = this.resolve()
     const channel = this.videoChannel(request.model, request.channelId, view)
     if (channel === undefined) {
-      throw new VideoGenError('尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥', 'no-channels')
+      throw new VideoGenError('当前账号没有可用的视频模型：请确认已登录，且账号有视频模型权限', 'no-channels')
     }
     // Map the panel's alias onto the channel's upstream id, exactly like the
     // image path does, so the engine always sends the real gateway model id.
@@ -253,7 +239,9 @@ export class ImageGenerationRuntime {
           message: plan.degradedReason ?? '规划降级为离线模式',
           requestExcerpt: plan.notes.length > 0 ? plan.notes.join(' · ') : undefined,
           durationMs: Date.now() - startedAt,
-          hadAuth: (this.directorSeam()?.resolveConfig().apiKey.trim() ?? '') !== '',
+          // The host conversation model is already authenticated by the host;
+          // the flag only says whether a model was reachable at all.
+          hadAuth: (this.directorSeam()?.resolveConfig().model.trim() ?? '') !== '',
         })
       }
       effective = applyPlan(effective, plan)
@@ -261,7 +249,7 @@ export class ImageGenerationRuntime {
 
     const videoKey = await apiKeyOf(channel)
     const result = await generateVideo(
-      { apiUrl: channel.apiUrl, apiKey: videoKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, preset: channel.preset, autoReferenceLimit: channel.autoReferenceLimit !== false, channelName: channel.name } satisfies UpstreamConfig,
+      { apiUrl: channel.apiUrl, apiKey: videoKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, channelName: channel.name } satisfies UpstreamConfig,
       effective,
       { ...signal === undefined ? {} : { signal }, family },
     )
@@ -317,36 +305,21 @@ export class ImageGenerationRuntime {
   }
 
   /**
-   * The chat model the code path draws with.
-   *
-   * Preference order matters and is the whole point of this seam: the DSH
-   * host's own conversation model first (the one the user already talks to),
-   * and only then the plugin's prompt-enhancement endpoint. Neither adds a new
-   * setting — there is nothing to configure beyond picking this path.
+   * The chat model the code path draws with: the DSH host's own conversation
+   * model, which is the only chat model this plugin has.
    */
-  private codeProvider(): { config: PromptModelConfig; complete: CodeChatCompleter } {
+  private codeProvider(): { target: ChatTarget; complete: CodeChatCompleter } {
     const host = this.hostChat
-    if (host !== undefined && host.available()) {
-      return {
-        // A sentinel URL: the host seam is already authenticated, so nothing
-        // here is dialled. It exists because the renderer treats an empty
-        // endpoint as "not configured" and refuses before drawing.
-        config: { apiUrl: HOST_CHAT_ENDPOINT, apiKey: '', model: host.label() },
-        complete: async options => await host.complete({
-          system: options.system,
-          content: options.content,
-          ...options.signal === undefined ? {} : { signal: options.signal },
-        }),
-      }
-    }
-    const seam = this.director
-    if (seam === undefined) {
+    if (host === undefined || !host.available()) {
       throw new CodeRenderError(
-        '没有可用的对话模型：代码生成需要 DSH 里已接入的模型（或「设置 → 提示词增强模型」）。请配置后重试，或切回模型生成。',
+        '没有可用的对话模型：代码生成需要 DSH 对话面板里已接入的模型。请选择模型后重试，或切回模型生成。',
         'code-no-chat-model',
       )
     }
-    return { config: seam.resolveConfig(), complete: seam.complete }
+    return {
+      target: { model: host.label() },
+      complete: async options => await host.complete(options satisfies ChatOptions),
+    }
   }
 
   /**
@@ -360,7 +333,7 @@ export class ImageGenerationRuntime {
    */
   private async runVideoCode(request: VideoGenerateRequest, signal?: AbortSignal): Promise<VideoGenerateResult> {
     const provider = this.codeProvider()
-    const config = provider.config
+    const config = provider.target
     const outcome = await runCodeRender(
       {
         kind: 'video',
@@ -424,7 +397,7 @@ export class ImageGenerationRuntime {
    */
   private async runImageCode(request: GenerateRequest, signal?: AbortSignal): Promise<GenerateResult> {
     const provider = this.codeProvider()
-    const config = provider.config
+    const config = provider.target
     const { resolution, aspectRatio } = stillShape(request.size, request.quality)
     const outcome = await runCodeRender(
       {
@@ -491,16 +464,13 @@ export class ImageGenerationRuntime {
       ?? view.channels.find(candidate => candidate.id === view.defaultChannelId)
       ?? view.channels[0]
     if (channel === undefined) {
-      throw new ImageGenError('尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥', 'no-channels')
+      throw new ImageGenError('当前账号没有可用的生图模型：请确认已登录，且账号有图像模型权限', 'no-channels')
     }
-    // Subscription vendors answer with stills only; requesting a GIF there
-    // would silently return one and charge for the wrong thing.
-    if (request.outputFormat === 'gif' && channel.auth === 'subscription') {
-      throw new ImageGenError('订阅渠道不支持 GIF 动图，请改用带 API Key 的 gpt-image-2.6 渠道', 'gif-unsupported')
-    }
-    const result = channel.auth === 'subscription' && channel.subscription !== undefined
-      ? { images: await this.generateSubscription(channel.subscription, request, signal) }
-      : await generateImage({ apiUrl: channel.apiUrl, apiKey: await apiKeyOf(channel), apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, preset: channel.preset, autoReferenceLimit: channel.autoReferenceLimit !== false, channelName: channel.name, watermark: channel.watermark } satisfies UpstreamConfig, request, { signal })
+    const result = await generateImage(
+      { apiUrl: channel.apiUrl, apiKey: await apiKeyOf(channel), apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, channelName: channel.name } satisfies UpstreamConfig,
+      request,
+      { signal },
+    )
     try {
       // Same contract as the code path: the id must exist before the append so
       // the caller can echo it back as `embedId` and resolve the written files.
@@ -540,39 +510,7 @@ export class ImageGenerationRuntime {
       return { ...result, historyError: error instanceof Error ? error.message : String(error) }
     }
   }
-
-  /** Generate images through one logged-in subscription account. */
-  private async generateSubscription(provider: SubscriptionProvider, request: GenerateRequest, signal?: AbortSignal): Promise<GeneratedImage[]> {
-    if (this.subscriptions === undefined) {
-      throw new ImageGenError('当前部署未挂载 DSH Credentials，订阅账号不可用', 'subscription-unavailable')
-    }
-    const references = subscriptionReferences(request)
-    const count = Math.max(1, Math.min(4, Math.trunc(request.n) || 1))
-    const batches = await Promise.all(Array.from({ length: count }, async () => await this.subscriptions!.generate({
-      vendor: vendorOf(provider),
-      prompt: request.prompt,
-      size: request.size,
-      quality: request.quality,
-      ...(references.length > 0 ? { referenceImages: references } : {}),
-      ...(signal === undefined ? {} : { signal }),
-    })))
-    return batches.flatMap(batch => batch.flatMap(row => {
-      const bytes = Buffer.from(row.b64_json, 'base64')
-      const mime = detectImageMime(bytes)
-      if (mime === undefined) throw new ImageGenError('订阅图像返回了无法识别的图片格式', 'subscription-invalid-image')
-      return [{ b64: row.b64_json, mime, ...row.revisedPrompt === undefined ? {} : { revisedPrompt: row.revisedPrompt } }]
-    }))
-  }
 }
-
-/**
- * Stand-in endpoint for the host-model seam.
- *
- * The host conversation model is reached through an agent, not HTTP, so there
- * is no URL to dial. `runCodeRender` refuses to call a model when the endpoint
- * looks unconfigured, so this sentinel exists purely to say "provider present".
- */
-const HOST_CHAT_ENDPOINT = 'dsh://host-model'
 
 /**
  * Frame rate the code path renders at.
@@ -594,18 +532,4 @@ function stillShape(size: string, quality: string): { resolution: VideoResolutio
   const aspectRatio = size === 'auto' || size.trim() === '' ? '1:1' : size.trim()
   const resolution: VideoResolution = quality === '1k' ? '720P' : '1080P'
   return { resolution, aspectRatio }
-}
-
-/** Decode the request's data-URL references into subscription wire images. */
-function subscriptionReferences(request: GenerateRequest): SubscriptionReferenceImage[] {
-  return [request.image, ...(request.images ?? [])]
-    .filter((value): value is string => typeof value === 'string' && value !== '')
-    .slice(0, 5)
-    .map(value => {
-      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.*)$/su.exec(value)
-      if (match === null || match[1] === undefined || match[2] === undefined) {
-        throw new ImageGenError('订阅图生图收到无法解码的参考图片', 'subscription-invalid-reference')
-      }
-      return { data: Buffer.from(match[2], 'base64'), mediaType: match[1] }
-    })
 }

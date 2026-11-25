@@ -470,23 +470,28 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
     nodes: [], connections: [],
   }
 
+  /**
+   * 宿主的网关目录：工作台唯一的数据来源。设置里不再有渠道表，模型全部来自这里。
+   *
+   * The image and video aliases are deliberately disjoint: a video node's model
+   * picker reading `modelGroups` instead of `videoGroups` would then show the
+   * IMAGE alias, which the E checks below can see.
+   */
+  const gatewaySnapshot = {
+    status: 'ready',
+    version: 'smoke-v1',
+    fetchedAt: 0,
+    image: [{ model: 'gpt-image-2', label: 'gpt-image-2', isDefault: true }],
+    video: [
+      { model: 'agnes-video-2.5-flash', label: 'agnes-video-2.5-flash', isDefault: true },
+      // A second video model so "the picker really fed the resubmit" is
+      // observable: the E check picks this one, then regenerates.
+      { model: 'agnes-video-2.5-pro', label: 'agnes-video-2.5-pro', isDefault: false },
+    ],
+  }
   const configState = {
     enabled: true,
     announceToAgent: true,
-    channels: [{
-      id: 'default', preset: '', name: 'Default', apiUrl: 'https://example.test/v1',
-      // The image and video aliases are deliberately disjoint: a video node's
-      // model picker reading `modelGroups` instead of `videoGroups` would then
-      // show the IMAGE alias, which the E checks below can see.
-      models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
-      videoModels: [
-        { alias: 'agnes-video-2.5-flash', id: 'agnes-video-2.5-flash' },
-        // A second video model so "the picker really fed the resubmit" is
-        // observable: the E check picks this one, then regenerates.
-        { alias: 'agnes-video-2.5-pro', id: 'agnes-video-2.5-pro' },
-      ],
-    }],
-    defaultChannelId: 'default',
     defaultModel: 'gpt-image-2',
     defaultVideoModel: 'agnes-video-2.5-flash',
   }
@@ -495,14 +500,13 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
   const fetchStub = async (input, init) => {
     const path = String(input)
     requestPaths.push(path)
+    if (path.endsWith('/gateway/catalog')) return json({ ok: true, snapshot: gatewaySnapshot })
+    if (path.endsWith('/gateway/refresh')) return json({ ok: true, snapshot: gatewaySnapshot })
     if (path.endsWith('/settings/describe')) {
       return json({
         ok: true,
         value: {
-          namespaces: [{
-            ns: 'dsh-imagegen', value: configState, revision: 0,
-            secrets: [{ path: ['channelSecrets', 'default'], set: true }],
-          }],
+          namespaces: [{ ns: 'dsh-imagegen', value: configState, revision: 0 }],
           writable: true,
         },
       })
@@ -1187,60 +1191,40 @@ await check('SB1-SB4 the storyboard board renders and hands its clips to the sti
     return picker === undefined ? [] : [...picker.options].map(option => option.value)
   }
 
-  // vela accepts exactly one length. A board naming it may only offer that one.
-  shared.setCanvasReadDocument({
-    ...canvasReadDocumentNow(),
-    revision: canvasReadDocumentNow().revision + 1,
-    nodes: canvasReadDocumentNow().nodes.map(item => item.id === 'node-board'
-      ? { ...item, metadata: { ...item.metadata, storyboard: { ...item.metadata.storyboard, model: 'vela-ai-video' } } }
-      : item),
-  })
-  await reopenCanvas()
-  assert.ok(await waitUntil(() => boardEl() !== null, 6000), 'SB6: the board comes back naming a model')
-  // Shot 1 is saved at 3 s, which vela does not accept. The picker keeps that
-  // value as a choice (a document must show what will be sent) and adds the
-  // model's own — anything else would silently rewrite the user's board.
-  assert.deepEqual(optionValues(), ['3', '5'], 'SB6: a five-second model drops every length but five, keeping the saved 3 s visible')
+  // 网关的 h3 视频族只接受 5 / 10 / 15 秒。一块点名了它的分镜板只能给这三档——
+  // 外加已存的那一镜（3 秒），文档必须原样显示将要发出的值，不能偷偷改写用户的板子。
+  const nameBoardModel = async (model) => {
+    shared.setCanvasReadDocument({
+      ...canvasReadDocumentNow(),
+      revision: canvasReadDocumentNow().revision + 1,
+      nodes: canvasReadDocumentNow().nodes.map(item => item.id === 'node-board'
+        ? { ...item, metadata: { ...item.metadata, storyboard: { ...item.metadata.storyboard, model } } }
+        : item),
+    })
+    await reopenCanvas()
+    assert.ok(await waitUntil(() => boardEl() !== null, 6000), `SB6: the board comes back naming ${model ?? 'no model'}`)
+  }
 
-  // grok-video speaks 6 / 10 / 15, which is a different subset: the narrowing
-  // must follow the model, not a hard-coded shorter list.
-  shared.setCanvasReadDocument({
-    ...canvasReadDocumentNow(),
-    revision: canvasReadDocumentNow().revision + 1,
-    nodes: canvasReadDocumentNow().nodes.map(item => item.id === 'node-board'
-      ? { ...item, metadata: { ...item.metadata, storyboard: { ...item.metadata.storyboard, model: 'grok-video' } } }
-      : item),
-  })
-  await reopenCanvas()
-  assert.ok(await waitUntil(() => boardEl() !== null, 6000), 'SB6: the board comes back on the second model')
-  assert.deepEqual(optionValues(), ['3', '6', '10', '15'], 'SB6: a 6/10/15 model offers exactly those plus the saved 3 s')
+  await nameBoardModel('minimax-h3-2k')
+  assert.deepEqual(optionValues(), ['3', '5', '10', '15'], 'SB6: the h3 family drops every length but 5 / 10 / 15, keeping the saved 3 s visible')
+  // 同一次收窄也发生在分辨率上：h3 只有 768P 一档（2K 由网关侧超分），所以板子上
+  // 的分辨率选择器只剩它一个。这就是「目录真的传到了板子上」的信号。
+  const resolutionPicker = () => [...boardEl().querySelectorAll('select')]
+    .find(select => select.getAttribute('aria-label') === '分辨率')
+  const tiers = () => [...(resolutionPicker()?.options ?? [])].map(option => option.value)
+  // 已存的 720P 同样作为一项保留（文档必须显示将要发出的值），模型的档位排在它后面。
+  assert.deepEqual(tiers(), ['720P', '768P'], 'SB6: the board follows the 768P-only model it will actually run on, keeping the saved 720P visible')
 
-  // Clearing the field hands the choice back to the composer's model. The
-  // fixture default (agnes) declares no durations, so the full editorial list
-  // comes back — that is the `undefined` branch, and it must be reachable too.
-  shared.setCanvasReadDocument({
-    ...canvasReadDocumentNow(),
-    revision: canvasReadDocumentNow().revision + 1,
-    nodes: canvasReadDocumentNow().nodes.map(item => item.id === 'node-board'
-      ? { ...item, metadata: { ...item.metadata, storyboard: { ...item.metadata.storyboard, model: undefined } } }
-      : item),
-  })
-  await reopenCanvas()
-  assert.ok(await waitUntil(() => boardEl() !== null, 6000), 'SB6: the board comes back with no model of its own')
+  // 清空字段后选择权交回给 composer 的模型。fixture 默认的 agnes 归到通用族，
+  // 没有声明时长与档位，于是编辑部的完整列表与通用族的三个档位都回来——这条 fallback
+  // 分支必须同样可达，否则「收窄」就成了硬编码。
+  await nameBoardModel(undefined)
   assert.deepEqual(
     optionValues(),
     ['3', '4', '5', '6', '8', '10', '12', '15'],
     'SB6: with no declared durations the full editorial list is offered (plus the saved value)',
   )
-  // The signal that the composer's model really reached the board: the fixture
-  // default is agnes-video-2.5-**flash**, which is documented as 720P-only. A
-  // board that names no model must therefore offer ONE resolution tier. Reading
-  // no model at all leaves the generic four, which is the state the screenshot
-  // caught: a 720P board cheerfully offering 480P / 768P / 1080P.
-  const resolutionPicker = () => [...boardEl().querySelectorAll('select')]
-    .find(select => select.getAttribute('aria-label') === '分辨率')
-  const tiers = [...(resolutionPicker()?.options ?? [])].map(option => option.value)
-  assert.deepEqual(tiers, ['720P'], 'SB6: the board follows the 720P-only model it will actually run on')
+  assert.deepEqual(tiers(), ['480P', '720P', '1080P'], 'SB6: the generic family keeps its three tiers, and the saved 720P is one of them')
 
   // Switch the board to independent shots: now shot 3 is free to run, and the
   // SAME button has to notice. This is the half that proves the rule is read

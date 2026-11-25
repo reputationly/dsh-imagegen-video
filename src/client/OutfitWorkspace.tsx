@@ -9,7 +9,7 @@ import { describeModel } from '../model-catalog.ts'
 import type { OutfitReference, OutfitReferenceKind, OutfitRecipe, OutfitPreparedGeneration } from '../outfit-reference.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
-import { editReferenceLimit } from './reference-images.ts'
+import { EDIT_REFERENCE_LIMIT } from './reference-images.ts'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import { OutfitReferencePicker } from './OutfitReferencePicker.tsx'
 import { outfitReferenceApi } from './outfit-reference-api.ts'
@@ -67,10 +67,12 @@ export default function OutfitWorkspace({ api = defaultApi, config }: OutfitWork
   const initialChoice = { model: options.defaultModel ?? options.models[0] ?? '', channelId: options.defaultChannelId ?? options.groups[0]?.id ?? '' }
   const selectedChoice = resolveModelChoice(options.groups, { model: recipe.model, channelId: recipe.channelId }, options.defaultChannelId)
   const choice: ModelPickerValue = recipe.model ? selectedChoice : resolveModelChoice(options.groups, initialChoice, options.defaultChannelId)
+  // Capabilities belong to the gateway's upstream id, not to the display alias
+  // the picker shows; the catalog carries that mapping.
   const selectedChannel = config?.channels?.find(channel => channel.id === choice.channelId)
   const upstream = selectedChannel?.models.find(entry => entry.alias === choice.model)?.id ?? choice.model
   const supportsEdit = describeModel(upstream).supportsEdit
-  const referenceLimit = editReferenceLimit(choice.model, selectedChannel)
+  const referenceLimit = EDIT_REFERENCE_LIMIT
   const modelMissing = choice.model.trim() === ''
   const fullRecipe: OutfitRecipe = { ...recipe, channelId: choice.channelId, model: choice.model }
   latestDraft.current = draftLoaded ? fullRecipe : null

@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { GATEWAY_API, type GatewayCatalogSnapshot, MODEL_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, LISTING_COPY_API, ECOMMERCE_LINK_API, PROMPT_ENHANCE_API, SIGNALS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, VIDEO_API, type CanvasAssetRef, type CanvasDocument, type CanvasFilePreview, type CanvasLayerPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type CanvasProposal, type CanvasSummary, type CodeRenderResponse, type CodeTarget, type DiagnosticEntry, type GenerateRequest, type GenerateResult, type ListingCopyRequest, type ListingCopyResult, type EcommerceLinkResult, type GenerationTask, type GenerationTaskSummary, type HistoryEntry, type HistoryEntryInput, type PptRunRequest, type PptRuntimeStatus, type SignalReportSummary, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type VideoDirectorPlan, type VideoGenerateRequest, type VideoGenerateResult, type VideoHistoryEntry, type VideoTask, type VideoTaskSummary, type StageFrameUpload, type StageEncodeResult } from '../protocol.ts'
+import { GATEWAY_API, type GatewayCatalogSnapshot, MODEL_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, LISTING_COPY_API, ECOMMERCE_LINK_API, PROMPT_ENHANCE_API, SIGNALS_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, VIDEO_API, type CanvasAssetRef, type CanvasDocument, type CanvasFilePreview, type CanvasLayerPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type CanvasProposal, type CanvasSummary, type CodeRenderResponse, type CodeTarget, type DiagnosticEntry, type GenerateRequest, type GenerateResult, type ListingCopyRequest, type ListingCopyResult, type EcommerceLinkResult, type GenerationTask, type GenerationTaskSummary, type HistoryEntry, type HistoryEntryInput, type PptRunRequest, type PptRuntimeStatus, type SignalReportSummary, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type VideoDirectorPlan, type VideoGenerateRequest, type VideoGenerateResult, type VideoHistoryEntry, type VideoTask, type VideoTaskSummary, type StageFrameUpload, type StageEncodeResult } from '../protocol.ts'
 // The bundle contract lives in its own module rather than in `protocol.ts`,
 // because the host is the one that builds and parses bundles and only the
 // client's two thin wrappers need the constants. Importing it directly keeps
@@ -857,12 +857,6 @@ export class ImageGenApi {
   async openDataFolder(): Promise<{ ok: boolean; path?: string; message?: string }> {
     const response = await fetch(DATA_FOLDER_API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) })
     return await readEnvelope<{ ok: true; path: string }>(response)
-  }
-
-  /** Probe the configured S3-compatible object storage with a small upload. */
-  async storageTest(): Promise<{ ok: boolean; ms?: number; key?: string; message?: string }> {
-    const response = await fetch(STORAGE_API.test, { method: 'POST' })
-    return await readEnvelope<{ ok: true; ms: number; key: string }>(response)
   }
 
   /** Star one template (the host keeps a full case snapshot). */

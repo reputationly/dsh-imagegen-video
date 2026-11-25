@@ -69,63 +69,7 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
     supportsAspectRatio: false,
     qualityTiers: ['auto'],
   },
-  grok: {
-    label: 'grok',
-    labelZh: 'Grok',
-    known: true,
-    supportsEdit: true,
-    supportsAspectRatio: true,
-    qualityTiers: ['1K', '2K'],
-  },
-  nanobanana: {
-    label: 'nanobanana',
-    labelZh: 'Nano Banana',
-    known: true,
-    supportsEdit: true,
-    supportsAspectRatio: true,
-    qualityTiers: ['1K', '2K', '4K'],
-  },
-  seedream: {
-    label: 'seedream',
-    labelZh: 'Seedream',
-    known: true,
-    supportsEdit: true,
-    supportsAspectRatio: true,
-    qualityTiers: ['1K', '2K'],
-  },
-  agnes: {
-    label: 'Agnes',
-    labelZh: 'Agnes 图像',
-    known: true,
-    supportsEdit: true,
-    supportsAspectRatio: true,
-    qualityTiers: ['1K', '2K', '4K'],
-  },
-  zhipu: {
-    label: 'GLM-Image',
-    labelZh: '智谱图像',
-    known: true,
-    supportsEdit: false,
-    supportsAspectRatio: false,
-    qualityTiers: ['HD'],
-  },
-  qwen: {
-    label: 'qwen-image',
-    labelZh: '千问图像',
-    known: true,
-    supportsEdit: true,
-    supportsAspectRatio: true,
-    qualityTiers: ['auto'],
-  },
-  minimax: {
-    label: 'MiniMax',
-    labelZh: 'MiniMax 图像',
-    known: true,
-    supportsEdit: true,
-    supportsAspectRatio: true,
-    qualityTiers: ['auto'],
-  },
-  // 自家 MaaS 的 MiniMax-H3 图像走了 OpenAI 形状的 /images/generations 与
+  // 部署自家网关的 MiniMax-H3 图像走了 OpenAI 形状的 /images/generations 与
   // /images/edits，但尺寸只认 `size: WIDTHxHEIGHT`：32 像素对齐、面积落在
   // 2K 档 4.0–4.3MP 或 16MP 档 16.5–16.9MP（±15% 容差）、比例不超过 3:1，
   // 低于 2K 直接 400 而不是静默升档。所以 `supportsAspectRatio` 为 false —
@@ -144,10 +88,7 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
  *  fast-fails on these before any network call and the panel counter shows
  *  them live; families absent here have no documented limit. */
 const PROMPT_CHAR_LIMITS: Partial<Record<Exclude<ModelFamily, 'unknown'>, number>> = {
-  // MiniMax image-01 rejects prompts >= 1500 chars upstream (base_resp 2013).
-  minimax: 1500,
-  // 自家 MaaS 的 H3 图像文档给的是 7000 字符；它不是 MiniMax 官方 image-01，
-  // 所以不能沿用上面那条 1500。
+  // 部署自家网关的 H3 图像文档给的是 7000 字符。
   'h3-image': 7000,
 }
 
@@ -158,16 +99,6 @@ export function promptCharLimit(model: string): number | null {
   const { family } = describeModel(model)
   return (family !== 'unknown' ? PROMPT_CHAR_LIMITS[family] : undefined) ?? null
 }
-
-/** Official Gemini image ids served by Nano Banana gateways. */
-const NANOBANANA_GEMINI_IDS = new Set([
-  'gemini-3-pro-image',
-  'gemini-3-pro-image-preview',
-  'gemini-3.1-flash-image',
-  'gemini-3.1-flash-image-preview',
-  'gemini-3.1-flash-lite-image',
-  'gemini-2.5-flash-image',
-])
 
 /** Classify one upstream model id into its request-shaping family.
  *
@@ -206,18 +137,9 @@ export function describeModel(model: string): ModelCatalogEntry {
   // but it speaks the same /images/generations + /images/edits contract.
   if (/^(?:gpt-image|chatgpt-image)/i.test(id)) return { family: 'gpt-image', ...ENTRIES['gpt-image'], lifecycle: 'active' }
   if (/^dall-e/i.test(id)) return { family: 'dall-e', ...ENTRIES['dall-e'], lifecycle: 'active' }
-  if (/^grok-imagine(?:-|$)/.test(id)) return { family: 'grok', ...ENTRIES.grok, lifecycle: 'active' }
-  if (/^nanobanana/i.test(id) || NANOBANANA_GEMINI_IDS.has(id)) return { family: 'nanobanana', ...ENTRIES.nanobanana, lifecycle: 'active' }
-  if (/^(?:doubao-)?seedream/i.test(id)) return { family: 'seedream', ...ENTRIES.seedream, lifecycle: 'active' }
-  if (/^agnes-image(?:[.\-_]|$)/i.test(id)) return { family: 'agnes', ...ENTRIES.agnes, lifecycle: 'active' }
-  if (/^(?:glm-image|cogview(?:-|$))/i.test(id)) return { family: 'zhipu', ...ENTRIES.zhipu, lifecycle: 'active' }
-  if (/^qwen-image(?:[-_.]|$)/i.test(id)) return { family: 'qwen', ...ENTRIES.qwen, lifecycle: 'active' }
-  // 自家 MaaS 的 H3 图像必须排在 MiniMax 官方族之前判定：`minimax-h3-image*`
-  // 虽然不会命中 `image-\d+` 那条 MiniMax 规则，但它确实以 minimax 开头，
-  // 一旦上游以后放宽那条正则就会被错误路由到 `/image_generation`（aspect_ratio
-  // 语义），所以这里先把它锁死。聚合模型 `-enhanced` 也在此族内。
+  // 部署自家网关的 H3 图像族：裸模型 `minimax-h3-image` 与聚合模型
+  // `minimax-h3-image-enhanced` 都走 OpenAI 形状，尺寸只认 `size`。
   if (/^minimax[-_.]?h3[-_.]?image(?:$|[-_.])/i.test(id)) return { family: 'h3-image', ...ENTRIES['h3-image'], lifecycle: 'active' }
-  if (/^(?:minimax[-_/])?image-\d+/i.test(id)) return { family: 'minimax', ...ENTRIES.minimax, lifecycle: 'active' }
   // Tier 3.
   return { family: 'unknown', label: 'unknown', labelZh: '未知协议', known: false, supportsEdit: true, supportsAspectRatio: false, qualityTiers: [], lifecycle: 'active' }
 }
@@ -270,21 +192,6 @@ export function clampGifFrameCount(value: number | undefined): number {
 export function clampGifFrameDurationMs(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value) || value <= 0) return GIF_FRAME_MS_DEFAULT
   return Math.max(20, Math.round(value / 10) * 10)
-}
-
-/** Conservative fallback for providers whose /models response only has ids.
- *  Metadata-aware filtering lives in prompt-enhancer.ts; this catches common
- *  image model naming conventions without treating every unknown model as an
- *  image model.
- *
- *  The trailing `\d*` lets the keyword boundary accept the numeric suffix that
- *  gateways append to a family name without a separator (`nanobanana2`,
- *  `wanx2`). Without it this predicate rejects ids that describeModel() already
- *  declares known — including the DEFAULT_IMAGE_MODELS entries `nanobanana2`
- *  and `nanobanana2-lite` — so "detect models" silently returns a list shorter
- *  than the catalog it is meant to expose. */
-export function isLikelyImageModelId(model: string): boolean {
-  return /(?:^|[-_.])(?:image|img|diffusion|flux|cogview|imagen|seedream|nanobanana|grok-imagine|dall-e|stable-diffusion|sdxl|pixart|kolors|ideogram|midjourney|recraft|hunyuan|jimeng|wanx|hidream|playground)\d*(?:$|[-_.])/i.test(model.trim())
 }
 
 /** The family a model id routes its request through. */

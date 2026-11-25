@@ -593,11 +593,6 @@
 .diagnosticsRow[data-verdict='unknown'] { opacity: .85; }
 
 
-.configGuide { position: fixed; inset: 0; z-index: var(--z-guide); display: grid; place-items: center; padding: 20px; background: var(--dsw-alias-bg-mask-1); }
-.configGuideBody { display: flex; width: min(360px, 100%); flex-direction: column; gap: 12px; padding: 18px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-elevation-panel); }
-.configGuideBody span { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.55; }
-.configGuideBody button { align-self: flex-end; min-height: 30px; padding: 0 12px; border: 0; border-radius: var(--dsw-radius-sm); color: var(--dsw-alias-bg-layer-1); background: var(--dsw-alias-brand-primary); cursor: pointer; font: inherit; font-size: 12px; }
-
 /* Fallback for "add this image to a conversation" when the host cannot tell us
    which conversation is current. The user has to name the target: guessing from
    history is how an image lands in the wrong thread. */
@@ -2123,6 +2118,20 @@
 
 .generateButton {
   width: 100%;
+}
+
+/* Why the generate button cannot be pressed, in the wording the gateway status
+   bar uses for the same state. It sits beside the button so the reason is where
+   the user is looking, not only in the bar at the top of the studio. */
+.generateBlocked {
+  margin: 0;
+  padding: 8px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: var(--dsw-radius-sm);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-1);
 }
 
 .generateInner {

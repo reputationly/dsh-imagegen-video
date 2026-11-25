@@ -8,17 +8,15 @@
  * it directly.
  */
 
-import { isChatCompletionsUrl, qwenDrawBaseUrl, resolveChannelProtocol, type ChannelProtocolPreference, type GeneratedImage, type GenerateRequest, type GenerateResult } from './protocol.ts'
+import { isChatCompletionsUrl, resolveChannelProtocol, type ChannelProtocolPreference, type GeneratedImage, type GenerateRequest, type GenerateResult } from './protocol.ts'
 import { detectImageMime } from './image-format.ts'
-import { clampGifFrameCount, clampGifFrameDurationMs, modelFamily, promptCharLimit, supportsGifOutput } from './model-catalog.ts'
-import { bodyByteLength, excerptOf, networkErrorFields, readResponseExcerpt, readResponseText, recordDiagnostic, type DiagnosticPhase } from './diagnostics-store.ts'
+import { clampGifFrameCount, clampGifFrameDurationMs, modelFamily, supportsGifOutput } from './model-catalog.ts'
+import { bodyByteLength, diagnoseNonJsonBody, excerptOf, networkErrorFields, readResponseExcerpt, readResponseText, recordDiagnostic, type DiagnosticPhase } from './diagnostics-store.ts'
 import { recordSignal } from './signal-store.ts'
-import { googleNativeUrl } from './prompt-enhancer.ts'
-import { diagnoseNonJsonBody } from './upstream-diagnosis.ts'
 
-/** The upstream credentials the panel's settings card configures. */
+/** The upstream credentials one generation is submitted with. */
 export interface UpstreamConfig {
-  /** Base URL of the OpenAI-compatible endpoint, e.g. https://api.openai.com/v1 */
+  /** Base URL of the OpenAI-compatible endpoint, e.g. https://gateway.example/v1 */
   apiUrl: string
   /** Bearer API key. */
   apiKey: string
@@ -26,18 +24,8 @@ export interface UpstreamConfig {
   apiUrlFull?: boolean
   /** Request protocol; auto infers chat-completions from an exact chat URL. */
   protocol?: ChannelProtocolPreference
-  /**
-   * Preset id the channel was created from, when known. A preset can carry a
-   * documented wire quirk that is not inferable from the model id alone (the
-   * CloseAI gateway accepts ratio strings in `size`, official OpenAI does not).
-   */
-  preset?: string
-  /** Use the selected adapter's reference ceiling; false pins 5 images. */
-  autoReferenceLimit?: boolean
   /** Channel display name, recorded in diagnostics so a failure maps to a settings row. */
   channelName?: string
-  /** Seedream 水印开关：缺省为开启，仅在 false 且上游支持时发送 watermark=false (#56)。 */
-  watermark?: boolean
 }
 
 /** A generation failure with a user-presentable message. */
@@ -70,6 +58,9 @@ const IMAGE_FETCH_RETRY_DELAY_MS = 500
 /** Cap on the reference image payload (edit mode), in bytes. */
 const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024
 
+/** Reference images one edit request may carry (the primary one included). */
+const MAX_EDIT_REFERENCES = 5
+
 /** Sizes dall-e-3 accepts; anything else falls back to its square default. */
 const DALLE3_SIZES = new Set(['1024x1024', '1792x1024', '1024x1792'])
 
@@ -82,86 +73,10 @@ function wireModel(request: GenerateRequest): string {
   return alias === '' ? 'gpt-image-2' : alias
 }
 
-/** Whether the model is an xAI Grok Imagine model (grok-imagine-image,
- *  grok-imagine-image-2.0, …). Grok Imagine speaks JSON on both endpoints
- *  and exposes its own aspect-ratio / response-format knobs instead of the
- *  OpenAI size/quality/detail passthrough. */
-function isGrokImagine(model: string): boolean {
-  return modelFamily(model) === 'grok'
-}
-
-/** Whether the model belongs to the Google Nano Banana family (nanobanana2 /
- *  nanobanana2-lite / nanobanana-pro, plus the official Gemini image IDs the
- *  gateways expose). OpenAI-compatible gateways serve these with their own
- *  aspect_ratio / image_size vocabulary instead of the OpenAI size/quality
- *  passthrough. */
-function isNanoBanana(model: string): boolean {
-  return modelFamily(model) === 'nanobanana'
-}
-
-/** Whether the model belongs to the ByteDance Seedream family (seedream-5.0-pro,
- *  seedream-5.0, seedream-4.x, doubao-seedream-…). OpenAI-compatible gateways
- *  serve Seedream through a unified generate-and-edit architecture:
- *  generation AND editing both go to /images/generations and reference images
- *  are a JSON URL / data-URL array. */
-function isSeedream(model: string): boolean {
-  return modelFamily(model) === 'seedream'
-}
-
-/** Whether the model belongs to the Agnes AI image family (agnes-image-2.5-flash,
- *  agnes-image-2.1-flash, agnes-image-2.0-flash). Agnes has no /images/edits
- *  endpoint: generation AND editing both go to /images/generations, references
- *  travel as a JSON `extra_body.image` URL/data-URI array, the size is a tier
- *  (`1K` / `2K` / `3K` / `4K`) paired with `ratio`, and the OpenAI `quality`
- *  field is rejected outright ("quality is not supported by text image queue"). */
-function isAgnes(model: string): boolean {
-  return modelFamily(model) === 'agnes'
-}
-
-/** Agnes size tiers, keyed by the panel's clarity vocabulary. */
-const AGNES_TIERS: Readonly<Record<string, string>> = {
-  '1k': '1K',
-  '2k': '2K',
-  '3k': '3K',
-  '4k': '4K',
-}
-
-/** Aspect ratios the Agnes image API documents. */
-const AGNES_RATIOS = new Set(['1:1', '3:4', '4:3', '16:9', '9:16', '2:3', '3:2', '21:9'])
-
-/** Whether the model uses the official Zhipu image-generation contract. */
-function isZhipuImage(model: string): boolean {
-  return modelFamily(model) === 'zhipu'
-}
-
-/** Whether the model is Alibaba Qwen-Image, which speaks the DashScope native
- *  multimodal-generation contract (NOT OpenAI-compatible): a chat-style
- *  messages body, `宽*高` pixel sizes, and image URLs in the reply content. */
-function isQwenImage(model: string): boolean {
-  return modelFamily(model) === 'qwen'
-}
-
 /** ModelScope's OpenAI-compatible image inference API always queues tasks. */
 function isModelScopeInference(baseUrl: string): boolean {
   try {
     return new URL(baseUrl).hostname.toLowerCase() === 'api-inference.modelscope.cn'
-  } catch {
-    return false
-  }
-}
-
-/**
- * The CloseAI-backed image gateway documented as `api.closeai.hk`.
- *
- * Its `size` field accepts an aspect ratio (`16:9`, `4:3`, `21:9`) in
- * addition to WIDTHxHEIGHT. Official OpenAI endpoints only take their three
- * pixel sizes, so the exact-ratio form is scoped to this gateway (or a
- * channel created from its preset) instead of changing every gpt-image call.
- */
-function isCloseAiImageGateway(upstream: UpstreamConfig): boolean {
-  if (upstream.preset === 'yeahzi-closeai') return true
-  try {
-    return new URL(upstream.apiUrl).hostname.toLowerCase() === 'api.closeai.hk'
   } catch {
     return false
   }
@@ -193,196 +108,6 @@ function modelScopeTaskBaseUrl(baseUrl: string, apiUrlFull: boolean): string {
   }
 }
 
-/** Whether the model is MiniMax image-01, which speaks MiniMax's native
- *  `/image_generation` contract (NOT OpenAI-compatible): `aspect_ratio`,
- *  `subject_reference` for image-to-image, `data.image_base64[]` results, and
- *  errors reported as HTTP 200 + non-zero `base_resp.status_code`. */
-function isMiniMaxImage(model: string): boolean {
-  return modelFamily(model) === 'minimax'
-}
-
-/** Aspect ratios MiniMax image-01 documents (the panel vocabulary is a superset). */
-const MINIMAX_RATIOS = new Set(['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'])
-
-/** MiniMax caps one request at 9 images. */
-const MINIMAX_MAX_N = 9
-
-/** MiniMax image-01 rejects prompts of 1500+ characters; the exact number
- *  lives in model-catalog.ts so the panel counter and this guard agree. */
-
-function isGlmImage(model: string): boolean {
-  return /^glm-image(?:-|$)/i.test(model.trim())
-}
-
-/** Whether this is the official Volcengine Ark model naming convention. */
-function isVolcSeedream(model: string): boolean {
-  return /^doubao-seedream(?:-|$)/i.test(model.trim())
-}
-
-/** Whether the channel points at an official ByteDance image host (Volcengine
- *  Ark or BytePlus). Only these document Seedream's `watermark` field, so the
- *  opt-out stays off third-party relays, which may reject unknown body fields
- *  with a 400. */
-function isByteDanceImageHost(apiUrl: string): boolean {
-  try {
-    const host = new URL(apiUrl).hostname.toLowerCase()
-    return host.endsWith('volces.com') || host.endsWith('byteplus.com') || host.endsWith('bytepluses.com')
-  } catch {
-    return false
-  }
-}
-
-/** Whether Seedream's watermark switch may travel to this upstream: the
- *  official model id (`doubao-seedream-…`) or any model on an official
- *  ByteDance host. Model-name matching alone would miss the bundled Ark preset
- *  (`seedream-5.0-pro`) and inference-endpoint aliases (#56). */
-function supportsSeedreamWatermark(model: string, upstream: UpstreamConfig): boolean {
-  return isVolcSeedream(model) || isByteDanceImageHost(upstream.apiUrl)
-}
-
-/**
- * Volcengine's own `size` grammar: `size` is EITHER a tier (`1K`/`2K`/`4K`) OR
- * an explicit `<width>x<height>`, never both, and the pixel form has a
- * per-model budget. Ark has no aspect-ratio parameter at all, so a tier alone
- * throws the panel's ratio away — a 16:9 request rendered as 1:1. The pixel
- * form is the only way to honour what the user picked.
- */
-interface ArkSizeBudget {
-  /** Lowest total pixel count the model accepts. */
-  min: number
-  /** Highest total pixel count the model accepts. */
-  max: number
-}
-
-/** Documented per-model pixel budgets (width × height), keyed by id prefix. */
-const ARK_SIZE_BUDGETS: ReadonlyArray<{ test: RegExp; budget: ArkSizeBudget }> = [
-  // 5.0 pro / flash: total pixels [1280x720, 2048x2048x1.1025].
-  { test: /^doubao-seedream-5-(?:0|1)-(?:pro|flash)/i, budget: { min: 921_600, max: 4_624_220 } },
-  // 5.0 lite: [2560x1440, 4096x4096].
-  { test: /^doubao-seedream-5-(?:0|1)-lite/i, budget: { min: 3_686_400, max: 16_777_216 } },
-  // 4.5: [2560x1440, 4096x4096].
-  { test: /^doubao-seedream-4-5/i, budget: { min: 3_686_400, max: 16_777_216 } },
-  // 4.0: [1280x720, 4096x4096].
-  { test: /^doubao-seedream-4-0/i, budget: { min: 921_600, max: 16_777_216 } },
-  // 3.0 t2i: [512x512, 2048x2048] and pixel sizes only.
-  { test: /^doubao-seedream-3-0/i, budget: { min: 262_144, max: 4_194_304 } },
-]
-
-/** Total pixels the panel's clarity tier aims for before the budget clamps it. */
-const ARK_TIER_PIXELS: Readonly<Record<string, number>> = {
-  '1k': 1_048_576,
-  '2k': 4_194_304,
-  '4k': 16_777_216,
-}
-
-/** Width/height for a ratio, rounded to even numbers and inside `budget`. */
-function arkPixelSize(ratio: string, quality: string, budget: ArkSizeBudget): string {
-  const [w, h] = ratio.split(':').map(part => Number.parseFloat(part))
-  const aspect = Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? w / h : 1
-  const target = Math.min(budget.max, Math.max(budget.min, ARK_TIER_PIXELS[quality] ?? ARK_TIER_PIXELS['2k']!))
-  // Solve width × height = target with width / height = aspect, then make both
-  // even. Rounding to even can push the product a few pixels OVER the ceiling
-  // (4K at 16:9 lands on 16779264 > 4096²), and Ark rejects that outright, so
-  // the rounded value is a starting point: scan nearby even heights and keep
-  // the closest ratio whose pixel count is genuinely inside the budget.
-  const idealHeight = Math.sqrt(target / aspect)
-  let best: { width: number; height: number; drift: number } | undefined
-  for (let delta = -48; delta <= 48; delta += 2) {
-    const height = Math.max(2, Math.round(idealHeight / 2) * 2 + delta)
-    const width = Math.max(2, Math.round((height * aspect) / 2) * 2)
-    const pixels = width * height
-    if (pixels < budget.min || pixels > budget.max) continue
-    const drift = Math.abs(Math.log((width / height) / aspect))
-    if (best === undefined || drift < best.drift) best = { width, height, drift }
-  }
-  if (best !== undefined) return `${best.width}x${best.height}`
-  // No even pair near the ideal fits (only possible for a very narrow budget):
-  // scale the rounded solution down into range rather than emitting an
-  // out-of-budget size. Both dimensions stay even and the ratio is preserved
-  // to within one pixel.
-  let height = Math.max(2, Math.round(idealHeight / 2) * 2)
-  let width = Math.max(2, Math.round((height * aspect) / 2) * 2)
-  const scale = Math.sqrt(target / (width * height))
-  height = Math.max(2, Math.floor((height * scale) / 2) * 2)
-  width = Math.max(2, Math.floor((width * scale) / 2) * 2)
-  return `${width}x${height}`
-}
-
-/**
- * The `size` an official Ark Seedream model should receive.
- *
- * `auto` has no ratio to honour, so it falls back to the tier string (the
- * documented "let the model choose" form). A known ratio becomes an explicit
- * pixel size inside that model's budget; an unrecognised ratio keeps the
- * tier mapping so a new id cannot start failing on a bad string.
- *
- * The tier lists are NOT interchangeable: 5.0 pro/flash ship 1K/1.5K/2K only,
- * while lite and 4.5 start at 2K. Sending `1K` to a lite model is a 400, so the
- * panel's finest tier is snapped UP to the cheapest tier the model documents.
- */
-function arkSeedreamSize(model: string, quality: string, ratio: string): string {
-  const id = model.trim()
-  const budget = ARK_SIZE_BUDGETS.find(row => row.test.test(id))?.budget
-  const known = ratio !== '' && ratio !== 'auto' && /^\d+:\d+$/.test(ratio)
-  if (budget !== undefined && known) return arkPixelSize(ratio, quality, budget)
-  if (/^doubao-seedream-5-(?:0|1)-(?:pro|flash)/i.test(id)) {
-    return quality === '1k' ? '1K' : '2K'
-  }
-  // 5.0 lite and 4.5 document 2K and up only (lite adds 3K).
-  if (/^doubao-seedream-(?:5-(?:0|1)-lite|4-5)/i.test(id)) {
-    return quality === '4k' ? '4K' : '2K'
-  }
-  // 3.0 t2i documents pixel values only, so give it a square default.
-  if (/^doubao-seedream-3-0/i.test(id)) {
-    return quality === '4k' ? '2048x2048' : '1024x1024'
-  }
-  return quality === '1k' ? '1K' : quality === '4k' ? '4K' : '2K'
-}
-
-/** Kept for the gateway (non-Ark) Seedream path: tier vocabulary only. */
-function seedreamSize(quality: string): string {
-  // Seedream 5.0 Pro currently caps at 2K; keep 4K requests valid by
-  // degrading them to the highest supported tier instead of sending 4K.
-  if (quality === '1k') return '1K'
-  return '2K'
-}
-
-/** The panel's aspect ratios mapped to Qwen-Image's `宽*高` pixel sizes.
- *  The classic series (qwen-image / -plus / -max) documents this fixed list;
- *  2.0 / 3.0-series models accept any size within their pixel budget and
- *  recommend the larger set. */
-const QWEN_SIZE_CLASSIC: Readonly<Record<string, string>> = {
-  '16:9': '1664*928',
-  '21:9': '1664*928',
-  '4:3': '1472*1104',
-  '3:2': '1472*1104',
-  '1:1': '1328*1328',
-  '3:4': '1104*1472',
-  '2:3': '1104*1472',
-  '9:16': '928*1664',
-}
-
-const QWEN_SIZE_HD: Readonly<Record<string, string>> = {
-  '16:9': '2688*1536',
-  '21:9': '2688*1536',
-  '4:3': '2368*1728',
-  '3:2': '2368*1728',
-  '1:1': '2048*2048',
-  '3:4': '1728*2368',
-  '2:3': '1728*2368',
-  '9:16': '1536*2688',
-}
-
-/** Versioned ids (qwen-image-2.0 / -3.0-pro / …) take the large size set. */
-function isVersionedQwenImage(model: string): boolean {
-  return /^qwen-image-\d+\.\d/i.test(model.trim())
-}
-
-function qwenSize(model: string, ratio: string): string | undefined {
-  if (ratio === '' || ratio === 'auto') return undefined
-  return (isVersionedQwenImage(model) ? QWEN_SIZE_HD : QWEN_SIZE_CLASSIC)[ratio]
-}
-
 /** The panel's aspect ratios mapped to the closest OpenAI pixel size
  *  (gpt-image-2 / generic OpenAI-compatible endpoints). */
 const OPENAI_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
@@ -397,7 +122,7 @@ const OPENAI_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
 }
 
 /**
- * 自家 MaaS 的 MiniMax-H3 图像尺寸表：只认 `size`，且必须落在 2K 计费档
+ * 部署自家网关的 MiniMax-H3 图像尺寸表：只认 `size`，且必须落在 2K 计费档
  * （4.0–4.3MP、两边 32 的倍数、比例不超过 3:1）。低于 2K 网关直接 400，
  * 不会静默升档，所以面板上的比例必须在这里一次性换成交付尺寸。
  */
@@ -431,12 +156,6 @@ const GIF_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
   '3:2': '720x480',
   '16:9': '768x432',
   '21:9': '672x288',
-}
-
-/** Panel ratios that need renaming for a model's vocabulary. Grok documents
- *  20:9 as its ultra-wide ratio, so the panel's 21:9 label is sent as 20:9. */
-const GROK_ASPECT_ALIASES: Readonly<Record<string, string>> = {
-  '21:9': '20:9',
 }
 
 /**
@@ -564,17 +283,11 @@ function assertGifRequestSupported(request: GenerateRequest, model: string): voi
 /** Pick the effective per-model request parameters. Never includes `n`: the
  *  batch parameter is rejected by Responses-API-based gateways (tools[0].n),
  *  so the count is satisfied by parallel single-image requests instead. */
-function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
+function effectiveParams(request: GenerateRequest): {
   model: string
   size?: string
   quality?: string
   detail?: string
-  aspect_ratio?: string
-  image_size?: string
-  resolution?: string
-  ratio?: string
-  response_format?: string
-  watermark?: boolean
   output_format?: string
   frame_count?: number
   frame_duration_ms?: number
@@ -604,79 +317,7 @@ function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
     const size = (pixel !== undefined && DALLE3_SIZES.has(pixel)) ? pixel : '1024x1024'
     return { model, size }
   }
-  // Grok Imagine: the panel's aspect ratios are sent as-is (21:9 aliased to
-  // the documented 20:9), the clarity tiers become the resolution parameter
-  // (the API documents 1k / 2k only, so 4k falls back to 2k), and base64
-  // output keeps the temporary signed result URLs from expiring before the
-  // host downloads them.
-  if (isGrokImagine(model)) {
-    return {
-      model,
-      ...request.size !== '' && request.size !== 'auto'
-        ? { aspect_ratio: GROK_ASPECT_ALIASES[request.size] ?? request.size }
-        : {},
-      ...request.quality !== '' && request.quality !== 'auto'
-        ? { resolution: request.quality === '4k' ? '2k' : request.quality }
-        : {},
-      response_format: 'b64_json',
-    }
-  }
-  // Google Nano Banana: the panel's aspect ratios are sent as-is (the family
-  // documents 1:1 … 21:9 natively), the clarity tiers become image_size
-  // (1K / 2K / 4K — Gen 1 and 2-Lite are 1K-only upstream, but which gateway
-  // rejects higher tiers is its own call), and base64 output keeps any signed
-  // result URLs from expiring before the host downloads them.
-  if (isNanoBanana(model)) {
-    return {
-      model,
-      ...request.size !== '' && request.size !== 'auto'
-        ? { aspect_ratio: request.size }
-        : {},
-      ...request.quality !== '' && request.quality !== 'auto'
-        ? { image_size: request.quality.toUpperCase() }
-        : {},
-      response_format: 'b64_json',
-    }
-  }
-  // ByteDance Seedream: the official Volcengine Ark API has no aspect-ratio
-  // parameter and defaults `watermark` to TRUE (a visible "AI生成" stamp), so
-  // an Ark request carries an explicit pixel size for the chosen ratio.
-  // Gateways keep the plain tier + base64 fallback. The platform watermark
-  // is on by default upstream; a channel may opt out, and the field is only
-  // ever sent on hosts that document it (#56).
-  if (isSeedream(model)) {
-    const ark = isVolcSeedream(model)
-    return {
-      model,
-      size: ark ? arkSeedreamSize(model, request.quality, request.size) : seedreamSize(request.quality),
-      response_format: ark ? 'url' : 'b64_json',
-      ...upstream.watermark === false && supportsSeedreamWatermark(model, upstream) ? { watermark: false } : {},
-    }
-  }
-  // Agnes AI: the panel's clarity tier becomes the documented size tier (1K …
-  // 4K) and the canvas ratio rides as `ratio`. `quality` is rejected upstream,
-  // and `response_format` is only valid INSIDE extra_body — the endpoint's own
-  // docs call a top-level response_format out as an error, so neither is sent.
-  if (isAgnes(model)) {
-    return {
-      model,
-      size: AGNES_TIERS[request.quality] ?? '1K',
-      ...AGNES_RATIOS.has(request.size) ? { ratio: request.size } : {},
-    }
-  }
-  // Zhipu's official image API accepts OpenAI-style JSON but uses its own
-  // quality vocabulary. GLM-Image currently supports hd only; CogView uses
-  // the standard tier. Size remains a valid custom pixel size for both.
-  if (isZhipuImage(model)) {
-    return {
-      model,
-      ...request.size !== '' && request.size !== 'auto' && OPENAI_SIZE_BY_RATIO[request.size] !== undefined
-        ? { size: OPENAI_SIZE_BY_RATIO[request.size] }
-        : {},
-      quality: isGlmImage(model) ? 'hd' : 'standard',
-    }
-  }
-  // 自家 MaaS 的 MiniMax-H3 图像：只发 `size`。
+  // 部署自家网关的 MiniMax-H3 图像：只发 `size`。
   //
   // 两条必须分开处理：
   //  - 聚合模型（`-enhanced`）在网关侧用 PE 自动定画幅并映射到 2K 画布，
@@ -692,25 +333,15 @@ function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
   }
   // OpenAI-compatible endpoints: nearest pixel size, clarity tiers mapped to
   // the quality levels (1k→low / 2k→medium / 4k→high), detail passthrough.
-  const closeai = isCloseAiImageGateway(upstream)
   return {
     model,
-    ...request.size !== '' && request.size !== 'auto'
-      ? closeai
-        ? { size: request.size }
-        : OPENAI_SIZE_BY_RATIO[request.size] !== undefined
-          ? { size: OPENAI_SIZE_BY_RATIO[request.size] }
-          : {}
+    ...request.size !== '' && request.size !== 'auto' && OPENAI_SIZE_BY_RATIO[request.size] !== undefined
+      ? { size: OPENAI_SIZE_BY_RATIO[request.size] }
       : {},
     ...request.quality === '1k' ? { quality: 'low' } : {},
     ...request.quality === '2k' ? { quality: 'medium' } : {},
     ...request.quality === '4k' ? { quality: 'high' } : {},
     ...request.detail !== '' ? { detail: request.detail } : {},
-    // CloseAI's temporary result host (tuye.closeai.hk) is unreachable from
-    // some networks even though the generation itself succeeds. The gateway
-    // accepts b64_json for both generations and edits, so keep the bytes out
-    // of that CDN entirely.
-    ...closeai ? { response_format: 'b64_json' } : {},
   }
 }
 
@@ -1326,91 +957,26 @@ async function requestOneImage(
       return { bytes, mime: parsed.mime, filename: `reference.${extensionOf(parsed.mime)}` }
     }
     const primary = decodeReference(request.image)
-    // The host ceiling follows the same switch the panel uses: 20 on the
-    // CloseAI gateway unless the channel pins the safe 5, and 5 elsewhere.
-    const referenceLimit = upstream.autoReferenceLimit === false
-      ? 5
-      : isCloseAiImageGateway(upstream)
-        ? 20
-        : 5
+    // OpenAI-style multi-reference upload: repeat the image[] field so every
+    // connected canvas reference reaches the gateway.
     const extras = (request.images ?? [])
       .filter(img => typeof img === 'string' && img !== '')
-      .slice(0, Math.max(0, referenceLimit - 1))
+      .slice(0, MAX_EDIT_REFERENCES - 1)
       .map(decodeReference)
-    // Grok Imagine /images/edits takes a JSON image_url object (a base64 data
-    // URI is accepted) instead of OpenAI's multipart form-data upload.
-    if (isGrokImagine(params.model)) {
-      headers['content-type'] = 'application/json'
-      body = JSON.stringify({
-        model: params.model,
-        prompt: request.prompt,
-        image: { url: request.image, type: 'image_url' },
-        ...params.aspect_ratio !== undefined ? { aspect_ratio: params.aspect_ratio } : {},
-        response_format: 'b64_json',
-      })
-    } else if (isNanoBanana(params.model)) {
-      // Nano Banana OpenAI-compatible gateways accept the standard multipart
-      // edit upload, with the family's own aspect_ratio / image_size knobs.
-      const form = new FormData()
-      form.append('image', new Blob([primary.bytes], { type: primary.mime }), primary.filename)
-      form.append('prompt', request.prompt)
-      form.append('model', params.model)
-      if (params.aspect_ratio !== undefined) form.append('aspect_ratio', params.aspect_ratio)
-      if (params.image_size !== undefined) form.append('image_size', params.image_size)
-      body = form
-    } else if (isSeedream(params.model)) {
-      // Seedream unifies generation and editing on /images/generations; the
-      // reference image is a JSON URL / data-URL array, never multipart, and
-      // the protocol natively accepts several references. Ark also defaults
-      // `watermark` to true, so the edit path must switch it off too — a
-      // generated image silently stamped "AI生成" is not what the panel showed.
-      headers['content-type'] = 'application/json'
-      body = JSON.stringify({
-        model: params.model,
-        prompt: request.prompt,
-        image: [request.image, ...(request.images ?? []).filter(img => typeof img === 'string' && img !== '').slice(0, 4)],
-        ...params.size !== undefined ? { size: params.size } : {},
-        ...params.resolution !== undefined ? { resolution: params.resolution } : {},
-        response_format: isVolcSeedream(params.model) ? 'url' : 'b64_json',
-        ...params.watermark !== undefined ? { watermark: params.watermark } : {},
-      })
-    } else if (isAgnes(params.model)) {
-      // Agnes editing is a generations call: the references go into
-      // `extra_body.image` as URLs or data URIs (several for multi-image
-      // composition), the output format belongs inside `extra_body` too, and
-      // `/images/edits` does not exist on the gateway (503 no available
-      // server). The tier `size` plus `ratio` pair is the documented way to
-      // ask for a predictable canvas.
-      headers['content-type'] = 'application/json'
-      body = JSON.stringify({
-        model: params.model,
-        prompt: request.prompt,
-        size: params.size ?? '1K',
-        ...params.ratio !== undefined ? { ratio: params.ratio } : {},
-        extra_body: {
-          image: [request.image, ...(request.images ?? []).filter(img => typeof img === 'string' && img !== '').slice(0, 4)],
-          response_format: 'b64_json',
-        },
-      })
-    } else {
-      const form = new FormData()
-      if (extras.length > 0) {
-        // OpenAI-style multi-reference upload: repeat the image[] field so
-        // every connected canvas reference reaches the gateway.
-        for (const [index, reference] of [primary, ...extras].entries()) {
-          form.append('image[]', new Blob([reference.bytes], { type: reference.mime }), `reference-${index}.${extensionOf(reference.mime)}`)
-        }
-      } else {
-        form.append('image', new Blob([primary.bytes], { type: primary.mime }), primary.filename)
+    const form = new FormData()
+    if (extras.length > 0) {
+      for (const [index, reference] of [primary, ...extras].entries()) {
+        form.append('image[]', new Blob([reference.bytes], { type: reference.mime }), `reference-${index}.${extensionOf(reference.mime)}`)
       }
-      form.append('prompt', request.prompt)
-      form.append('model', params.model)
-      if (params.size !== undefined) form.append('size', params.size)
-      if (params.quality !== undefined) form.append('quality', params.quality)
-      if (params.detail !== undefined) form.append('detail', params.detail)
-      if (params.response_format !== undefined) form.append('response_format', params.response_format)
-      body = form
+    } else {
+      form.append('image', new Blob([primary.bytes], { type: primary.mime }), primary.filename)
     }
+    form.append('prompt', request.prompt)
+    form.append('model', params.model)
+    if (params.size !== undefined) form.append('size', params.size)
+    if (params.quality !== undefined) form.append('quality', params.quality)
+    if (params.detail !== undefined) form.append('detail', params.detail)
+    body = form
   } else {
     headers['content-type'] = 'application/json'
     body = JSON.stringify({ prompt: request.prompt, ...params } as Record<string, unknown>)
@@ -1419,11 +985,7 @@ async function requestOneImage(
   const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
   try {
     let response: Response
-    // Seedream and Agnes have no /images/edits endpoint: both modes hit
-    // generations (Agnes with the reference in extra_body.image).
-    const endpoint = request.mode === 'edit' && !isSeedream(params.model) && !isAgnes(params.model)
-      ? '/images/edits'
-      : '/images/generations'
+    const endpoint = request.mode === 'edit' ? '/images/edits' : '/images/generations'
     const requestUrl = endpointUrl(upstream, baseUrl, endpoint)
     const context = attemptContext(upstream, request, 'generate', requestUrl, 'POST', body, Date.now())
     try {
@@ -1505,698 +1067,6 @@ async function requestOneImage(
       return Promise.all(asyncRecords.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
     }
     return Promise.all(data.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
-  } finally {
-    budget.dispose()
-  }
-}
-
-/**
- * Google Generative Language native generation (:generateContent with an
- * x-goog-api-key). The body has no `n`, so the requested count is satisfied
- * with parallel single-image calls and flattened in order.
- */
-async function generateGoogleNativeImages(
-  upstream: UpstreamConfig,
-  baseUrl: string,
-  request: GenerateRequest,
-  signal?: AbortSignal,
-): Promise<GeneratedImage[]> {
-  const count = effectiveCount(request)
-  const batches = await Promise.all(
-    Array.from({ length: count }, () => requestOneGoogleNativeImage(upstream, baseUrl, request, signal)),
-  )
-  return batches.flat()
-}
-
-/** Extract the image parts of one :generateContent reply. Thinking parts are
- *  skipped (drafts, not the answer); camelCase and snake_case inlineData are
- *  both accepted because gateways differ, and a missing mimeType falls back
- *  to byte sniffing. */
-function googleNativeImages(body: Record<string, unknown>): GeneratedImage[] {
-  const candidates = Array.isArray(body.candidates) ? body.candidates : []
-  const images: GeneratedImage[] = []
-  for (const candidate of candidates) {
-    if (candidate === null || typeof candidate !== 'object') continue
-    const parts = (candidate as { content?: { parts?: unknown } }).content?.parts
-    if (!Array.isArray(parts)) continue
-    for (const part of parts) {
-      if (part === null || typeof part !== 'object') continue
-      const record = part as Record<string, unknown>
-      if (record.thought === true) continue
-      const inline = (record.inlineData ?? record.inline_data) as { data?: unknown; mimeType?: unknown; mime_type?: unknown } | undefined
-      if (inline === null || typeof inline !== 'object' || typeof inline.data !== 'string' || inline.data === '') continue
-      const bytes = Buffer.from(inline.data, 'base64')
-      const mime = typeof inline.mimeType === 'string' && inline.mimeType !== '' ? inline.mimeType
-        : typeof inline.mime_type === 'string' && inline.mime_type !== '' ? inline.mime_type
-          : detectImageMime(bytes) ?? 'image/png'
-      images.push({ b64: inline.data, mime })
-    }
-  }
-  return images
-}
-
-/** One :generateContent call: prompt plus up to five inline references,
- *  synchronous base64 answer. Shares requestOneImage's diagnostics contract
- *  so every failure lands in the buffer with URL, status and excerpt. */
-async function requestOneGoogleNativeImage(
-  upstream: UpstreamConfig,
-  baseUrl: string,
-  request: GenerateRequest,
-  signal?: AbortSignal,
-): Promise<GeneratedImage[]> {
-  const parts: Array<Record<string, unknown>> = []
-  if (request.mode === 'edit') {
-    if (typeof request.image !== 'string' || request.image === '') {
-      throw new ImageGenError('图生图需要上传参考图片', 'edit-image-missing')
-    }
-    const references = [request.image, ...(request.images ?? []).filter(img => typeof img === 'string' && img !== '')].slice(0, 5)
-    for (const dataUrl of references) {
-      const parsed = parseDataUrl(dataUrl)
-      if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
-      const bytes = Buffer.from(parsed.base64, 'base64')
-      if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
-        throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
-      }
-      parts.push({ inlineData: { mimeType: parsed.mime, data: parsed.base64 } })
-    }
-  }
-  parts.push({ text: request.prompt })
-  // imageConfig nests inside generationConfig (same shape the Antigravity
-  // subscription adapter sends); auto/empty knobs are omitted, never widened.
-  const imageConfig: Record<string, string> = {}
-  if (request.size !== '' && request.size !== 'auto') imageConfig.aspectRatio = request.size
-  if (request.quality !== '' && request.quality !== 'auto') imageConfig.imageSize = request.quality.toUpperCase()
-  const body = JSON.stringify({
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      candidateCount: 1,
-      responseModalities: ['TEXT', 'IMAGE'],
-      ...Object.keys(imageConfig).length > 0 ? { imageConfig } : {},
-    },
-  })
-  const requestUrl = googleNativeUrl(baseUrl, wireModel(request))
-  const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
-  const context = attemptContext(upstream, request, 'generate', requestUrl, 'POST', body, Date.now())
-  try {
-    let response: Response
-    try {
-      response = await fetch(requestUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': upstream.apiKey.trim() },
-        body,
-        signal: budget.signal,
-      })
-    } catch (error) {
-      const network = networkErrorFields(error)
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
-        : signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(
-            `无法连接上游接口：${network.detail}${network.errorCode === undefined ? '' : ` [${network.errorCode}]`} · 请求地址 ${displayUrl(requestUrl)}`,
-            'upstream-unreachable',
-          )
-      recordFailure(context, failure)
-      throw failure
-    }
-    const responseText = await readResponseText(response)
-    let payload: unknown
-    try {
-      payload = JSON.parse(responseText)
-    } catch (error) {
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
-        : signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : nonJsonFailure('上游接口', requestUrl, response, responseText)
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    if (!response.ok || payload === null || typeof payload !== 'object') {
-      const failure = new ImageGenError(
-        `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
-        'upstream-rejected',
-      )
-      recordFailure(context, failure, {
-        status: response.status,
-        bodyExcerpt: responseText,
-        responseBytes: Buffer.byteLength(responseText, 'utf8'),
-      })
-      throw failure
-    }
-    const images = googleNativeImages(payload as Record<string, unknown>)
-    if (images.length === 0) {
-      const feedback = (payload as { promptFeedback?: { blockReason?: unknown } }).promptFeedback
-      const reason = typeof feedback?.blockReason === 'string' && feedback.blockReason !== '' ? `：${feedback.blockReason}` : ''
-      const failure = new ImageGenError(`Google 原生接口没有返回图片${reason}`, 'upstream-empty')
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    return images
-  } finally {
-    budget.dispose()
-  }
-}
-
-/**
- * Qwen-Image (DashScope native multimodal-generation): one chat-style request
- * carries the prompt (plus the reference image for edit mode) and answers
- * synchronously with image URLs in the reply content. The versioned series
- * batches natively (n ≤ 6; the panel caps at 4), the classic series is
- * single-image per call.
- */
-async function generateQwenImage(
-  baseUrl: string,
-  upstream: UpstreamConfig,
-  request: GenerateRequest,
-  options: { signal?: AbortSignal },
-): Promise<GenerateResult> {
-  const model = wireModel(request)
-  const content: Array<Record<string, unknown>> = []
-  if (request.mode === 'edit') {
-    if (typeof request.image !== 'string' || request.image === '') {
-      throw new ImageGenError('图生图需要上传参考图片', 'edit-image-missing')
-    }
-    // DashScope multimodal messages take the reference image as a content
-    // item; a base64 data URI rides in the same field as a remote URL.
-    const parsed = parseDataUrl(request.image)
-    if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
-    const bytes = Buffer.from(parsed.base64, 'base64')
-    if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
-      throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
-    }
-    content.push({ image: request.image })
-  }
-  content.push({ text: request.prompt })
-
-  const batchable = isVersionedQwenImage(model)
-  const count = batchable ? clampCount(request.n) : 1
-  const size = qwenSize(model, request.size)
-  const body = {
-    model,
-    input: { messages: [{ role: 'user', content }] },
-    parameters: {
-      ...size !== undefined ? { size } : {},
-      ...count > 1 ? { n: count } : {},
-    },
-  }
-
-  const budget = requestSignal(options.signal, UPSTREAM_TIMEOUT_MS)
-  try {
-    let response: Response
-    const requestUrl = `${baseUrl}/services/aigc/multimodal-generation/generation`
-    const context = attemptContext(upstream, request, 'generate', requestUrl, 'POST', JSON.stringify(body), Date.now())
-    try {
-      response = await fetch(requestUrl, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${upstream.apiKey.trim()}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: budget.signal,
-      })
-    } catch (error) {
-      const network = networkErrorFields(error)
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
-        : options.signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(
-            `无法连接上游接口：${network.detail}${network.errorCode === undefined ? '' : ` [${network.errorCode}]`} · 请求地址 ${displayUrl(requestUrl)}`,
-            'upstream-unreachable',
-          )
-      recordFailure(context, failure)
-      throw failure
-    }
-
-    let payload: unknown
-    const responseText = await readResponseText(response)
-    try {
-      // Budget stays armed through the body read (same rationale as the OpenAI path).
-      payload = JSON.parse(responseText)
-    } catch (error) {
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
-        : options.signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : nonJsonFailure('上游接口', requestUrl, response, responseText)
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    if (!response.ok || payload === null || typeof payload !== 'object') {
-      const failure = new ImageGenError(
-        `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
-        'upstream-rejected',
-      )
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-
-  // output.choices[].message.content[] mixes text and { image: url } items.
-  const record = payload as Record<string, unknown>
-  const output = record.output as Record<string, unknown> | undefined
-  const choices = output !== undefined && Array.isArray(output.choices) ? output.choices : []
-  const urls: string[] = []
-  for (const choice of choices) {
-    const message = choice !== null && typeof choice === 'object'
-      ? (choice as Record<string, unknown>).message
-      : undefined
-    const items = message !== null && typeof message === 'object' && Array.isArray((message as Record<string, unknown>).content)
-      ? (message as Record<string, unknown>).content as unknown[]
-      : []
-    for (const item of items) {
-      if (item !== null && typeof item === 'object') {
-        const image = (item as Record<string, unknown>).image
-        if (typeof image === 'string' && image !== '') urls.push(image)
-      }
-    }
-  }
-  if (urls.length === 0) {
-    throw new ImageGenError('上游响应缺少图片内容', 'upstream-empty')
-  }
-  const images = await Promise.all(urls.map(async url => {
-    const normalized = await normalizeItem({ url }, upstream)
-    return { b64: normalized.b64, mime: normalized.mime }
-  }))
-  return { images }
-  } finally {
-    budget.dispose()
-  }
-}
-
-/**
- * 千问生图 API（自建 ComfyUI HTTP 封装）的异步任务状态词表。它先 POST
- * /api/draw 拿任务 id，再轮询 GET /api/jobs/{id}，成功后从 result.url 下载
- * 图片——与 OpenAI 的同步 /images/generations 返回形状完全不同。
- */
-const QWEN_DRAW_PENDING_STATES = new Set(['queued', 'pending', 'running', 'processing', 'in_progress'])
-const QWEN_DRAW_DONE_STATES = new Set(['done', 'completed', 'succeeded', 'success'])
-const QWEN_DRAW_FAILED_STATES = new Set(['failed', 'failure', 'error', 'cancelled', 'canceled'])
-
-/** 千问生图 API 文档列出的比例；21:9 没有对应档位，按最接近的 16:9 发送。 */
-const QWEN_DRAW_RATIOS = new Set(['1:1', '3:4', '4:3', '2:3', '3:2', '16:9', '9:16'])
-
-/** 面板清晰度 → API 的 megapixels。上游上限是 2MP，2k/4k 都取最高档。 */
-const QWEN_DRAW_MEGAPIXELS: Readonly<Record<string, number>> = {
-  '1k': 1,
-  '2k': 2,
-  '4k': 2,
-}
-
-/** 轮询一个千问生图任务，直到返回 result.url。 */
-async function pollQwenDrawJob(
-  baseUrl: string,
-  upstream: UpstreamConfig,
-  request: GenerateRequest,
-  taskId: string,
-  signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + ASYNC_POLL_MAX_MS
-  let delay = 700
-  const pollUrl = `${baseUrl}/api/jobs/${encodeURIComponent(taskId)}`
-  while (Date.now() < deadline) {
-    const budget = requestSignal(signal, Math.min(ASYNC_POLL_REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())))
-    const context = attemptContext(upstream, request, 'poll-task', pollUrl, 'GET', undefined, Date.now())
-    try {
-      let response: Response
-      try {
-        response = await fetch(pollUrl, {
-          method: 'GET',
-          headers: qwenDrawAuthHeaders(upstream),
-          signal: budget.signal,
-        })
-      } catch (error) {
-        const failure = signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : isBudgetTimeout(error)
-            ? new ImageGenError('千问生图 API 轮询超时', 'upstream-timeout')
-            : new ImageGenError(`无法轮询千问生图 API：${error instanceof Error ? error.message : String(error)}`, 'upstream-unreachable')
-        recordFailure(context, failure)
-        throw failure
-      }
-      const responseText = await readResponseText(response)
-      let payload: unknown
-      try {
-        payload = JSON.parse(responseText)
-      } catch (error) {
-        const failure = isBudgetTimeout(error)
-          ? new ImageGenError('千问生图 API 轮询超时', 'upstream-timeout')
-          : nonJsonFailure('千问生图 API 任务接口', pollUrl, response, responseText)
-        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-        throw failure
-      }
-      if (!response.ok || payload === null || typeof payload !== 'object') {
-        const failure = new ImageGenError(asyncErrorMessage(payload, `千问生图 API 任务轮询失败（HTTP ${response.status}）`), 'upstream-rejected')
-        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-        throw failure
-      }
-      const record = payload as Record<string, unknown>
-      const stateText = record.state ?? record.status
-      const state = typeof stateText === 'string' ? stateText.toLowerCase() : ''
-      if (QWEN_DRAW_FAILED_STATES.has(state)) {
-        throw new ImageGenError(asyncErrorMessage(payload, `千问生图 API 任务失败（${state || 'unknown'}）`), 'upstream-rejected')
-      }
-      if (QWEN_DRAW_DONE_STATES.has(state)) {
-        const result = record.result
-        if (result !== null && typeof result === 'object' && typeof (result as Record<string, unknown>).url === 'string' && (result as Record<string, unknown>).url !== '') {
-          return result as Record<string, unknown>
-        }
-        throw new ImageGenError('千问生图 API 任务完成但没有返回图片地址', 'upstream-empty')
-      }
-      if (state !== '' && !QWEN_DRAW_PENDING_STATES.has(state)) {
-        throw new ImageGenError(`千问生图 API 返回了未知任务状态：${state}`, 'upstream-invalid')
-      }
-    } finally {
-      budget.dispose()
-    }
-    await waitForPoll(Math.min(delay, Math.max(1, deadline - Date.now())), signal)
-    delay = Math.min(2500, delay * 1.4)
-  }
-  throw new ImageGenError('千问生图 API 出图超时（240 秒）', 'upstream-timeout')
-}
-
-/** Optional Bearer header for 千问生图 API (the service can run without auth). */
-function qwenDrawAuthHeaders(upstream: UpstreamConfig): Record<string, string> {
-  const key = upstream.apiKey.trim()
-  return key === '' ? {} : { authorization: `Bearer ${key}` }
-}
-
-/** Upload one reference image to 千问生图 API and return its upload id.
- *  The wrapper takes the raw image bytes (not multipart), checks the magic
- *  header, and returns { ok, id } for the subsequent draw call. */
-async function uploadQwenDrawReference(
-  baseUrl: string,
-  upstream: UpstreamConfig,
-  request: GenerateRequest,
-  image: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const parsed = parseDataUrl(image)
-  if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
-  const bytes = Buffer.from(parsed.base64, 'base64')
-  if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
-    throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
-  }
-  const uploadUrl = `${baseUrl}/api/upload`
-  const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
-  const context = attemptContext(upstream, request, 'generate', uploadUrl, 'POST', undefined, Date.now())
-  try {
-    let response: Response
-    try {
-      response = await fetch(uploadUrl, {
-        method: 'POST',
-        headers: {
-          ...qwenDrawAuthHeaders(upstream),
-          'content-type': parsed.mime,
-        },
-        body: new Uint8Array(bytes),
-        signal: budget.signal,
-      })
-    } catch (error) {
-      const network = networkErrorFields(error)
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('千问生图 API 参考图上传超时（240 秒）', 'upstream-timeout')
-        : signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(
-            `无法上传千问生图 API 参考图：${network.detail}${network.errorCode === undefined ? '' : ` [${network.errorCode}]`} · 请求地址 ${displayUrl(uploadUrl)}`,
-            'upstream-unreachable',
-          )
-      recordFailure(context, failure)
-      throw failure
-    }
-    const responseText = await readResponseText(response)
-    let payload: unknown
-    try {
-      payload = JSON.parse(responseText)
-    } catch (error) {
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('千问生图 API 参考图上传超时（240 秒）', 'upstream-timeout')
-        : nonJsonFailure('千问生图 API 参考图上传', uploadUrl, response, responseText)
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    if (!response.ok || payload === null || typeof payload !== 'object') {
-      const failure = new ImageGenError(
-        `${asyncErrorMessage(payload, '千问生图 API 拒绝了参考图')}（HTTP ${response.status} · ${displayUrl(uploadUrl)}）`,
-        'upstream-rejected',
-      )
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    const record = payload as Record<string, unknown>
-    if (record.ok === false) {
-      const failure = new ImageGenError(asyncErrorMessage(record, '千问生图 API 拒绝了参考图'), 'upstream-rejected')
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    const id = typeof record.id === 'string' ? record.id.trim() : ''
-    if (id === '') throw new ImageGenError('千问生图 API 参考图上传没有返回 id', 'upstream-invalid')
-    return id
-  } finally {
-    budget.dispose()
-  }
-}
-
-/** 一个千问生图请求；n 由并行的单图任务满足。 */
-async function generateQwenDrawImages(
-  baseUrlInput: string,
-  upstream: UpstreamConfig,
-  request: GenerateRequest,
-  signal?: AbortSignal,
-): Promise<GeneratedImage[]> {
-  const baseUrl = qwenDrawBaseUrl(baseUrlInput)
-  const model = wireModel(request)
-  let referenceIds: string[] = []
-  if (request.mode === 'edit') {
-    const references = [request.image, ...(request.images ?? [])]
-      .filter((image): image is string => typeof image === 'string' && image !== '')
-      .slice(0, 5)
-    if (references.length === 0) {
-      throw new ImageGenError('图生图需要上传参考图片', 'edit-image-missing')
-    }
-    referenceIds = await Promise.all(references.map(image => uploadQwenDrawReference(baseUrl, upstream, request, image, signal)))
-  }
-  const size = request.size === '' || request.size === 'auto'
-    ? undefined
-    : QWEN_DRAW_RATIOS.has(request.size)
-      ? request.size
-      : request.size === '21:9'
-        ? '16:9'
-        : undefined
-  const megapixels = request.quality === '' || request.quality === 'auto'
-    ? undefined
-    : QWEN_DRAW_MEGAPIXELS[request.quality.trim().toLowerCase()]
-  const body = JSON.stringify({
-    prompt: request.prompt,
-    model,
-    ...referenceIds.length === 1 ? { image_id: referenceIds[0] } : {},
-    ...referenceIds.length > 1 ? { image_ids: referenceIds } : {},
-    ...size === undefined ? {} : { size },
-    ...megapixels === undefined ? {} : { megapixels },
-  })
-  const count = effectiveCount(request)
-  const images = await Promise.all(Array.from({ length: count }, async () => {
-    const drawUrl = `${baseUrl}/api/draw`
-    const context = attemptContext(upstream, request, 'generate', drawUrl, 'POST', body, Date.now())
-    const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
-    try {
-      let response: Response
-      try {
-        response = await fetch(drawUrl, {
-          method: 'POST',
-          headers: {
-            ...qwenDrawAuthHeaders(upstream),
-            'content-type': 'application/json',
-          },
-          body,
-          signal: budget.signal,
-        })
-      } catch (error) {
-        const network = networkErrorFields(error)
-        const failure = isBudgetTimeout(error)
-          ? new ImageGenError('千问生图 API 提交超时（240 秒）', 'upstream-timeout')
-          : signal?.aborted === true
-            ? new ImageGenError('任务已取消', 'cancelled')
-            : new ImageGenError(
-              `无法连接千问生图 API：${network.detail}${network.errorCode === undefined ? '' : ` [${network.errorCode}]`} · 请求地址 ${displayUrl(drawUrl)}`,
-              'upstream-unreachable',
-            )
-        recordFailure(context, failure)
-        throw failure
-      }
-      const responseText = await readResponseText(response)
-      let payload: unknown
-      try {
-        payload = JSON.parse(responseText)
-      } catch (error) {
-        const failure = isBudgetTimeout(error)
-          ? new ImageGenError('千问生图 API 提交超时（240 秒）', 'upstream-timeout')
-          : nonJsonFailure('千问生图 API', drawUrl, response, responseText)
-        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-        throw failure
-      }
-      if (!response.ok || payload === null || typeof payload !== 'object') {
-        const failure = new ImageGenError(
-          `${asyncErrorMessage(payload, '千问生图 API 拒绝了请求')}（HTTP ${response.status} · ${displayUrl(drawUrl)}）`,
-          'upstream-rejected',
-        )
-        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-        throw failure
-      }
-      const record = payload as Record<string, unknown>
-      if (record.ok === false) {
-        const failure = new ImageGenError(asyncErrorMessage(record, '千问生图 API 拒绝了请求'), 'upstream-rejected')
-        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-        throw failure
-      }
-      const taskId = typeof record.id === 'string' ? record.id.trim() : ''
-      if (taskId === '') throw new ImageGenError('千问生图 API 没有返回任务 id', 'upstream-invalid')
-      const result = await pollQwenDrawJob(baseUrl, upstream, request, taskId, signal)
-      const resultUrl = typeof result.url === 'string' ? result.url : ''
-      if (resultUrl === '') throw new ImageGenError('千问生图 API 任务完成但没有返回图片地址', 'upstream-empty')
-      const absoluteUrl = new URL(resultUrl, `${baseUrl}/`).toString()
-      const normalized = await normalizeItem({ url: absoluteUrl }, upstream, signal)
-      return { b64: normalized.b64, mime: normalized.mime }
-    } finally {
-      budget.dispose()
-    }
-  }))
-  return images
-}
-
-/**
- * MiniMax image-01 (native `/image_generation`): one JSON request that batches
- * up to 9 images and returns them inline as base64. Image-to-image rides the
- * `subject_reference` array (a character reference, data URL accepted). The
- * endpoint answers HTTP 200 even on failure, so `base_resp.status_code` is the
- * real verdict.
- */
-async function generateMiniMaxImage(
-  baseUrl: string,
-  upstream: UpstreamConfig,
-  request: GenerateRequest,
-  options: { signal?: AbortSignal },
-): Promise<GenerateResult> {
-  const model = wireModel(request)
-  // image-01 rejects long prompts upstream ("prompt length must be less than
-  // 1500"); fail fast with a clear local message instead of a wasted round trip.
-  const promptLimit = promptCharLimit(model)
-  if (promptLimit !== null && request.prompt.length >= promptLimit) {
-    throw new ImageGenError(`MiniMax image-01 要求提示词少于 ${promptLimit} 字符（当前 ${request.prompt.length}），请精简后重试`, 'prompt-too-long')
-  }
-  const body: Record<string, unknown> = {
-    model,
-    prompt: request.prompt,
-    response_format: 'base64',
-  }
-  const ratio = request.size.trim()
-  if (ratio !== '' && ratio !== 'auto') {
-    if (!MINIMAX_RATIOS.has(ratio)) {
-      throw new ImageGenError(`MiniMax image-01 不支持 ${ratio} 宽高比，可选：${Array.from(MINIMAX_RATIOS).join(' / ')}`, 'size-unsupported')
-    }
-    body.aspect_ratio = ratio
-  }
-  const count = Math.min(MINIMAX_MAX_N, clampCount(request.n))
-  if (count > 1) body.n = count
-  if (request.mode === 'edit') {
-    if (typeof request.image !== 'string' || request.image === '') {
-      throw new ImageGenError('图生图需要上传参考图片', 'edit-image-missing')
-    }
-    const parsed = parseDataUrl(request.image)
-    if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
-    const bytes = Buffer.from(parsed.base64, 'base64')
-    if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
-      throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
-    }
-    // image-01 takes exactly one character reference per request.
-    body.subject_reference = [{ type: 'character', image_file: request.image }]
-  }
-
-  const budget = requestSignal(options.signal, UPSTREAM_TIMEOUT_MS)
-  try {
-    let response: Response
-    const requestUrl = `${baseUrl}/image_generation`
-    const context = attemptContext(upstream, request, 'generate', requestUrl, 'POST', JSON.stringify(body), Date.now())
-    try {
-      response = await fetch(requestUrl, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${upstream.apiKey.trim()}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: budget.signal,
-      })
-    } catch (error) {
-      const network = networkErrorFields(error)
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
-        : options.signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(
-            `无法连接上游接口：${network.detail}${network.errorCode === undefined ? '' : ` [${network.errorCode}]`} · 请求地址 ${displayUrl(requestUrl)}`,
-            'upstream-unreachable',
-          )
-      recordFailure(context, failure)
-      throw failure
-    }
-
-    let payload: unknown
-    const responseText = await readResponseText(response)
-    try {
-      payload = JSON.parse(responseText)
-    } catch (error) {
-      const failure = isBudgetTimeout(error)
-        ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
-        : options.signal?.aborted === true
-          ? new ImageGenError('任务已取消', 'cancelled')
-          : nonJsonFailure('上游接口', requestUrl, response, responseText)
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    if (payload === null || typeof payload !== 'object') {
-      const failure = new ImageGenError(
-        `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
-        'upstream-rejected',
-      )
-      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
-      throw failure
-    }
-    const record = payload as Record<string, unknown>
-    const baseResp = record.base_resp
-    if (baseResp !== null && typeof baseResp === 'object') {
-      const status = (baseResp as Record<string, unknown>).status_code
-      if (typeof status === 'number' && status !== 0) {
-        const msg = (baseResp as Record<string, unknown>).status_msg
-        throw new ImageGenError(
-          `MiniMax 拒绝请求（${status}）：${typeof msg === 'string' && msg !== '' ? msg : 'unknown error'}`,
-          status === 1004 || status === 2049 ? 'upstream-unauthorized' : 'upstream-rejected',
-        )
-      }
-    }
-    if (!response.ok) throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
-
-    const data = record.data
-    const b64s = data !== null && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).image_base64)
-      ? ((data as Record<string, unknown>).image_base64 as unknown[]).filter((item): item is string => typeof item === 'string' && item.trim() !== '')
-      : []
-    const urls = data !== null && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).image_urls)
-      ? ((data as Record<string, unknown>).image_urls as unknown[]).filter((item): item is string => typeof item === 'string' && item !== '')
-      : []
-    if (b64s.length === 0 && urls.length === 0) {
-      throw new ImageGenError('上游响应缺少图片内容', 'upstream-empty')
-    }
-    const images: GeneratedImage[] = b64s.map(raw => {
-      const b64 = bareBase64(raw)
-      return { b64, mime: detectImageMime(Buffer.from(b64, 'base64')) ?? 'image/jpeg' }
-    })
-    for (const url of urls) {
-      const normalized = await normalizeItem({ url }, upstream, options.signal)
-      images.push({ b64: normalized.b64, mime: normalized.mime })
-    }
-    return { images }
   } finally {
     budget.dispose()
   }
@@ -2319,21 +1189,12 @@ async function generateChatCompletionImages(
 export async function generateImage(upstream: UpstreamConfig, request: GenerateRequest, options: { signal?: AbortSignal } = {}): Promise<GenerateResult> {
   const configuredBaseUrl = upstream.apiUrl.trim().replace(/\/+$/, '')
   const baseUrl = normalizeModelScopeBaseUrl(configuredBaseUrl, upstream.apiUrlFull === true)
-  if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
+  if (baseUrl === '') throw new ImageGenError('网关地址未配置：请确认部署的模型网关已经挂载', 'config-missing')
   const protocol = resolveChannelProtocol(baseUrl, upstream.protocol)
-  // 千问生图 API 可以关闭鉴权（首页现在明确写「无需鉴权」）；其余协议仍必须有 Key。
-  if (upstream.apiKey.trim() === '' && protocol !== 'qwen-draw') {
-    throw new ImageGenError('api_key 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
+  if (upstream.apiKey.trim() === '') {
+    throw new ImageGenError('网关密钥未就绪：请先登录部署账号后再试', 'config-missing')
   }
   assertGifRequestSupported(request, wireModel(request))
-  if (protocol === 'google-native') {
-    // Gemini image models answer :generateContent with stills only; a GIF
-    // request here would pay for a still the history labels an animation.
-    if (request.outputFormat === 'gif') {
-      throw new ImageGenError('当前渠道走 Google 原生协议，不支持 GIF 动图：请改用 /images/generations 渠道', 'gif-protocol-unsupported')
-    }
-    return { images: await generateGoogleNativeImages(upstream, baseUrl, request, options.signal) }
-  }
   if (protocol === 'chat-completions') {
     // This body carries only model/messages/stream — there is no output_format
     // to send — so even a GIF-capable model answers with a still here, and the
@@ -2343,25 +1204,7 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
     }
     return { images: await generateChatCompletionImages(upstream, baseUrl, request, options.signal) }
   }
-  if (protocol === 'qwen-draw') {
-    if (request.outputFormat === 'gif') {
-      throw new ImageGenError('千问生图 API 不支持 GIF 动图', 'gif-protocol-unsupported')
-    }
-    return { images: await generateQwenDrawImages(baseUrl, upstream, request, options.signal) }
-  }
-  // A complete URL is an explicit escape hatch to the exact provider endpoint:
-  // use the generic OpenAI-compatible request shape instead of native family
-  // routing or appending another path.
-  if (upstream.apiUrlFull !== true) {
-    // ModelScope exposes Qwen models through the OpenAI-compatible image API,
-    // not DashScope's native multimodal-generation contract.
-    if (!isModelScopeInference(baseUrl) && isQwenImage(wireModel(request))) return generateQwenImage(baseUrl, upstream, request, options)
-    if (isMiniMaxImage(wireModel(request))) return generateMiniMaxImage(baseUrl, upstream, request, options)
-    if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {
-      throw new ImageGenError('智谱 GLM-Image 当前仅支持文生图，请切换到文生图模式或选择支持图生图的模型', 'edit-unsupported')
-    }
-  }
-  const params = effectiveParams(request, upstream)
+  const params = effectiveParams(request)
   const count = effectiveCount(request)
   const batches = await Promise.all(
     Array.from({ length: count }, () => requestOneImage(baseUrl, upstream, request, params, options.signal)),
@@ -2390,8 +1233,8 @@ function displayUrl(url: string): string {
  * Every parse site used to hand-build `（HTTP 404）`, which named neither the
  * URL that was called nor the fact that an HTML page came back — so a channel
  * whose base URL omitted `/v1` reported "non-JSON response" with nothing the
- * user could act on. The wording lives in `upstream-diagnosis.ts` so the image
- * engine, the video engine and model discovery cannot drift apart again.
+ * user could act on. The wording lives in `diagnostics-store.ts` so the image
+ * engine and the video engine cannot drift apart again.
  *
  * The error CODE stays `upstream-invalid`: callers and the diagnostics panel
  * key off it, and this change is about the sentence, not the classification.

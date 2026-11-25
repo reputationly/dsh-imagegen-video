@@ -131,9 +131,6 @@ await check('A1 host exports the plugin contract', () => {
   assert.equal(typeof host.Config, 'function')
   assert.equal(typeof host.ImageGenSettingsNamespace, 'string') // branded at runtime as string
   assert.equal(typeof host.makeRoutes, 'function')
-  assert.equal(typeof host.SubscriptionManager, 'function')
-  assert.equal(host.subscriptionOauthRef('codex'), 'DSH_IMAGEGEN_CODEX_OAUTH_1')
-  assert.equal(host.subscriptionOauthRef('openrouter'), 'DSH_IMAGEGEN_OPENROUTER_OAUTH_1')
   assert.equal(typeof host.generateImage, 'function')
 })
 await check('A1b Git dependency prepare hook builds distributable artifacts', () => {
@@ -296,40 +293,6 @@ await check('A2b configured default image model is used when Agent omits model',
   assert.equal(picked.alias, 'qwen-image-2')
   assert.equal(picked.upstream, 'qwen-image-2')
 })
-await check('A2c prompt models reuse an API-key channel instead of a leading subscription channel', () => {
-  const base = {
-    channels: [
-      {
-        id: 'subscription', preset: '', name: 'Subscription', apiUrl: '', apiUrlFull: false,
-        auth: 'subscription', subscription: 'openrouter-sub', apiKey: '', models: [],
-      },
-      {
-        id: 'xlink', preset: '', name: 'xlink', apiUrl: 'https://api.xlinks.site/v1', apiUrlFull: false,
-        apiKey: 'sk-xlink', models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
-      },
-    ],
-    defaultChannelId: 'subscription',
-    defaultModel: 'gpt-image-2',
-    promptApiUrl: '',
-    promptApiKey: '',
-    promptModel: 'gpt-5.6-luna',
-  }
-  assert.deepEqual(host.resolvePromptModelConfig(base), {
-    apiUrl: 'https://api.xlinks.site/v1',
-    apiKey: 'sk-xlink',
-    model: 'gpt-5.6-luna',
-  })
-  assert.deepEqual(host.resolvePromptModelConfig({
-    ...base,
-    defaultModel: '',
-    promptApiUrl: 'https://chat.example.test/v1',
-    promptApiKey: 'sk-chat',
-  }), {
-    apiUrl: 'https://chat.example.test/v1',
-    apiKey: 'sk-chat',
-    model: 'gpt-5.6-luna',
-  })
-})
 // ---------------------------------------------- B. engine vs mock upstream
 /** A PNG fixture: one pixel, valid header, no external file needed. */
 const pngBytes = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex')
@@ -390,19 +353,23 @@ const upstream = createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.equal(req.headers.authorization, 'Bearer sk-test')
-    assert.ok(body.model === 'gpt-image-2' || body.model === 'grok-imagine-image')
+    // 网关只有一种图像协议：OpenAI 兼容的 /images/generations。两个模型族共用它，
+    // 差别只在参数表——h3-image 只认 2K 档的 `size`。
+    assert.ok(body.model === 'gpt-image-2' || body.model === 'minimax-h3-image',
+      `unexpected upstream model: ${body.model}`)
     assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this' || body.prompt === 'signed urls' || body.prompt === 'foreign url' || body.prompt === 'parallel one' || body.prompt === 'parallel two' || body.prompt === 'SMOKE-RETRY-PROMPT a lighthouse at dusk')
-    if (body.model === 'gpt-image-2') {
-      assert.equal(body.size, '1024x1024')
-      assert.equal(body.quality, 'high')
-    } else {
-      assert.equal(body.aspect_ratio, '1:1')
-      assert.equal(body.response_format, 'b64_json')
-    }
     // The engine never sends `n`: Responses-API gateways reject the batch
     // parameter, so the requested count is satisfied by parallel requests.
     assert.equal(body.n, undefined)
-    assert.equal(body.detail, body.model === 'grok-imagine-image' || body.prompt === 'signed urls' || body.prompt === 'foreign url' ? undefined : 'standard')
+    if (body.model === 'minimax-h3-image') {
+      assert.equal(body.size, '2048x2048', 'h3-image only accepts the 2K billing tier')
+      assert.equal(body.quality, undefined, 'h3-image has no quality dial')
+      assert.equal(body.detail, undefined, 'h3-image has no detail dial')
+    } else {
+      assert.equal(body.size, '1024x1024')
+      assert.equal(body.quality, 'high')
+      assert.equal(body.detail, body.prompt === 'signed urls' || body.prompt === 'foreign url' ? undefined : 'standard')
+    }
     if (body.prompt === 'parallel one' || body.prompt === 'parallel two') {
       activeGenerationRequests += 1
       maxGenerationRequests = Math.max(maxGenerationRequests, activeGenerationRequests)
@@ -574,56 +541,6 @@ await check('B1b exact URL channels use the configured endpoint verbatim (#26)',
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
 })
 
-await check('B1b2 the CloseAI preset sends exact ratio sizes without changing other gpt-image channels', async () => {
-  // The documented gateway accepts `size` as a ratio (`4:3`, `21:9`) as well
-  // as WIDTHxHEIGHT. Official OpenAI endpoints do not, so the exact-ratio form
-  // is scoped to this preset (or its host) and the old pixel table must remain
-  // the default everywhere else.
-  const seen = { json: [], edit: '' }
-  const server = createServer(async (req, res) => {
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    const raw = Buffer.concat(chunks)
-    if (req.url === '/v1/images/generations') seen.json.push(JSON.parse(raw.toString('utf8')))
-    if (req.url === '/v1/images/edits') seen.edit = raw.toString('latin1')
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
-  })
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  const port = server.address().port
-  const baseUrl = `http://127.0.0.1:${port}/v1`
-  try {
-    const same = await host.generateImage(
-      { apiUrl: baseUrl, apiKey: 'sk-test', preset: 'yeahzi-closeai' },
-      { mode: 'text', model: 'gpt-image-2.6', prompt: 'closeai ratio', size: '4:3', quality: '2k', n: 1, detail: '' },
-    )
-    assert.equal(same.images[0].b64, pngBytes.toString('base64'))
-    assert.equal(seen.json[0].size, '4:3', 'the gateway receives the exact ratio')
-    assert.equal(seen.json[0].quality, 'medium', '2K still maps to the documented quality tier')
-    assert.equal(seen.json[0].response_format, 'b64_json',
-      'CloseAI must return bytes directly instead of a CDN URL the host may not reach')
-
-    const dataUrl = `data:image/png;base64,${pngBytes.toString('base64')}`
-    await host.generateImage(
-      { apiUrl: baseUrl, apiKey: 'sk-test', preset: 'yeahzi-closeai' },
-      { mode: 'edit', model: 'gpt-image-2.6', prompt: 'edit ratio', size: '3:4', quality: '4k', n: 1, detail: '', image: dataUrl },
-    )
-    assert.match(seen.edit, /name="size"[\s\S]*?\r\n\r\n3:4\r\n/, 'edits carry the same ratio')
-    assert.match(seen.edit, /name="quality"[\s\S]*?\r\n\r\nhigh\r\n/, 'edits carry the mapped quality')
-    assert.match(seen.edit, /name="response_format"[\s\S]*?\r\n\r\nb64_json\r\n/,
-      'CloseAI edits ask for inline bytes too')
-
-    await host.generateImage(
-      { apiUrl: baseUrl, apiKey: 'sk-test' },
-      { mode: 'text', model: 'gpt-image-2.6', prompt: 'ordinary gpt-image', size: '4:3', quality: '2k', n: 1, detail: '' },
-    )
-    assert.equal(seen.json[1].size, '1536x1024', 'a channel without the preset keeps the old pixel table')
-    assert.equal(seen.json[1].response_format, undefined, 'other OpenAI-compatible channels keep their default output')
-  } finally {
-    await new Promise(resolve => server.close(resolve))
-  }
-})
-
 await check('B1b3 a broken result URL resumes from the bytes already received', async () => {
   let downloadRequests = 0
   let resumeRange = ''
@@ -770,55 +687,16 @@ await check('B3b edit mode forwards every reference image', async () => {
   }
 })
 
-await check('B3c the CloseAI reference switch follows 20 by default and pins 5 when off', async () => {
-  const seen = []
-  const server = createServer(async (req, res) => {
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    const body = Buffer.concat(chunks).toString('latin1')
-    seen.push([...body.matchAll(/name="image\[\]"/g)].length)
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
-  })
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  const port = server.address().port
-  const dataUrl = `data:image/png;base64,${pngBytes.toString('base64')}`
-  const twenty = {
-    mode: 'edit',
-    model: 'gpt-image-2.6',
-    prompt: 'many references',
-    size: '1:1',
-    quality: 'auto',
-    n: 1,
-    detail: '',
-    image: dataUrl,
-    images: Array.from({ length: 19 }, () => dataUrl),
-  }
-  try {
-    await host.generateImage(
-      { apiUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'sk-test', preset: 'yeahzi-closeai' },
-      twenty,
-    )
-    assert.equal(seen[0], 20, 'automatic mode uses the gateway ceiling')
-
-    await host.generateImage(
-      { apiUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'sk-test', preset: 'yeahzi-closeai', autoReferenceLimit: false },
-      { ...twenty, images: Array.from({ length: 24 }, () => dataUrl) },
-    )
-    assert.equal(seen[1], 5, 'the channel switch pins the safe default')
-  } finally {
-    await new Promise(resolve => server.close(resolve))
-  }
-})
-
 await check('B4 config missing errors are user-presentable', async () => {
+  // 网关地址来自宿主目录、密钥来自宿主凭据服务，两者都可能在提交那一刻还没就绪。
+  // 这两种缺失必须在发请求之前用用户能读懂的话拒绝，而不是发出去换一个 401。
   await assert.rejects(
     host.generateImage({ apiUrl: '', apiKey: 'k' }, { mode: 'text', model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'auto', n: 1, detail: '' }),
-    /api_url 未配置/,
+    error => error.code === 'config-missing' && /网关地址未配置/.test(error.message),
   )
   await assert.rejects(
     host.generateImage({ apiUrl: 'http://x', apiKey: '' }, { mode: 'text', model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'auto', n: 1, detail: '' }),
-    /api_key 未配置/,
+    error => error.code === 'config-missing' && /网关密钥未就绪/.test(error.message),
   )
 })
 
@@ -936,505 +814,6 @@ await check('B6 dall-e-3 clamps params', async () => {
     assert.deepEqual(seen[0], { model: 'dall-e-3', size: '1024x1024', prompt: 'x' })
   } finally {
     await new Promise(resolve => dalle.close(resolve))
-  }
-})
-
-await check('B7 Volcengine Seedream uses Ark size and URL response fields', async () => {
-  const seen = []
-  const seedream = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    if (url.pathname === '/v1/images/generations') {
-      const chunks = []
-      for await (const chunk of req) chunks.push(chunk)
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-      seen.push(body)
-      assert.equal(body.model, 'doubao-seedream-5-0-pro-260628')
-      // Ark has no aspect-ratio parameter, so a 16:9 pick has to reach the wire
-      // as explicit pixels inside 5.0 pro's [1280x720, 2048x2048x1.1025] budget.
-      const [w, h] = String(body.size).split('x').map(Number)
-      assert.ok(Number.isFinite(w) && Number.isFinite(h), `size must be WxH, got ${body.size}`)
-      assert.ok(w * h >= 921_600 && w * h <= 4_624_220, `pixels outside the budget: ${w}x${h}`)
-      assert.ok(Math.abs(w / h - 16 / 9) < 0.01, `ratio drifted: ${w}x${h}`)
-      assert.equal(w % 2, 0, 'Ark wants even dimensions')
-      assert.equal(h % 2, 0, 'Ark wants even dimensions')
-      assert.equal(body.response_format, 'url')
-      assert.equal(body.resolution, undefined)
-      // The upstream default is a visible "AI生成" stamp; it must be sent off.
-      assert.equal(body.watermark, false)
-      assert.equal(body.prompt, 'a volcano')
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ data: [{ url: `http://127.0.0.1:${seedream.address().port}/seedream.png` }] }))
-      return
-    }
-    if (url.pathname === '/seedream.png') {
-      assert.equal(req.headers.authorization, 'Bearer sk-seedream')
-      res.writeHead(200, { 'content-type': 'image/png' })
-      res.end(pngBytes)
-      return
-    }
-    res.writeHead(404)
-    res.end()
-  })
-  await new Promise(resolve => seedream.listen(0, '127.0.0.1', resolve))
-  try {
-    const result = await host.generateImage(
-      { apiUrl: `http://127.0.0.1:${seedream.address().port}/v1`, apiKey: 'sk-seedream', watermark: false },
-      { mode: 'text', model: 'doubao-seedream-5-0-pro-260628', prompt: 'a volcano', size: '16:9', quality: '4k', n: 1, detail: '' },
-    )
-    assert.equal(result.images.length, 1)
-    assert.equal(result.images[0].b64, pngBytes.toString('base64'))
-    assert.equal(seen.length, 1)
-  } finally {
-    await new Promise(resolve => seedream.close(resolve))
-  }
-})
-
-await check('B7b Ark Seedream edit path and tier vocabulary match the docs', async () => {
-  // The edit path builds its own body, so `watermark` had to be switched off
-  // in TWO places; a test that only covers text-to-image would miss the one
-  // that stamps every image the user uploads a reference for.
-  const seen = []
-  const seedream = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    if (url.pathname === '/v1/images/generations') {
-      const chunks = []
-      for await (const chunk of req) chunks.push(chunk)
-      seen.push({ path: url.pathname, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) })
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ data: [{ url: `http://127.0.0.1:${seedream.address().port}/edited.png` }] }))
-      return
-    }
-    if (url.pathname === '/edited.png') {
-      res.writeHead(200, { 'content-type': 'image/png' })
-      res.end(pngBytes)
-      return
-    }
-    res.writeHead(404)
-    res.end()
-  })
-  await new Promise(resolve => seedream.listen(0, '127.0.0.1', resolve))
-  const base = `http://127.0.0.1:${seedream.address().port}/v1`
-  try {
-    const result = await host.generateImage(
-      { apiUrl: base, apiKey: 'k' },
-      {
-        mode: 'edit',
-        model: 'doubao-seedream-5-0-pro-260628',
-        prompt: 'make it night',
-        size: '1:1',
-        quality: '2k',
-        n: 1,
-        detail: '',
-        image: `data:image/png;base64,${pngBytes.toString('base64')}`,
-      },
-    )
-    assert.equal(result.images.length, 1)
-    // Seedream has no /images/edits endpoint: an edit is a generations call
-    // that carries the reference as a JSON array.
-    assert.equal(seen[0].path, '/v1/images/generations')
-    const edit = seen[0].body
-    assert.equal(edit.watermark, undefined, 'default watermark stays off wire unless opted out')
-    assert.equal(edit.response_format, 'url')
-    assert.ok(Array.isArray(edit.image) && edit.image.length === 1, 'the reference travels as a JSON array')
-    assert.equal(edit.model, 'doubao-seedream-5-0-pro-260628')
-
-    // Opting out explicitly sends watermark: false.
-    seen.length = 0
-    await host.generateImage(
-      { apiUrl: base, apiKey: 'k', watermark: false },
-      {
-        mode: 'edit',
-        model: 'doubao-seedream-5-0-pro-260628',
-        prompt: 'make it night',
-        size: '1:1',
-        quality: '2k',
-        n: 1,
-        detail: '',
-        image: `data:image/png;base64,${pngBytes.toString('base64')}`,
-      },
-    )
-    assert.equal(seen[0].body.watermark, false, 'the edit path forwards watermark: false when channel opts out')
-
-    // The tier vocabulary is per model: lite and 4.5 start at 2K, so a 1K ask
-    // is a 400 upstream and has to be snapped up rather than forwarded.
-    seen.length = 0
-    await host.generateImage(
-      { apiUrl: base, apiKey: 'k' },
-      { mode: 'text', model: 'doubao-seedream-4-5-251128', prompt: 'p', size: 'auto', quality: '1k', n: 1, detail: '' },
-    )
-    assert.equal(seen[0].body.size, '2K', '4.5 has no 1K tier')
-    seen.length = 0
-    await host.generateImage(
-      { apiUrl: base, apiKey: 'k' },
-      { mode: 'text', model: 'doubao-seedream-5-0-pro-260628', prompt: 'p', size: 'auto', quality: '1k', n: 1, detail: '' },
-    )
-    assert.equal(seen[0].body.size, '1K', '5.0 pro does have a 1K tier')
-
-    // Rounding to even used to push the product a few pixels over the ceiling
-    // at 4K (16:9 → 16,779,264 > 4096²), which Ark rejects outright.
-    for (const ratio of ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']) {
-      seen.length = 0
-      await host.generateImage(
-        { apiUrl: base, apiKey: 'k' },
-        { mode: 'text', model: 'doubao-seedream-4-0-250828', prompt: 'p', size: ratio, quality: '4k', n: 1, detail: '' },
-      )
-      const [w, h] = String(seen[0].body.size).split('x').map(Number)
-      assert.ok(Number.isFinite(w) && Number.isFinite(h), `${ratio}: size must be WxH, got ${seen[0].body.size}`)
-      assert.ok(w * h <= 16_777_216, `${ratio}: ${w}x${h} is over the 4096x4096 ceiling`)
-      assert.ok(w * h >= 921_600, `${ratio}: ${w}x${h} is under the 1280x720 floor`)
-    }
-  } finally {
-    await new Promise(resolve => seedream.close(resolve))
-  }
-})
-
-await check('B7c Seedream watermark opt-out only reaches official hosts (#56)', async () => {
-  const seen = []
-  const seedream = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    if (url.pathname === '/v1/images/generations') {
-      const chunks = []
-      for await (const chunk of req) chunks.push(chunk)
-      seen.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ data: [{ url: `http://127.0.0.1:${seedream.address().port}/seedream.png` }] }))
-      return
-    }
-    if (url.pathname === '/seedream.png') {
-      res.writeHead(200, { 'content-type': 'image/png' })
-      res.end(pngBytes)
-      return
-    }
-    res.writeHead(404)
-    res.end()
-  })
-  await new Promise(resolve => seedream.listen(0, '127.0.0.1', resolve))
-  const base = { apiUrl: `http://127.0.0.1:${seedream.address().port}/v1`, apiKey: 'k' }
-  const reference = `data:image/png;base64,${pngBytes.toString('base64')}`
-  const generation = { mode: 'text', model: 'doubao-seedream-5-0-pro-260628', prompt: 'x', size: '16:9', quality: '2k', n: 1, detail: '' }
-  try {
-    // Default on: the field is never sent, so upstream keeps its own default.
-    await host.generateImage(base, generation)
-    assert.equal(seen.at(-1).watermark, undefined, 'watermark stays absent unless the channel opts out')
-    // An explicit opt-out travels on the official model id.
-    await host.generateImage({ ...base, watermark: false }, generation)
-    assert.equal(seen.at(-1).watermark, false, 'generation sends watermark=false')
-    // Editing shares /images/generations, so the hand-built body must repeat it.
-    await host.generateImage({ ...base, watermark: false }, { ...generation, mode: 'edit', image: reference })
-    assert.equal(seen.at(-1).watermark, false, 'edit body repeats watermark=false')
-    assert.deepEqual(seen.at(-1).image, [reference], 'edit keeps its reference array intact')
-    // A third-party relay serving short Seedream ids keeps its original body.
-    await host.generateImage({ ...base, watermark: false }, { ...generation, model: 'seedream-5.0-pro' })
-    assert.equal(seen.at(-1).watermark, undefined, 'relays without the documented field never see watermark')
-  } finally {
-    await new Promise(resolve => seedream.close(resolve))
-  }
-})
-
-await check('B7d Agnes image edit speaks the documented generations contract', async () => {
-  // Agnes has no /images/edits endpoint: an OpenAI edit upload is answered with
-  // `503 no available server` by the gateway. Editing is a generations call
-  // whose references ride in extra_body.image, and the OpenAI `quality` field
-  // is rejected outright, so the tier/ratio vocabulary replaces it.
-  const seen = []
-  const agnes = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    if (url.pathname === '/v1/images/generations') {
-      const chunks = []
-      for await (const chunk of req) chunks.push(chunk)
-      seen.push({
-        path: url.pathname,
-        contentType: req.headers['content-type'] ?? '',
-        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
-      })
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
-      return
-    }
-    // Any /images/edits call is a regression: fail loudly instead of silently.
-    res.writeHead(404)
-    res.end()
-  })
-  await new Promise(resolve => agnes.listen(0, '127.0.0.1', resolve))
-  const base = { apiUrl: `http://127.0.0.1:${agnes.address().port}/v1`, apiKey: 'k' }
-  const reference = `data:image/png;base64,${pngBytes.toString('base64')}`
-  try {
-    await host.generateImage(base, {
-      mode: 'edit',
-      model: 'agnes-image-2.5-flash',
-      prompt: 'make it night',
-      size: '1:1',
-      quality: '2k',
-      n: 1,
-      detail: '',
-      image: reference,
-    })
-    assert.equal(seen.at(-1).path, '/v1/images/generations', 'the edit must not call /images/edits')
-    assert.match(seen.at(-1).contentType, /application\/json/, 'the edit body is JSON, not multipart')
-    const edit = seen.at(-1).body
-    assert.equal(edit.model, 'agnes-image-2.5-flash')
-    assert.equal(edit.size, '2K', 'the clarity tier becomes the documented size tier')
-    assert.equal(edit.ratio, '1:1')
-    assert.equal(edit.quality, undefined, 'OpenAI quality is rejected upstream and never forwarded')
-    assert.equal(edit.response_format, undefined, 'a top-level response_format is an Agnes error')
-    assert.equal(edit.extra_body.response_format, 'b64_json')
-    assert.deepEqual(edit.extra_body.image, [reference], 'the reference travels as a data URI array')
-
-    // Multi-image composition: the primary plus the extras, in order.
-    seen.length = 0
-    await host.generateImage(base, {
-      mode: 'edit',
-      model: 'agnes-image-2.5-flash',
-      prompt: 'combine',
-      size: '16:9',
-      quality: '4k',
-      n: 1,
-      detail: '',
-      image: reference,
-      images: [reference, reference],
-    })
-    assert.equal(seen.at(-1).body.extra_body.image.length, 3, 'primary + two extras')
-    assert.equal(seen.at(-1).body.size, '4K')
-    assert.equal(seen.at(-1).body.ratio, '16:9')
-
-    // Text-to-image shares the endpoint but carries neither quality nor extra_body.
-    seen.length = 0
-    await host.generateImage(base, {
-      mode: 'text',
-      model: 'agnes-image-2.1-flash',
-      prompt: 'a gold disc',
-      size: '3:2',
-      quality: '4k',
-      n: 1,
-      detail: '',
-    })
-    const text = seen.at(-1).body
-    assert.equal(seen.at(-1).path, '/v1/images/generations')
-    assert.equal(text.size, '4K')
-    assert.equal(text.ratio, '3:2')
-    assert.equal(text.quality, undefined)
-    assert.equal(text.detail, undefined)
-    assert.equal(text.extra_body, undefined)
-
-    // auto/auto still has to send the required tier, and must not invent a ratio.
-    seen.length = 0
-    await host.generateImage(base, { mode: 'text', model: 'agnes-image-2.0-flash', prompt: 'p', size: 'auto', quality: 'auto', n: 1, detail: '' })
-    assert.equal(seen.at(-1).body.size, '1K')
-    assert.equal(seen.at(-1).body.ratio, undefined)
-  } finally {
-    await new Promise(resolve => agnes.close(resolve))
-  }
-})
-
-await check('B8 Zhipu GLM-Image uses the official generation contract', async () => {
-  const seen = []
-  const zhipu = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    if (url.pathname === '/api/paas/v4/images/generations') {
-      seen.push({ path: url.pathname, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) })
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
-      return
-    }
-    res.writeHead(404)
-    res.end()
-  })
-  await new Promise(resolve => zhipu.listen(0, '127.0.0.1', resolve))
-  const port = zhipu.address().port
-  try {
-    const result = await host.generateImage(
-      { apiUrl: `http://127.0.0.1:${port}/api/paas/v4`, apiKey: 'zhipu-key' },
-      { mode: 'text', model: 'glm-image', prompt: 'x', size: '1:1', quality: '4k', n: 1, detail: 'high' },
-    )
-    assert.equal(result.images.length, 1)
-    assert.deepEqual(seen[0], {
-      path: '/api/paas/v4/images/generations',
-      body: { model: 'glm-image', prompt: 'x', size: '1024x1024', quality: 'hd' },
-    })
-  } finally {
-    await new Promise(resolve => zhipu.close(resolve))
-  }
-})
-
-await check('B9 Qwen-Image speaks the DashScope native contract', async () => {
-  const seen = []
-  const qwen = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    if (url.pathname === '/api/v1/services/aigc/multimodal-generation/generation') {
-      seen.push({
-        auth: req.headers.authorization,
-        path: url.pathname,
-        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
-      })
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({
-        output: { choices: [{ message: { content: [{ image: `http://127.0.0.1:${upstreamPort}/image/result.png` }] } }] },
-        usage: { image_count: 1 },
-      }))
-      return
-    }
-    res.writeHead(404)
-    res.end()
-  })
-  await new Promise(resolve => qwen.listen(0, '127.0.0.1', resolve))
-  const port = qwen.address().port
-  const base = `http://127.0.0.1:${port}/api/v1`
-  try {
-    // Versioned series: wide ratio maps to the HD size set and n batches natively.
-    const result = await host.generateImage(
-      { apiUrl: base, apiKey: 'qwen-key' },
-      { mode: 'text', model: 'qwen-image-3.0', prompt: 'a cat', size: '16:9', quality: 'auto', n: 2, detail: '' },
-    )
-    assert.equal(result.images.length, 1)
-    assert.equal(result.images[0].b64, pngBytes.toString('base64'))
-    assert.deepEqual(seen[0], {
-      auth: 'Bearer qwen-key',
-      path: '/api/v1/services/aigc/multimodal-generation/generation',
-      body: {
-        model: 'qwen-image-3.0',
-        input: { messages: [{ role: 'user', content: [{ text: 'a cat' }] }] },
-        parameters: { size: '2688*1536', n: 2 },
-      },
-    })
-    // Classic series: single image per call, fixed size list, no n parameter.
-    seen.length = 0
-    await host.generateImage(
-      { apiUrl: base, apiKey: 'qwen-key' },
-      { mode: 'text', model: 'qwen-image-plus', prompt: 'x', size: '9:16', quality: '2k', n: 4, detail: '' },
-    )
-    assert.deepEqual(seen[0].body.parameters, { size: '928*1664' })
-    // Edit mode rides the reference image as a message content item.
-    seen.length = 0
-    await host.generateImage(
-      { apiUrl: base, apiKey: 'qwen-key' },
-      { mode: 'edit', model: 'qwen-image-3.0', prompt: 'edit this', size: '1:1', quality: 'auto', n: 1, detail: '', image: `data:image/png;base64,${pngBytes.toString('base64')}` },
-    )
-    assert.deepEqual(seen[0].body.input.messages[0].content, [
-      { image: `data:image/png;base64,${pngBytes.toString('base64')}` },
-      { text: 'edit this' },
-    ])
-    assert.deepEqual(seen[0].body.parameters, { size: '2048*2048' })
-  } finally {
-    await new Promise(resolve => qwen.close(resolve))
-  }
-})
-
-
-await check('B9b MiniMax image-01 speaks the native /image_generation contract', async () => {
-  const seen = []
-  let reply = () => ({ id: 'req-1', data: { image_base64: [pngBytes.toString('base64')] }, metadata: { failed_count: '0', success_count: '1' }, base_resp: { status_code: 0, status_msg: 'success' } })
-  const minimax = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    if (url.pathname === '/v1/image_generation') {
-      seen.push({ auth: req.headers.authorization, path: url.pathname, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) })
-      // MiniMax answers HTTP 200 for failures too; base_resp carries the verdict.
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(reply()))
-      return
-    }
-    res.writeHead(404)
-    res.end('404 page not found')
-  })
-  await new Promise(resolve => minimax.listen(0, '127.0.0.1', resolve))
-  const base = `http://127.0.0.1:${minimax.address().port}/v1`
-  try {
-    // Text mode: aspect_ratio passthrough, native n batching, base64 results.
-    const result = await host.generateImage(
-      { apiUrl: base, apiKey: 'mm-key' },
-      { mode: 'text', model: 'image-01', prompt: 'a boat', size: '16:9', quality: 'auto', n: 2, detail: '' },
-    )
-    assert.equal(result.images.length, 1)
-    assert.equal(result.images[0].b64, pngBytes.toString('base64'))
-    assert.equal(result.images[0].mime, 'image/png')
-    assert.deepEqual(seen[0], {
-      auth: 'Bearer mm-key',
-      path: '/v1/image_generation',
-      body: { model: 'image-01', prompt: 'a boat', response_format: 'base64', aspect_ratio: '16:9', n: 2 },
-    })
-    // auto size omits aspect_ratio; n=1 omits n; n is capped at 9.
-    seen.length = 0
-    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: 'auto', quality: '4k', n: 1, detail: '' })
-    assert.deepEqual(seen[0].body, { model: 'image-01', prompt: 'x', response_format: 'base64' })
-    seen.length = 0
-    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '1:1', quality: 'auto', n: 50, detail: '' })
-    assert.ok(seen[0].body.n <= 9, `n must be capped at 9, got ${seen[0].body.n}`)
-    // Edit mode: one character subject_reference with the data URL.
-    seen.length = 0
-    const ref = `data:image/png;base64,${pngBytes.toString('base64')}`
-    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'edit', model: 'image-01', prompt: 'same person, beach', size: '3:4', quality: 'auto', n: 1, detail: '', image: ref })
-    assert.deepEqual(seen[0].body.subject_reference, [{ type: 'character', image_file: ref }])
-    assert.equal(seen[0].body.aspect_ratio, '3:4')
-    // Prompts at MiniMax's 1500-char limit fail fast, before any upstream call.
-    seen.length = 0
-    await assert.rejects(
-      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x'.repeat(1600), size: '1:1', quality: 'auto', n: 1, detail: '' }),
-      error => error.code === 'prompt-too-long' && /1500/.test(error.message),
-    )
-    assert.equal(seen.length, 0)
-    // Unsupported panel ratio is rejected locally before any upstream call.
-    seen.length = 0
-    await assert.rejects(
-      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '5:7', quality: 'auto', n: 1, detail: '' }),
-      error => error.code === 'size-unsupported',
-    )
-    assert.equal(seen.length, 0)
-    // HTTP 200 + non-zero base_resp.status_code surfaces as an upstream rejection.
-    reply = () => ({ id: 'req-2', data: null, base_resp: { status_code: 2013, status_msg: 'invalid params, unsupported model: image-99' } })
-    await assert.rejects(
-      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '1:1', quality: 'auto', n: 1, detail: '' }),
-      error => error.code === 'upstream-rejected' && /2013/.test(error.message) && /image-99/.test(error.message),
-    )
-    reply = () => ({ id: 'req-3', data: null, base_resp: { status_code: 2049, status_msg: 'invalid api key' } })
-    await assert.rejects(
-      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '1:1', quality: 'auto', n: 1, detail: '' }),
-      error => error.code === 'upstream-unauthorized',
-    )
-    // The catalog classifies the family so the UI shows the right badge, and a
-    // wrong-family model on the same base must NOT hit /image_generation.
-    seen.length = 0
-    await assert.rejects(
-      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'gpt-image-2', prompt: 'x', size: '1:1', quality: 'auto', n: 1, detail: '' }),
-    )
-    assert.equal(seen.length, 0, 'non-MiniMax models keep the OpenAI route')
-  } finally {
-    await new Promise(resolve => minimax.close(resolve))
-  }
-})
-
-await check('B9c prompt character limits share one source between engine and panel counter', async () => {
-  // Only MiniMax documents a limit today; everything else — including
-  // unrecognized ids — must report null so the panel hides the counter.
-  assert.equal(host.promptCharLimit('image-01'), 1500)
-  assert.equal(host.promptCharLimit('minimax-image-01'), 1500)
-  assert.equal(host.promptCharLimit('gpt-image-2'), null)
-  assert.equal(host.promptCharLimit('doubao-seedream-4.0'), null)
-  assert.equal(host.promptCharLimit('totally-unknown'), null)
-  // The engine enforces exactly that shared number: 1499 chars pass through
-  // to the fake upstream, 1500 fail fast before any network call.
-  const seen = []
-  const minimax = createServer(async (req, res) => {
-    seen.push(req.url)
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ id: 'r', data: { image_base64: [pngBytes.toString('base64')] }, base_resp: { status_code: 0, status_msg: 'ok' } }))
-  })
-  await new Promise(resolve => minimax.listen(0, '127.0.0.1', resolve))
-  const base = `http://127.0.0.1:${minimax.address().port}/v1`
-  try {
-    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x'.repeat(1499), size: '1:1', quality: 'auto', n: 1, detail: '' })
-    assert.equal(seen.length, 1, '1499 chars must reach the upstream')
-    await assert.rejects(
-      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x'.repeat(1500), size: '1:1', quality: 'auto', n: 1, detail: '' }),
-      error => error.code === 'prompt-too-long' && /1500/.test(error.message),
-    )
-    assert.equal(seen.length, 1, '1500 chars must fail fast without an upstream call')
-  } finally {
-    await new Promise(resolve => minimax.close(resolve))
   }
 })
 
@@ -1631,34 +1010,70 @@ const seam = {
     stored.set('rev', (stored.get('rev') ?? 0) + 1)
   },
 }
-const subscriptionStatuses = {
-  'chatgpt-sub': { state: 'logged-out' },
-  'grok-sub': { state: 'logged-in', email: 'grok@example.test' },
-  'google-sub': { state: 'logged-out' },
-  'openrouter-sub': { state: 'logged-out' },
+/**
+ * 宿主的网关媒体目录：工作台与宿主解析模型都只认它。
+ *
+ * 面板提交的是目录里的展示名（alias），宿主按目录把上游 id 填进请求。这里让两个
+ * 名字相同，是为了让一处 fixture 同时喂给路由层的 `resolveChannels` 与目录路由；
+ * 「alias ≠ 上游 id」的映射由 `smoke-gateway-catalog.mjs` 与 `src/gateway-catalog.ts`
+ * 的单元覆盖，不必在这里重复。
+ */
+const gatewaySnapshot = {
+  status: 'ready',
+  version: 'smoke-v1',
+  fetchedAt: 0,
+  image: [
+    { model: 'gpt-image-2', label: 'gpt-image-2', isDefault: true },
+    { model: 'minimax-h3-image', label: 'minimax-h3-image', isDefault: false },
+  ],
+  video: [
+    { model: 'minimax-h3-2k', label: 'minimax-h3-2k', isDefault: true },
+  ],
 }
-let subscriptionGenerateCalls = 0
-const subscriptionFake = {
-  async loginStatus(vendor) {
-    const provider = vendor === 'codex' ? 'chatgpt-sub' : vendor === 'antigravity' ? 'google-sub' : vendor === 'openrouter' ? 'openrouter-sub' : 'grok-sub'
-    return subscriptionStatuses[provider]
-  },
-  async beginLogin(vendor) { return { url: `https://auth.example.test/${vendor}`, ...vendor === 'grok' ? { code: 'ABCD-EFGH' } : {} } },
-  lastLoginError() { return undefined },
-  async completeLogin(vendor, input) {
-    assert.equal(vendor, 'openrouter')
-    assert.equal(input, 'http://127.0.0.1:56231/oauth/callback?code=manual&state=manual-state')
-    subscriptionStatuses['openrouter-sub'] = { state: 'logged-in', email: 'openrouter@example.test' }
-  },
-  async logout(vendor) {
-    const provider = vendor === 'codex' ? 'chatgpt-sub' : vendor === 'antigravity' ? 'google-sub' : vendor === 'openrouter' ? 'openrouter-sub' : 'grok-sub'
-    subscriptionStatuses[provider] = { state: 'logged-out' }
-  },
-  async generate(options) {
-    subscriptionGenerateCalls += 1
-    assert.equal(options.vendor, 'grok')
-    assert.equal(options.prompt, 'subscription cat')
-    return [{ b64_json: pngBytes.toString('base64') }]
+/** 宿主把目录投影成的那一个网关渠道（与 `gateway-catalog.ts#gatewayChannel` 同形）。 */
+const gatewayChannels = () => ({
+  channels: [{
+    id: 'suanli-gateway',
+    name: '蒜狸网关',
+    apiUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    apiUrlFull: false,
+    apiKey: 'sk-test',
+    models: gatewaySnapshot.image.map(option => ({ alias: option.label, id: option.model })),
+    videoModels: gatewaySnapshot.video.map(option => ({ alias: option.label, id: option.model })),
+  }],
+  defaultChannelId: 'suanli-gateway',
+})
+const gatewayFake = {
+  snapshot: () => gatewaySnapshot,
+  async refresh() { return gatewaySnapshot },
+}
+/**
+ * 宿主的对话模型：提示词增强、润色、文案与图层拆分都问它。
+ *
+ * Scripted like the mock upstream's `/v1/chat/completions`, because these paths
+ * no longer send an HTTP request of their own — they answer through this seam.
+ */
+const visionReply = '```json\n'
+  + JSON.stringify({
+    layers: [
+      { kind: 'text', label: '标题', rect: { x: 0.1, y: 0.08, width: 0.6, height: 0.12 }, text: '夏日限定', color: '#FFEE00' },
+      { kind: 'background', label: '背景' },
+      { kind: 'object', label: '人物', rect: { x: 0.3, y: 0.25, width: 0.3, height: 0.6 } },
+      { kind: 'object', label: '退化框', rect: { x: 0.2, y: 0.2, width: 0, height: 0.3 } },
+    ],
+  })
+  + '\n```'
+const chatStub = {
+  available: () => true,
+  label: () => 'chat-test',
+  async complete({ system, content }) {
+    if (system.includes('图层拆解')) return visionReply
+    const asked = typeof content === 'string'
+      ? content
+      : content.map(part => part.type === 'text' ? part.text : '').join('')
+    if (asked === 'think leak') return ' thinking\u9996\u5148\u5206\u6790\u7528\u6237\u9700\u6c42\u2026\uff08\u5927\u6bb5\u63a8\u7406\uff09</think>\nA lighthouse at dusk over a stormy sea.'
+    if (asked === 'dangling think') return "<thinkreasoning that never closes"
+    return 'A calm meadow under morning light.'
   },
 }
 const persistedHistory = []
@@ -1774,7 +1189,6 @@ const attachments = {
   },
 }
 const pendingConversationImages = new Map()
-let storageProbeEndpoint = ''
 let heavySkillAllowed = true
 const skillRunRoot = join(tmpdir(), `dsh-imagegen-smoke-${process.pid}`)
 mkdirSync(skillRunRoot, { recursive: true })
@@ -1942,13 +1356,14 @@ const skillLibraryFake = {
 const routes = host.makeRoutes({
   settings: seam,
   settingsNamespace: 'imagegen',
-  subscriptions: subscriptionFake,
-  resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
-  resolvePrompt: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test', model: 'chat-test' }),
+  // 目录与渠道：模型只剩宿主网关这一个来源。
+  gateway: gatewayFake,
+  resolveChannels: gatewayChannels,
+  // 宿主对话模型：增强 / 润色 / 文案 / 图层拆分都走它。
+  chat: chatStub,
   history,
   templates,
   favorites,
-  resolveStorage: () => ({ endpoint: storageProbeEndpoint, region: 'ap-guangzhou', accessKey: 'AKID-test', secretKey: 'secret-test', prefix: 'dsh-imagegen' }),
   attachments,
   pendingConversationImages,
   skills: canvasSkillRunner,
@@ -1985,17 +1400,18 @@ const post = async (path, body, headers = {}) => {
   }
 }
 
-await check('C0b prompt enhance strips reasoning-model <think> blocks', async () => {
-  // Closed think block: only the visible answer may reach the prompt box.
+await check("C0b prompt enhance strips a reasoning model's think blocks", async () => {
+  // 提示词增强不再有插件自己的聊天端点：路由问的是宿主对话模型（`chatStub`），
+  // 这里量的仍然是同一条不变量——推理过程永远不会进到提示词框里。
   const leak = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'think leak' })
   assert.equal(leak.status, 200)
   assert.equal(leak.body.ok, true)
   assert.equal(leak.body.prompt, 'A lighthouse at dusk over a stormy sea.')
-  // Dangling unclosed <think>: everything after it is reasoning, so the
-  // enhancer must fail loudly instead of returning the raw reasoning text.
+  // 未闭合的 think 标签：它后面的内容全是推理，所以整段都要被丢掉——宁可得到空提示词，
+  // 也不能把模型的思考过程交给生图模型。
   const dangling = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'dangling think' })
-  assert.equal(dangling.body.ok, false)
-  assert.match(dangling.body.message, /only reasoning content/)
+  assert.equal(dangling.body.ok, true)
+  assert.equal(dangling.body.prompt, '', 'a dangling think tag leaves no reasoning text behind')
   // Clean content passes through untouched.
   const clean = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'clean please' })
   assert.equal(clean.body.prompt, 'A calm meadow under morning light.')
@@ -2036,10 +1452,11 @@ await check('C0c canvas layer decomposition parses a fenced vision plan and clam
   const missing = await post('/api/dsh-imagegen/canvas/layers', {})
   assert.equal(missing.body.ok, false)
   assert.equal(missing.body.code, 'bad-request')
-  // A channel without a vision chat model fails with an actionable message.
+  // 图层拆分也走宿主对话模型：宿主没接入对话模型时，报的是「没有可用的对话模型」，
+  // 而不是把一张图静静吞掉或抛一个内部错误。
   await assert.rejects(
-    host.analyzeLayers({ apiUrl: '', apiKey: '', model: '' }, `data:image/png;base64,${pngBytes.toString('base64')}`),
-    /提示词增强/,
+    host.analyzeLayers({ available: () => false, label: () => '', complete: async () => '' }, `data:image/png;base64,${pngBytes.toString('base64')}`),
+    /需要一个可用的对话模型/,
   )
 })
 
@@ -2066,130 +1483,6 @@ await check('C2 settings mutate writes + redacts the key', async () => {
   assert.equal(body.value.secrets.find(s => s.path[0] === 'apiKey').set, true)
   assert.equal(body.value.value.apiKey, undefined)
   assert.equal(stored.get('imagegen').apiKey, 'sk-new')
-})
-
-await check('C2b subscription status/login routes keep tokens host-side', async () => {
-  const status = await post('/api/dsh-imagegen/subscription/status', {})
-  assert.equal(status.body.ok, true)
-  assert.equal(status.body.statuses['grok-sub'].state, 'logged-in')
-  assert.equal(status.body.statuses['grok-sub'].email, 'grok@example.test')
-  assert.equal(status.body.statuses['chatgpt-sub'].state, 'logged-out')
-  assert.equal(status.body.statuses['openrouter-sub'].state, 'logged-out')
-  const login = await post('/api/dsh-imagegen/subscription/login', { provider: 'chatgpt-sub' })
-  assert.equal(login.body.ok, true)
-  assert.equal(login.body.url, 'https://auth.example.test/codex')
-  const logout = await post('/api/dsh-imagegen/subscription/login', { provider: 'grok-sub', action: 'logout' })
-  assert.equal(logout.body.ok, true)
-  assert.equal(subscriptionStatuses['grok-sub'].state, 'logged-out')
-  const complete = await post('/api/dsh-imagegen/subscription/login', { provider: 'openrouter-sub', action: 'complete', input: 'http://127.0.0.1:56231/oauth/callback?code=manual&state=manual-state' })
-  assert.equal(complete.body.ok, true)
-  assert.equal(subscriptionStatuses['openrouter-sub'].state, 'logged-in')
-})
-
-await check('C2c subscription runtime generates without an API key', async () => {
-  const runtime = new host.ImageGenerationRuntime(
-    () => ({
-      channels: [{
-        id: 'grok-sub',
-        preset: 'grok-subscription',
-        name: 'Grok 订阅',
-        apiUrl: '',
-        apiKey: '',
-        apiUrlFull: false,
-        auth: 'subscription',
-        subscription: 'grok-sub',
-        models: [{ alias: 'grok-imagine-image-2.0', id: 'grok-imagine-image-2.0' }],
-      }],
-      defaultChannelId: 'grok-sub',
-    }),
-    { append: async () => [] },
-    subscriptionFake,
-  )
-  const result = await runtime.run({ mode: 'text', model: 'grok-imagine-image-2.0', prompt: 'subscription cat', size: '1024x1024', quality: 'auto', n: 1, detail: '', channelId: 'grok-sub' })
-  assert.equal(result.images.length, 1)
-  assert.equal(result.images[0].mime, 'image/png')
-  assert.equal(subscriptionGenerateCalls, 1)
-})
-
-await check('C2d OpenRouter OAuth image request uses the hosted credential', async () => {
-  const originalFetch = globalThis.fetch
-  const calls = []
-  try {
-    globalThis.fetch = async (url, init) => {
-      calls.push({ url: String(url), init })
-      return new Response(JSON.stringify({ choices: [{ message: { images: [{ image_url: { url: `data:image/png;base64,${pngBytes.toString('base64')}` } }] } }] }), { status: 200, headers: { 'content-type': 'application/json' } })
-    }
-    const manager = new host.SubscriptionManager({
-      get(name) {
-        assert.equal(name, 'credentials')
-        return {
-          async resolve(ref) {
-            assert.equal(ref, 'DSH_IMAGEGEN_OPENROUTER_OAUTH_1')
-            return { value: JSON.stringify({ accessToken: 'openrouter-key', refreshToken: '', expiresAt: Number.MAX_SAFE_INTEGER, label: 'OpenRouter', email: '', accountId: '' }) }
-          },
-        }
-      },
-    })
-    const images = await manager.generate({ vendor: 'openrouter', prompt: 'openrouter cat' })
-    assert.equal(images.length, 1)
-    assert.equal(calls[0].url, 'https://openrouter.ai/api/v1/chat/completions')
-    assert.equal(calls[0].init.headers.authorization, 'Bearer openrouter-key')
-    const body = JSON.parse(String(calls[0].init.body))
-    assert.equal(body.model, 'google/gemini-3-pro-image')
-    assert.deepEqual(body.modalities, ['image'])
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-})
-
-await check('C2e Grok device polling continues through authorization_pending', async () => {
-  const originalFetch = globalThis.fetch
-  const credentialStore = new Map()
-  let tokenPolls = 0
-  try {
-    globalThis.fetch = async (input, init) => {
-      const url = String(input)
-      if (url === 'https://auth.x.ai/oauth2/device/code') {
-        return new Response(JSON.stringify({
-          device_code: 'device-code',
-          user_code: 'ABCD-EFGH',
-          verification_uri_complete: 'https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH',
-          interval: 1,
-          expires_in: 10,
-        }), { status: 200, headers: { 'content-type': 'application/json' } })
-      }
-      if (url === 'https://auth.x.ai/oauth2/token') {
-        tokenPolls += 1
-        if (tokenPolls === 1) {
-          return new Response(JSON.stringify({ error: 'authorization_pending', error_description: 'User has not yet authorized' }), { status: 400, headers: { 'content-type': 'application/json' } })
-        }
-        return new Response(JSON.stringify({ access_token: 'grok-access', refresh_token: 'grok-refresh', expires_in: 3600 }), { status: 200, headers: { 'content-type': 'application/json' } })
-      }
-      throw new Error(`unexpected Grok test URL: ${url}`)
-    }
-    const manager = new host.SubscriptionManager({
-      get(name) {
-        assert.equal(name, 'credentials')
-        return {
-          async resolve(ref) {
-            const value = credentialStore.get(ref)
-            return value === undefined ? undefined : { value }
-          },
-          async set(ref, value) { credentialStore.set(ref, value) },
-          async unset(ref) { credentialStore.delete(ref) },
-        }
-      },
-    })
-    const login = await manager.beginLogin('grok')
-    assert.equal(login.code, 'ABCD-EFGH')
-    const ref = host.subscriptionOauthRef('grok')
-    assert.ok(await waitUntil(() => credentialStore.has(ref), 4000), 'Grok polling did not finish after authorization')
-    assert.equal(tokenPolls, 2)
-    assert.equal(manager.lastLoginError('grok'), undefined)
-    assert.equal((await manager.loginStatus('grok')).state, 'logged-in')
-  } finally {
-    globalThis.fetch = originalFetch
-  }
 })
 
 await check('C3 generate route persists history server-side and enforces loopback fence', async () => {
@@ -2485,9 +1778,9 @@ await check('C3e a failed generation leaves a failure signal with its code (L0)'
 
 await check('C4 comparison tasks run in parallel and share comparison history metadata', async () => {
   const comparisonId = 'smoke-comparison'
-  const request = { mode: 'text', model: 'gpt-image-2', prompt: 'parallel one', size: '1:1', quality: '4k', n: 1, detail: 'standard', comparisonId, comparisonModels: ['gpt-image-2', 'grok-imagine-image'] }
+  const request = { mode: 'text', model: 'gpt-image-2', prompt: 'parallel one', size: '1:1', quality: '4k', n: 1, detail: 'standard', comparisonId, comparisonModels: ['gpt-image-2', 'minimax-h3-image'] }
   const first = await post('/api/dsh-imagegen/tasks/submit', request)
-  const second = await post('/api/dsh-imagegen/tasks/submit', { ...request, model: 'grok-imagine-image', prompt: 'parallel two' })
+  const second = await post('/api/dsh-imagegen/tasks/submit', { ...request, model: 'minimax-h3-image', prompt: 'parallel two' })
   assert.equal(first.body.ok, true)
   assert.equal(second.body.ok, true)
   for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -2499,7 +1792,7 @@ await check('C4 comparison tasks run in parallel and share comparison history me
   assert.ok(maxGenerationRequests >= 2, 'comparison requests must overlap at the upstream')
   const comparisonEntries = persistedHistory.filter(entry => entry.comparisonId === comparisonId)
   assert.equal(comparisonEntries.length, 2)
-  assert.deepEqual(comparisonEntries[0].comparisonModels, ['gpt-image-2', 'grok-imagine-image'])
+  assert.deepEqual(comparisonEntries[0].comparisonModels, ['gpt-image-2', 'minimax-h3-image'])
 })
 
 await check('C4b task polling stays lightweight and hydrates completed results on demand', async () => {
@@ -2536,67 +1829,7 @@ await check('C4b task polling stays lightweight and hydrates completed results o
   assert.equal(missing.body.ok, false)
   assert.equal(missing.body.code, 'not-found')
 })
-await check('C5 image model discovery and configured-model allow-list work', async () => {
-  const discovered = await post('/api/dsh-imagegen/image-models', {})
-  assert.equal(discovered.body.ok, true)
-  // `nanobanana2` / `nanobanana2-lite` are shipped defaults whose family name
-  // carries a numeric suffix with no separator; they must survive detection.
-  // `gpt-4o`, `text-embedding-3-small` and the capability-flagged
-  // `chat-only-model` / `gpt-image-legacy` must not appear.
-  assert.deepEqual(discovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image', 'nanobanana2', 'nanobanana2-lite'])
-  const chatDiscovered = await post('/api/dsh-imagegen/image-models', {
-    apiUrl: `http://127.0.0.1:${upstreamPort}/v1/chat/completions`,
-    apiKey: 'sk-test',
-    apiUrlFull: true,
-    protocol: 'auto',
-  })
-  assert.equal(chatDiscovered.body.ok, true)
-  assert.deepEqual(chatDiscovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image', 'nanobanana2', 'nanobanana2-lite'])
-  const fallbackDiscovered = await post('/api/dsh-imagegen/image-models', {
-    apiUrl: `http://127.0.0.1:${upstreamPort}`,
-    apiKey: 'sk-test',
-    protocol: 'auto',
-  })
-  assert.equal(fallbackDiscovered.body.ok, true, JSON.stringify(fallbackDiscovered.body))
-  assert.deepEqual(fallbackDiscovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image', 'nanobanana2', 'nanobanana2-lite'])
-  const presets = await post('/api/dsh-imagegen/presets', {})
-  assert.equal(presets.body.ok, true)
-  assert.ok(
-    presets.body.presets.every(preset => typeof preset.link === 'string' && /^https:\/\//.test(preset.link)),
-    'every preset carries an HTTPS provider page for the picker link',
-  )
-  assert.equal(presets.body.presets[0].id, 'yeahzi-closeai', 'CloseAI is the first provider in the picker')
-  assert.equal(presets.body.presets[1].id, 'nbility-minimax-h3', 'Nbility is the second provider in the picker')
-  assert.deepEqual(presets.body.presets.find(preset => preset.id === 'openai-official').models, [{ alias: 'gpt-image-2.5', id: 'gpt-image-2.5' }, { alias: 'gpt-image-2', id: 'gpt-image-2' }])
-  assert.equal(presets.body.presets.find(preset => preset.id === 'openai-official').link, 'https://platform.openai.com/api-keys')
-  assert.deepEqual(presets.body.presets.find(preset => preset.id === 'zhipu-official').models, [{ alias: 'glm-image', id: 'glm-image' }])
-  const closeAiPreset = presets.body.presets.find(preset => preset.id === 'yeahzi-closeai')
-  assert.equal(closeAiPreset.apiUrl, 'https://api.closeai.hk/v1')
-  assert.equal(closeAiPreset.name, 'CloseAI')
-  assert.equal(closeAiPreset.link, 'https://api.closeai.hk/sign-up?aff=xgJN')
-  assert.deepEqual(
-    closeAiPreset.models.map(model => model.id),
-    ['gpt-image-2.6', 'gpt-image-2.5', 'gpt-image-2', 'chatgpt-image-latest'],
-    'the CloseAI preset ships the documented image models',
-  )
-  const nbilityPreset = presets.body.presets.find(preset => preset.id === 'nbility-minimax-h3')
-  assert.equal(nbilityPreset.apiUrl, 'https://api.nbility.ai/v1')
-  assert.equal(nbilityPreset.link, 'https://nbility.ai/auth/register?aff=LTZe')
-  assert.deepEqual(
-    nbilityPreset.videoModels.map(model => model.id),
-    ['MiniMax-H3'],
-    'the Nbility preset ships the exact, case-sensitive model id',
-  )
-  // The Ark preset is the one that carries BOTH catalogs: a single channel has
-  // to serve Seedream images and Seedance videos, and the ids have to be the
-  // real ones (the family is derived from those ids, not from the alias).
-  const arkPreset = presets.body.presets.find(preset => preset.id === 'volc-ark-seedream')
-  assert.ok(arkPreset.models.some(model => model.id === 'doubao-seedream-5-0-pro-260628'), 'the Ark preset ships the real image id')
-  assert.deepEqual(
-    arkPreset.videoModels.map(model => model.id),
-    ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-1-0-pro-250528'],
-    'the Ark preset ships a video catalog',
-  )
+await check('C5 an unknown model is refused and the refusal lists what this account has', async () => {
   const rejected = await post('/api/dsh-imagegen/tasks/submit', {
     mode: 'text', model: 'not-configured', prompt: 'a cat', size: 'auto', quality: 'auto', n: 1, detail: '',
   })
@@ -2852,42 +2085,6 @@ await check('C6d data-folder route resolves the host directory (no spawn in test
   assert.ok(String(body.path).endsWith('dsh-imagegen'), 'resolved path is the dsh-imagegen data dir')
 })
 
-await check('C6e storage test route signs and uploads a probe object', async () => {
-  const uploads = []
-  const probe = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    if (req.method === 'PUT' && url.pathname === '/dsh-imagegen/ping.txt') {
-      const chunks = []
-      for await (const chunk of req) chunks.push(chunk)
-      uploads.push({
-        body: Buffer.concat(chunks).toString('utf8'),
-        authorization: req.headers.authorization,
-        amzDate: req.headers['x-amz-date'],
-        payloadHash: req.headers['x-amz-content-sha256'],
-      })
-      res.writeHead(200)
-      res.end()
-      return
-    }
-    res.writeHead(404)
-    res.end()
-  })
-  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
-  storageProbeEndpoint = `http://127.0.0.1:${probe.address().port}`
-  try {
-    const { body } = await post('/api/dsh-imagegen/storage/test', {})
-    assert.equal(body.ok, true, `probe upload must succeed: ${JSON.stringify(body)}`)
-    assert.equal(typeof body.ms, 'number')
-    assert.equal(uploads.length, 1)
-    assert.equal(uploads[0].body, 'dsh-imagegen storage ok')
-    assert.ok(String(uploads[0].authorization).startsWith('AWS4-HMAC-SHA256 Credential=AKID-test/'), 'SigV4 credential scope is present')
-    assert.ok(uploads[0].amzDate !== undefined && uploads[0].payloadHash !== undefined)
-  } finally {
-    storageProbeEndpoint = ''
-    await new Promise(resolve => probe.close(resolve))
-  }
-})
-
 await check('C7 Agent tool-result image route serves durable attachments without a session-log image reference', async () => {
   const query = new URLSearchParams({
     attachment_id: agentPreviewRef.attachmentId,
@@ -3038,9 +2235,16 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
     assert.equal(backgroundComplete.status, 'completed')
     assert.equal(saved.size, 4)
 
+    // 只有宿主目录里的模型可以提交：目录外的 id 要在发请求之前被点名拒绝，
+    // 并把可选的模型告诉调用方（它据此重试，而不是换一个瞎猜的 id）。
     await assert.rejects(
-      tools.get('generate_image').execute({ prompt: 'a cat', model: 'grok-imagine-image' }, {}),
-      /not configured/,
+      tools.get('generate_image').execute({ prompt: 'a cat', model: 'gpt-image-1' }, {}),
+      error => {
+        assert.equal(error.code, 'image-model-not-configured')
+        assert.match(error.message, /not available to this account/)
+        assert.match(error.message, /gpt-image-2/, 'the alternatives are named')
+        return true
+      },
     )
 
     const edited = await tools.get('edit_image').execute({ prompt: 'edit this', source_image: complete.images[0], size: '3:2', quality: '2k' }, { signal: new AbortController().signal })
@@ -4794,7 +3998,6 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
     },
     'react/jsx-runtime': { jsx: () => null, jsxs: () => null },
     'react-dom': {},
-    'react-dom/client': { createRoot: () => ({ render: () => {}, unmount: () => {} }) },
     '@deepseek-ai/dsh-client-ui-primitives': {},
     '@deepseek-ai/dsh-client-store': { createSnapshotStore: (initial) => ({
       getSnapshot: () => initial,
@@ -5281,34 +4484,6 @@ await check('D3 the client surface registers the sidebar row and the keyed main 
     [],
     'the two disposers remove both registrations',
   )
-})
-
-// ------------------------------- D4 google-native channel protocol (issue #28)
-await check('D4 google-native protocol is offered and wired on the client', () => {
-  const settings = readFileSync(new URL('../src/client/SettingsCard.tsx', import.meta.url), 'utf8')
-  assert.match(settings, /<option value="google-native">\{t\('channels\.protocolGoogle'\)\}<\/option>/, 'the protocol selector offers google-native')
-  assert.match(settings, /resolvedProtocol === 'chat-completions' \|\| resolvedProtocol === 'google-native'/, 'exact-URL model detection stays open for google-native')
-  const locales = readFileSync(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
-  assert.equal([...locales.matchAll(/'channels\.protocolGoogle':/g)].length, 3, 'zh/en/ru each label the google-native option')
-  const refs = readFileSync(new URL('../src/client/reference-images.ts', import.meta.url), 'utf8')
-  assert.match(refs, /protocol === 'chat-completions' \|\| protocol === 'google-native'/, 'google-native keeps the five-reference ceiling instead of the nanobanana single')
-  const presets = readFileSync(new URL('../src/presets.ts', import.meta.url), 'utf8')
-  assert.match(presets, /https:\/\/generativelanguage\.googleapis\.com\/v1beta/, 'the official Google endpoint ships as a preset')
-  const bundle = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
-  assert.ok(bundle.includes('google-native'), 'the built client bundle carries the google-native option')
-})
-
-// ------------------------------- D5 qwen-draw channel protocol
-await check('D5 qwen-draw protocol is offered and wired on the client', () => {
-  const settings = readFileSync(new URL('../src/client/SettingsCard.tsx', import.meta.url), 'utf8')
-  assert.match(settings, /<option value="qwen-draw">\{t\('channels\.protocolQwenDraw'\)\}<\/option>/, 'the protocol selector offers qwen-draw')
-  assert.match(settings, /resolvedProtocol === 'chat-completions' \|\| resolvedProtocol === 'google-native' \|\| resolvedProtocol === 'qwen-draw'/, 'exact-URL model detection stays open for qwen-draw')
-  const locales = readFileSync(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
-  assert.equal([...locales.matchAll(/'channels\.protocolQwenDraw':/g)].length, 3, 'zh/en/ru each label the qwen-draw option')
-  const protocol = readFileSync(new URL('../src/protocol.ts', import.meta.url), 'utf8')
-  assert.match(protocol, /'qwen-draw'/, 'the protocol union carries qwen-draw')
-  const bundle = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
-  assert.ok(bundle.includes('qwen-draw'), 'the built client bundle carries the qwen-draw option')
 })
 
 // ------------------------------- D6 plugin display title (the plugin details page)

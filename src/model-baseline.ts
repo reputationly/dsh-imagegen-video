@@ -35,16 +35,8 @@
 export type ModelFamily =
   | 'gpt-image'
   | 'dall-e'
-  | 'grok'
-  | 'nanobanana'
-  | 'seedream'
-  | 'agnes'
-  | 'zhipu'
-  | 'qwen'
-  | 'minimax'
-  // 自家 MaaS 的 MiniMax-H3 图像：OpenAI 形状，但只认 `size` 且尺寸必须落在
-  // 2K / 16MP 计费档内（低于 2K 网关直接 400）。单独成族是因为它的尺寸语义
-  // 和 MiniMax 官方的 `image-01`（aspect_ratio）完全不同。
+  // 部署自家网关的 MiniMax-H3 图像：OpenAI 形状，但只认 `size` 且尺寸必须落在
+  // 2K 计费档内（低于 2K 网关直接 400）。
   | 'h3-image'
   | 'unknown'
 
@@ -54,7 +46,7 @@ export type ModelLifecycle = 'active' | 'deprecated' | 'removed'
 /** One exact upstream model id and what we know about it. */
 export interface ModelBaselineEntry {
   /** Upstream id as written by the provider, lowercased, without a vendor
-   *  prefix (`google/gemini-3-pro-image` is stored as `gemini-3-pro-image`). */
+   *  prefix (`suanli/minimax-h3-image` is stored as `minimax-h3-image`). */
   id: string
   /** Request-shaping family. */
   family: Exclude<ModelFamily, 'unknown'>
@@ -87,28 +79,6 @@ export const MODEL_BASELINE: readonly ModelBaselineEntry[] = [
   { id: 'gpt-image-2.5-flare', family: 'gpt-image' },
   { id: 'gpt-image-2.5', family: 'gpt-image' },
   { id: 'gpt-image-2', family: 'gpt-image' },
-
-  // ---- Google -------------------------------------------------------------
-  // These are served through the same Gemini image endpoint the plugin calls
-  // under the `nanobanana` family, which is why they classify there and not as
-  // a separate family.
-  { id: 'gemini-3-pro-image', family: 'nanobanana' },
-  { id: 'gemini-3-pro-image-preview', family: 'nanobanana' },
-  { id: 'gemini-3.1-flash-image', family: 'nanobanana' },
-  { id: 'gemini-3.1-flash-image-preview', family: 'nanobanana' },
-  { id: 'gemini-3.1-flash-lite-image', family: 'nanobanana' },
-  { id: 'gemini-2.5-flash-image', family: 'nanobanana' },
-  { id: 'gemini-nano-banana-2.1', family: 'nanobanana' },
-
-  // ---- Seedream -----------------------------------------------------------
-  { id: 'seedream-5.5', family: 'seedream' },
-  { id: 'seedream-5.0-pro', family: 'seedream' },
-  { id: 'seedream-5.0', family: 'seedream' },
-  { id: 'seedream-4.0', family: 'seedream' },
-
-  // ---- Qwen ---------------------------------------------------------------
-  { id: 'qwen-image-3.0-pro', family: 'qwen' },
-  { id: 'qwen-image-3.0', family: 'qwen' },
 ]
 
 /** Index built once at module load: a linear scan per describe() call would
@@ -118,10 +88,9 @@ const BY_ID = new Map<string, ModelBaselineEntry>(
 )
 
 /**
- * Strip the vendor prefix aggregator gateways put in front of a model id.
+ * Strip the vendor prefix an aggregating gateway puts in front of a model id.
  *
- * `openrouter`, `one-api`, `new-api` and most resellers address models as
- * `vendor/model` (`google/gemini-3-pro-image`, `openai/gpt-image-2.5`). The
+ * Resellers address models as `vendor/model` (`suanli/minimax-h3-image`). The
  * prefix names who publishes the model, not how to talk to it, and every
  * classifier in this repo keys off the model name — so an unprefixed lookup
  * leaves those ids in `unknown`, where the panel warns about losing reference

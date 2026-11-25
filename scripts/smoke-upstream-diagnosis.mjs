@@ -22,7 +22,7 @@ const home = mkdtempSync(join(tmpdir(), 'dsh-upstream-diagnosis-smoke-'))
 process.env.DSH_HOME = home
 const { generateImage, ImageGenError } = await import('../src/engine.ts')
 const { generateVideo, VideoGenError } = await import('../src/video-engine.ts')
-const { bodyShapeOf, diagnoseNonJsonBody, requestAddress } = await import('../src/upstream-diagnosis.ts')
+const { bodyShapeOf, diagnoseNonJsonBody, requestAddress } = await import('../src/diagnostics-store.ts')
 
 const calls = []
 let handler = () => ({ status: 200, body: '{}', contentType: 'application/json' })

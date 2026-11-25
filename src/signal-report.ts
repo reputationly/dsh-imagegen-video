@@ -8,7 +8,7 @@
  * Three decisions shape this file, and each one is a correction of the obvious
  * approach:
  *
- * 1. BUCKET BY model × mode, never by model alone. "seedream retried 40% of the
+ * 1. BUCKET BY model × mode, never by model alone. "model X retried 40% of the
  *    time" is meaningless if the user only ever runs their hardest prompts on
  *    it. A model that leads on t2i and is never chosen for i2i must not inherit
  *    i2i's numbers, so modes never mix inside one bucket.

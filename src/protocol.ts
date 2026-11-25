@@ -16,22 +16,10 @@ export const SETTINGS_API = {
   mutate: '/api/dsh-imagegen/settings/mutate',
 } as const
 
-/** Subscription account login and status routes. */
-export const SUBSCRIPTION_API = {
-  status: '/api/dsh-imagegen/subscription/status',
-  login: '/api/dsh-imagegen/subscription/login',
-} as const
-
-/** Official/subscription-backed image providers. */
-export const SUBSCRIPTION_PROVIDERS = ['chatgpt-sub', 'grok-sub', 'google-sub', 'openrouter-sub'] as const
-export type SubscriptionProvider = typeof SUBSCRIPTION_PROVIDERS[number]
-
 /** Transport protocol a channel uses to reach its gateway.
- *  google-native talks to Google Generative Language :generateContent with
- *  an x-goog-api-key, instead of an OpenAI-compatible gateway.
- *  qwen-draw is the self-hosted 千问生图 API (a ComfyUI HTTP wrapper): a
- *  custom POST /api/draw + GET /api/jobs/{id} submit/poll protocol. */
-export type ChannelProtocol = 'images' | 'chat-completions' | 'google-native' | 'qwen-draw'
+ *  `images` is the OpenAI-compatible /images/generations + /images/edits pair;
+ *  `chat-completions` asks an image-capable chat model to answer with an image. */
+export type ChannelProtocol = 'images' | 'chat-completions'
 
 /** Stored preference: auto keeps old channels on images unless the URL is explicit. */
 export type ChannelProtocolPreference = 'auto' | ChannelProtocol
@@ -49,74 +37,22 @@ export function isChatCompletionsUrl(value: string): boolean {
 
 /** Whether a stored value is one of the accepted protocol preferences. */
 export function isChannelProtocolPreference(value: unknown): value is ChannelProtocolPreference {
-  return value === 'auto' || value === 'images' || value === 'chat-completions' || value === 'google-native' || value === 'qwen-draw'
+  return value === 'auto' || value === 'images' || value === 'chat-completions'
 }
 
 /** Resolve a channel preference without changing legacy behavior by default. */
 export function resolveChannelProtocol(apiUrl: string, preference: ChannelProtocolPreference | undefined = 'auto'): ChannelProtocol {
-  if (preference === 'images' || preference === 'chat-completions' || preference === 'google-native' || preference === 'qwen-draw') return preference
+  if (preference === 'images' || preference === 'chat-completions') return preference
   return isChatCompletionsUrl(apiUrl) ? 'chat-completions' : 'images'
-}
-
-/**
- * Normalize the 千问生图 API service root. A user may paste the exact
- * generation URL (`/api/draw` or `/api/draw/sync`) or the model list URL
- * (`/api/models`); model discovery and job polling both need the bare root.
- */
-export function qwenDrawBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
-  if (trimmed === '') return ''
-  try {
-    const url = new URL(trimmed)
-    url.pathname = url.pathname.replace(/\/api\/(?:draw(?:\/sync)?|models)\/?$/i, '')
-    url.search = ''
-    url.hash = ''
-    return url.toString().replace(/\/$/, '')
-  } catch {
-    return trimmed
-  }
-}
-
-/** Subscription channels with a fixed image model. */
-export const DEFAULT_SUBSCRIPTION_MODELS: Record<SubscriptionProvider, string> = {
-  'chatgpt-sub': 'gpt-image-2.5-flare',
-  'grok-sub': 'grok-imagine-image-2.0',
-  'google-sub': 'gemini-3-pro-image',
-  'openrouter-sub': 'google/gemini-3-pro-image',
-}
-
-/** Human-facing provider names used in status and errors. */
-export const SUBSCRIPTION_PROVIDER_DISPLAY_NAMES: Record<SubscriptionProvider, string> = {
-  'chatgpt-sub': 'ChatGPT 订阅',
-  'grok-sub': 'Grok 订阅',
-  'google-sub': 'Google 订阅',
-  'openrouter-sub': 'OpenRouter 账号',
-}
-
-/** Interfaces that are supported experimentally and should be labelled in the UI. */
-export const EXPERIMENTAL_SUBSCRIPTION_PROVIDERS: ReadonlySet<SubscriptionProvider> = new Set(['chatgpt-sub', 'google-sub'])
-
-/** Whether a raw string names one of the subscription providers. */
-export function isSubscriptionProvider(value: unknown): value is SubscriptionProvider {
-  return typeof value === 'string' && (SUBSCRIPTION_PROVIDERS as readonly string[]).includes(value)
 }
 
 /** The image-generation proxy route. */
 export const GENERATE_API = '/api/dsh-imagegen/generate'
 
-/** Host-mediated OpenAI-compatible prompt enhancement endpoints. */
+/** Host-mediated prompt enhancement: the deployment's own conversation model answers. */
 export const PROMPT_ENHANCE_API = {
-  models: '/api/dsh-imagegen/prompt-enhance/models',
   enhance: '/api/dsh-imagegen/prompt-enhance',
 } as const
-
-/** Host-mediated candidate discovery for the configured image API. */
-export const IMAGE_MODEL_API = {
-  models: '/api/dsh-imagegen/image-models',
-} as const
-
-/** Host-served built-in provider catalog (channels the user can instantiate). */
-export const PRESETS_API = '/api/dsh-imagegen/presets' as const
 
 /** Host-served static GLBs for the director's standard body. */
 export const STAGE_ASSETS_API = '/api/dsh-imagegen/stage-assets' as const
@@ -341,11 +277,6 @@ export interface SignalMonthSummary {
   count: number
   truncated?: 'size' | 'unreadable'
 }
-
-/** Probe the configured S3-compatible object storage. */
-export const STORAGE_API = {
-  test: '/api/dsh-imagegen/storage/test',
-} as const
 
 /**
  * Video generation route family. Video is asynchronous upstream (submit →
@@ -919,24 +850,12 @@ export type VideoMode = 'text' | 'image' | 'keyframe' | 'reference' | 'compose'
 
 /** Request-shaping family a video model id routes through. */
 export type VideoModelFamily =
-  | 'agnes'
-  | 'comemoe'
-  | 'xai'
-  | 'seedance'
+  // The generic OpenAI-style contract: `POST /videos` + `GET /videos/{id}`.
   | 'openai-video'
-  | 'snapgen'
-  | 'muse'
-  // Nbility's MiniMax-H3 contract: a `content` array with per-item `role`, and
-  // every reference must be uploaded to a public HTTPS URL first -- the family
-  // exists because that upload leg has no analogue in the generic shape.
-  | 'minimax'
-  // 启航AIGC's gateway: flat video parameters under `/v1/videos/generations`,
-  // then `GET /v1/tasks/{id}` with `is_final` / `output_url`.
-  | 'qihang'
-  // 自家 MaaS 网关的统一任务接口：`POST /v1/videos` 提交（`metadata.image_mode`
-  // 区分玩法），`GET /v1/videos/{id}` 轮询，成品在 `metadata.url`。它跟
-  // `minimax` 族的区别是：参考素材放 `metadata.src_ref_images`（不走 content[]
-  // 的 role），时长 1–20 秒，2K 交付由网关侧的聚合模型（生成 768P → 超分）完成。
+  // 部署自家网关的统一任务接口：`POST /v1/videos` 提交（`metadata.image_mode`
+  // 区分玩法），`GET /v1/videos/{id}` 轮询，成品在 `metadata.url`；参考素材放
+  // `metadata.src_ref_images`，时长 1–20 秒，2K 交付由网关侧的聚合模型
+  // （生成 768P → 超分）完成。
   | 'h3-v2'
   | 'unknown'
 
@@ -2625,7 +2544,7 @@ export interface ListingCopyRequest {
 /** A client → host listing-copy reply. `ok: false` carries an actionable message. */
 export type ListingCopyResult =
   | { ok: true; copy: ListingCopy }
-  | { ok: false; code: 'listing-copy-failed' | 'listing-copy-unstructured'; message: string }
+  | { ok: false; code: 'listing-copy-failed' | 'listing-copy-unstructured' | 'listing-copy-no-model'; message: string }
 
 /** A client → host generate request (what the panel collects). */
 export interface GenerateRequest extends EcommerceTaskMeta {
@@ -2642,14 +2561,13 @@ export interface GenerateRequest extends EcommerceTaskMeta {
   /** The prompt. Upstream providers may impose their own length limits. */
   prompt: string
   /** Canvas size as an aspect ratio: 'auto' or e.g. '1:1' / '16:9' / '21:9'.
-   *  The host maps it onto each model's own vocabulary (aspect_ratio for Grok
-   *  and Nano Banana, resolution-tier size for Seedream, the closest pixel size for
-   *  OpenAI-compatible endpoints). */
+   *  The host maps it onto each model's own vocabulary: the closest pixel size
+   *  for OpenAI-compatible endpoints, a 2K delivery size for the H3 image
+   *  family (which only accepts `size`). */
   size: string
   /** Clarity tier: 'auto' | '1k' | '2k' | '4k'. The host maps it onto the
-   *  model's own vocabulary (resolution for Grok, image_size for Nano Banana,
-   *  and size for Seedream,
-   *  Nano Banana, quality for OpenAI). */
+   *  model's own vocabulary (the OpenAI quality levels, or `size` for the H3
+   *  image family). */
   quality: string
   /** Number of images, 1-4. */
   n: number
@@ -2751,37 +2669,16 @@ export interface ModelMapping {
  * whole-array writes can never clobber keys the user did not re-enter.
  */
 export interface ChannelConfig {
-  /** Stable channel id (the channelSecrets dict is keyed by it). */
+  /** Stable channel id. */
   id: string
-  /** Preset provider id this channel was created from ('' = custom). */
-  preset: string
   /** Display name shown in the list, the panel, and Agent guidance. */
   name: string
   /** OpenAI-compatible base URL, or the exact generation URL when apiUrlFull is true. */
   apiUrl: string
   /** Use apiUrl verbatim instead of appending /images/generations or /images/edits. */
   apiUrlFull: boolean
-  /**
-   * Ask Seedream to stamp its「AI 生成」corner badge into the result. The official
-   * Volcengine Ark / BytePlus API defaults this to `true`, so absent means on;
-   * only an explicit `false` is sent upstream, and only to channels that
-   * document the field (#56).
-   */
-  watermark?: boolean
-  /**
-   * Automatically use the selected model's reference-image ceiling.
-   *
-   * Absent means true: legacy channels keep the adapter's automatic behavior.
-   * `false` pins the safe plugin default (5 images). This is per channel
-   * because two channels can serve the same model id with different gateways.
-   */
-  autoReferenceLimit?: boolean
   /** Request protocol; 'auto' infers chat-completions from an exact chat URL. */
   protocol?: ChannelProtocolPreference
-  /** Authentication source; absent means the legacy API-key path. */
-  auth?: 'api-key' | 'subscription'
-  /** Subscription provider when auth is subscription. */
-  subscription?: SubscriptionProvider
   /** The channel's model catalog (alias → upstream id). */
   models: ModelMapping[]
   /**
@@ -2791,23 +2688,6 @@ export interface ChannelConfig {
    * on channels configured before video support: an absent list is empty.
    */
   videoModels?: ModelMapping[]
-}
-
-/** One built-in provider as the settings card consumes it. */
-export interface PresetProviderView {
-  id: string
-  name: string
-  apiUrl: string
-  /** Public provider page opened from the picker. */
-  link?: string
-  hint: string
-  models: ModelMapping[]
-  /** Video model catalog prefilled alongside the image one. */
-  videoModels?: ModelMapping[]
-  /** Set for subscription-backed presets. */
-  subscription?: SubscriptionProvider
-  /** True when the subscription relies on an undocumented interface. */
-  experimental?: boolean
 }
 
 export type GenerationTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'

@@ -3,11 +3,10 @@
  * the async video side of the plugin. Mirrors `model-catalog.ts`, but for the
  * submit/poll video contract rather than the synchronous image one.
  *
- * Families differ in far more than a URL path:
- *  - `agnes`      : POST /v1/videos → poll GET /v1/videos/{id} → metadata.url
- *  - `comemoe`    : POST /v1/videos → poll GET /v1/videos/{id} → flat top-level url
- *  - `xai`        : POST /v1/videos/generations → poll GET /v1/videos/{id} → video.url
- *  - `openai-video`: best-effort OpenAI-style video endpoint
+ * Two families remain:
+ *  - `openai-video`: the generic OpenAI-style `POST /videos` + `GET /videos/{id}`.
+ *  - `h3-v2`      : 部署自家网关的统一任务接口（`metadata.image_mode` 区分玩法，
+ *                    成品在 `metadata.url`，参考图放 `metadata.src_ref_images`）。
  *
  * Framework-free (pure data + regex), safe for the client bundle to inline.
  */
@@ -46,28 +45,6 @@ export interface VideoCatalogEntry {
 
 /** Families whose request shape we know, keyed by family id. */
 const ENTRIES: Record<Exclude<VideoModelFamily, 'unknown'>, Omit<VideoCatalogEntry, 'family'>> = {
-  agnes: {
-    label: 'agnes',
-    labelZh: 'Agnes 视频',
-    known: true,
-    modes: ['text', 'image', 'keyframe', 'reference'],
-    resolutions: ['480P', '720P', '1080P'],
-    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
-    supportsSeed: true,
-    requiresReference: false,
-  },
-  comemoe: {
-    label: 'comemoe',
-    labelZh: '算力萌',
-    known: true,
-    // zhimeng-h3-local takes a single image_url; wan2.2-t2v is text-only.
-    // Both are narrowed per model id in `describeVideoModel`.
-    modes: ['text', 'image'],
-    resolutions: ['720P', '1080P'],
-    aspectRatios: ['16:9', '9:16', '1:1'],
-    supportsSeed: false,
-    requiresReference: false,
-  },
   'openai-video': {
     label: 'openai-video',
     labelZh: '通用视频',
@@ -78,99 +55,7 @@ const ENTRIES: Record<Exclude<VideoModelFamily, 'unknown'>, Omit<VideoCatalogEnt
     supportsSeed: false,
     requiresReference: false,
   },
-  // Volcengine Ark's own task contract: POST /contents/generations/tasks with a
-  // `content` array, poll GET /contents/generations/tasks/{id}, and the finished
-  // clip at `content.video_url`. Durations are 4-15s on 2.x and 2-12s on 1.0,
-  // resolutions are lowercase 480p/720p/1080p.
-  seedance: {
-    label: 'seedance',
-    labelZh: '火山 Seedance',
-    known: true,
-    // `reference` (multi-image) exists on 2.x only; narrowed per model id below.
-    modes: ['text', 'image', 'keyframe'],
-    resolutions: ['480P', '720P', '1080P'],
-    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
-    supportsSeed: true,
-    requiresReference: false,
-  },
-  // xAI's own contract, verified against docs.x.ai/developers/rest-api-reference:
-  // submit returns `request_id`, the poll carries `video.url` / `video.duration`.
-  xai: {
-    label: 'xAI Grok',
-    labelZh: 'xAI Grok',
-    known: true,
-    // Reference frames are accepted by the API, but the panel's keyframe and
-    // reference modes need a shape this engine has not measured yet; offering
-    // them would produce a body the provider rejects.
-    modes: ['text', 'image'],
-    resolutions: ['480P', '720P', '1080P'],
-    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
-    supportsSeed: false,
-    requiresReference: false,
-  },
-  // Muse's own video contract on an upstream that speaks `/v1/videos`: the
-  // body is {model, prompt, duration, resolution, aspect_ratio, image} -- note
-  // `duration` as a NUMBER and lowercase resolutions, and note that `seconds`
-  // and `size` are REJECTED ("invalid Muse video parameters; supported fields:
-  // ..."). Any extra field fails the submit outright, so this family must not
-  // fall through to the generic body. Measured: 720p/1080p accepted (480p and
-  // any uppercase tier are not), aspect_ratio 16:9|9:16|1:1 only.
-  muse: {
-    label: 'muse',
-    labelZh: 'Muse 视频',
-    known: true,
-    modes: ['text', 'image'],
-    resolutions: ['720P', '1080P'],
-    aspectRatios: ['16:9', '9:16', '1:1'],
-    supportsSeed: false,
-    requiresReference: false,
-  },
-  // snapgen.ai is not an OpenAI-compatible endpoint: the submit is a multipart
-  // POST behind a hand-rolled anti-bot guard header, it answers with a history
-  // uuid instead of a task id, progress is a NUMERIC status on GET /history/{id}
-  // (1 = running, 2 = finished, 3 = failed), and images are minted per request
-  // through a Cloudflare Turnstile widget. `snapgen-engine.ts` owns all of it.
-  // Duration and aspect vocabularies differ per model, so they are narrowed
-  // per id in `describeVideoModel`.
-  snapgen: {
-    label: 'snapgen',
-    labelZh: 'snapgen.ai',
-    known: true,
-    modes: ['text', 'image'],
-    resolutions: ['480P', '720P', '1080P'],
-    aspectRatios: ['16:9', '9:16', '1:1'],
-    durations: [6, 10, 15],
-    supportsSeed: false,
-    requiresReference: false,
-  },
-  // Nbility's MiniMax-H3 contract (nbility.ai/docs/api/videos/minimax-h3):
-  // `POST /v1/videos` with a `content` array -- exactly one text item plus
-  // 0-12 media items, each carrying a `role` -- polled at `GET /v1/videos/{id}`,
-  // clip at the completed body's `url`. Output is fixed at 768P (720P/1080P are
-  // a 400), duration is a 1..15 integer, ratio is the six standard values, and
-  // `adaptive` additionally needs a visual input.
-  //
-  // The reason this is a family of its own rather than the generic shape:
-  // every reference must be a PUBLIC HTTPS URL. The host only ever holds data
-  // URLs, so a reference has to be uploaded to `POST /v1/media/uploads` first
-  // and swapped for the returned (one-hour) URL with its role attached.
-  minimax: {
-    label: 'minimax',
-    labelZh: 'MiniMax 视频',
-    known: true,
-    // `reference` rides a different role (`reference_image`) from `image`
-    // (`first_frame`); both are wired. `keyframe` maps to first_frame +
-    // last_frame, which the upstream allows one each of.
-    modes: ['text', 'image', 'keyframe', 'reference'],
-    resolutions: ['768P'],
-    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
-    // The upstream accepts 1-15 integer seconds; expose the useful 5/10/15
-    // steps instead of the two-pill default that hid the long end.
-    durations: [5, 10, 15],
-    supportsSeed: false,
-    requiresReference: false,
-  },
-  // 自家 MaaS 网关的统一任务接口（`docs/video-client-integration.md`）：
+  // 部署自家网关的统一任务接口（`docs/video-client-integration.md`）：
   // `POST <base>/videos` 提交，`GET <base>/videos/{id}` 轮询，成品在
   // `metadata.url`；`metadata.image_mode` 区分玩法（text-to-video /
   // first-last-frame / reference），参考图走 `metadata.src_ref_images`。
@@ -189,167 +74,17 @@ const ENTRIES: Record<Exclude<VideoModelFamily, 'unknown'>, Omit<VideoCatalogEnt
     supportsSeed: false,
     requiresReference: false,
   },
-  // 启航AIGC's aggregate gateway (Wan 3.0): the flat video endpoint takes
-  // model / prompt / mode / duration / resolution / aspect_ratio / images at
-  // the TOP level and answers a task id; polling is `GET /v1/tasks/{id}` and
-  // the finished clip is `output_url`. Durations are 4-30 integer seconds.
-  qihang: {
-    label: 'qihang',
-    labelZh: '启航 AIGC',
-    known: true,
-    modes: ['text', 'image', 'keyframe', 'reference'],
-    resolutions: ['480P', '720P', '1080P'],
-    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
-    durations: [5, 10, 15, 20, 30],
-    supportsSeed: false,
-    requiresReference: false,
-  },
-}
-
-/**
- * snapgen.ai video ids this plugin can drive.
- *
- * Spelled out here rather than imported from `snapgen-engine.ts`: that module
- * pulls in node:crypto, and this catalog is inlined into the browser bundle.
- * The ids are the contract between the two, so they are also asserted by the
- * smoke test.
- */
-const SNAPGEN_VIDEO_MODELS = new Set([
-  'grok-video',
-  'grok-lower',
-  'grok-1.5-lite',
-  'muse-ai-video',
-  'vela-ai-video',
-])
-
-/** Whether a model id belongs to the snapgen.ai video family. */
-export function isSnapgenVideoModel(model: string): boolean {
-  return SNAPGEN_VIDEO_MODELS.has(model.trim())
-}
-
-/** comemoe model ids (they do not start with a vendor prefix). */
-const COMEMOE_VIDEO_MODELS = new Set(['wan2.2-t2v', 'zhimeng-h3-local'])
-
-/** Whether a model id belongs to the comemoe (算力萌) video family. */
-export function isComemoeVideoModel(model: string): boolean {
-  const id = model.trim()
-  return COMEMOE_VIDEO_MODELS.has(id) || /^comemoe[-_/]/i.test(id)
-}
-
-/**
- * Whether a model id is Volcengine Ark's Seedance video contract.
- *
- * Both the official ids (`doubao-seedance-2-0-260128`) and the shorter gateway
- * aliases (`seedance-2-0`) are accepted: the family is decided by the request
- * SHAPE, and both spellings mean the same `/contents/generations/tasks` body.
- */
-export function isArkSeedanceVideoModel(model: string): boolean {
-  return /^(?:doubao-)?seedance(?:[-_.]|$)/i.test(model.trim())
 }
 
 /** Classify one upstream video model id into its request-shaping family. */
 export function describeVideoModel(model: string): VideoCatalogEntry {
   const id = model.trim()
   if (id === '') return unknownEntry()
-  if (/^agnes-video/i.test(id)) {
-    const base = ENTRIES.agnes
-    // `agnes-video-2.5-flash` is documented as 720P-only: any other `size` is
-    // rejected with `400 size must be 720P` BEFORE the task is created. Narrow
-    // the tier list so the panel cannot offer a 1080P pick that is guaranteed
-    // to fail; non-flash ids keep the full range.
-    return /flash/i.test(id)
-      ? { family: 'agnes', ...base, resolutions: ['720P'] }
-      : { family: 'agnes', ...base }
-  }
-  // Before the generic `isLikelyVideoModelId` branch: `grok-imagine-video-*`
-  // matches that regex too, and the generic family posts to `/videos`, which
-  // xAI answers with 404 (it serves `/videos/generations`).
-  if (/^grok-imagine-video/i.test(id)) return { family: 'xai', ...ENTRIES.xai }
-  if (isArkSeedanceVideoModel(id)) {
-    // `reference` takes several reference images, which Seedance 2.x supports
-    // and 1.0 does not. Offering it on a 1.0 id would send a body the provider
-    // rejects, so the panel is narrowed here instead.
-    // The fast / mini ids also cap at 720p upstream: a 1080P pick on one of
-    // those is a guaranteed 400, so the tier list is narrowed to match.
-    const base = ENTRIES.seedance
-    const seedance2 = /seedance[-_.]?2/i.test(id)
-    // `doubao-seedance-2-0-fast-260128` carries a minor version between the
-    // major and the tier word, so a bare `2-fast` pattern never matches.
-    const light = /seedance[-_.]?2(?:[-_.]\d+)*[-_.](?:fast|mini)/i.test(id)
-    const resolutions: VideoResolution[] = light ? ['480P', '720P'] : [...base.resolutions]
-    // 1.0 pro fast supports text-to-video and a single first frame only: the
-    // docs list `last_frame` for 1.0 pro and explicitly not for the fast id, so
-    // offering keyframe mode there would produce a body the provider rejects.
-    const proFast = /seedance[-_.]?1[-_.]?\d+[-_.]?pro[-_.]?fast/i.test(id)
-    const modes: VideoMode[] = proFast ? ['text', 'image'] : [...base.modes]
-    return seedance2
-      ? { family: 'seedance', ...base, resolutions, modes: [...modes, 'reference'] }
-      : { family: 'seedance', ...base, resolutions, modes }
-  }
-  if (isComemoeVideoModel(id)) {
-    const base = ENTRIES.comemoe
-    // `wan2.2-t2v` is text-only; the rest accept one reference image.
-    return id === 'wan2.2-t2v' || /t2v/i.test(id)
-      ? { family: 'comemoe', ...base, modes: ['text'] }
-      : { family: 'comemoe', ...base }
-  }
-  // snapgen.ai: one family, five ids with different wire vocabularies. The guard
-  // is the model LIST, not a prefix, so an unrelated `*-video` id still falls
-  // through to the generic branch below.
-  if (isSnapgenVideoModel(id)) {
-    const base = ENTRIES.snapgen
-    if (id === 'muse-ai-video') {
-      // Muse takes no resolution at all and fixes the clip at ten seconds.
-      return { family: 'snapgen', ...base, modes: ['text', 'image'], resolutions: [], aspectRatios: ['16:9', '9:16', '1:1'], durations: [10] }
-    }
-    if (id === 'vela-ai-video') {
-      // Vela is the five-second one; it is also the only id that needs no
-      // Turnstile token, which the engine handles per endpoint.
-      return { family: 'snapgen', ...base, modes: ['text', 'image'], resolutions: [], aspectRatios: ['16:9', '9:16', '1:1'], durations: [5] }
-    }
-    // The grok ids all take 6/10/15 seconds. `grok-video` alone reaches 4k,
-    // which the panel has no tier for, so 1080P is the top it can offer.
-    // The grok ids take the same `files` field, but whether the grok endpoints
-    // honour it was never measured: the free daily cap was already spent.
-    return { family: 'snapgen', ...base, modes: ['text'], aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'], durations: [6, 10, 15] }
-  }
-  // Muse's own contract, matched EXACTLY: a bare `muse` prefix would also
-  // capture snapgen's `muse-ai-video`, which is a completely different endpoint
-  // and body (see above). Muse ids beyond `muse-video` are unmeasured, so they
-  // stay on the generic branch where the failure is at least readable.
-  if (/^muse-video$/i.test(id)) return { family: 'muse', ...ENTRIES.muse }
-  // 自家 MaaS 的 H3 视频必须排在 Nbility 那条 minimax 规则之前：两边都叫
-  // `minimax-h3*`，靠后缀区分。这里只认我们自己部署的四个 id 与它们的聚合
-  // 形态（`-2k` / `-ref-2k`），裸名 `minimax-h3` 仍然留给 Nbility 契约。
-  if (/^minimax[-_.]?h3[-_.]?(?:fl2va|ref2va|l2va|2k|ref[-_.]?2k)(?:$|[-_.])/i.test(id)) {
-    return { family: 'h3-v2', ...ENTRIES['h3-v2'] }
-  }
-  // MiniMax-H3 through the Nbility gateway, matched by id: the gateway serves
-  // other vendors' ids on the same `/v1/videos` path, and only this one speaks
-  // the `content` array with per-item roles.
-  //
-  // Two capabilities are narrowed from the family default:
-  //  - resolution: measured against api.nbility.ai, 720P and 1080P are both
-  //    answered with 400 `MiniMax-H3 supports only 768P at normalizeRequest`.
-  //    The upstream also takes `adaptive`, which needs a visual input to be
-  //    meaningful, so it is not offered as a tier.
-  //  - reference images: capped at 9 by the contract (the generic panel allows
-  //    four; the cap is enforced when the body is built).
-  // Durations are the upstream's real 1..15 seconds; the panel's 5/10 steps are
-  // both inside that range, so the default list is kept.
+  // 部署自家网关的 H3 视频：裸名 `minimax-h3` 与四个交付 id（含 `-2k` /
+  // `-ref-2k` 聚合形态）。整个 `minimax-h3` 前缀都归这一族——本插件只对接部署
+  // 自己的网关，那个前缀在网关侧就只有这一种契约。
   if (/^minimax[-_.]?h3(?:$|[-_.])/i.test(id)) {
-    return {
-      family: 'minimax',
-      ...ENTRIES.minimax,
-      label: 'MiniMax-H3',
-      labelZh: 'MiniMax H3',
-    }
-  }
-  // 启航AIGC's Wan 3.0 (`wan-3-0` on `/v1/skills/models`). The gateway speaks
-  // its own flat async shape, so this must not fall through to the generic
-  // OpenAI-style `/videos` body.
-  if (/^wan[-_.]?3(?:[-_.]|$)/i.test(id)) {
-    return { family: 'qihang', ...ENTRIES.qihang }
+    return { family: 'h3-v2', ...ENTRIES['h3-v2'] }
   }
   // A well-known generic-video naming convention: anything that is clearly a
   // video model but not one of the families above still gets the generic
@@ -380,11 +115,8 @@ export function videoModelFamily(model: string): VideoModelFamily {
 
 /** Conservative fallback for providers whose /models response only has ids. */
 export function isLikelyVideoModelId(model: string): boolean {
-  return /(?:^|[-_.])(?:video|t2v|i2v|motion|animate|sora|veo|kling|runway|pika|luma|haiper|wan2|minimax-h3|seedance)(?:$|[-_.])/i.test(model.trim())
+  return /(?:^|[-_.])(?:video|t2v|i2v|motion|animate|sora|veo|kling|runway|pika|luma|haiper|minimax-h3)(?:$|[-_.])/i.test(model.trim())
 }
-
-/** Default video model ids offered when a channel has no video catalog yet. */
-export const DEFAULT_VIDEO_MODELS = ['agnes-video-2.5-flash', 'agnes-video-2.5'] as const
 
 /** Normalize a user-entered video model list, dropping blanks and duplicates. */
 export function normalizeVideoModels(value: unknown): string[] {
@@ -418,8 +150,8 @@ export function normalizeVideoCatalog(value: unknown): ModelMapping[] {
  *
  * Capability checks (modes, resolutions, family) must describe the id the
  * provider RECEIVES, not the alias the user typed: a channel can map
- * `seedance-hd` → `doubao-seedance-2-0-fast-260128`, and only the latter is
- * capped at 720p. Describing the alias would offer a tier the id rejects.
+ * `gateway-hd` → `minimax-h3-2k`, and only the latter decides the family.
+ * Describing the alias would offer a tier the id rejects.
  *
  * Falls back to the alias itself when no channel maps it (a request built
  * outside the panel, or a catalog edited after selection).
@@ -444,10 +176,10 @@ export function resolveVideoModelId(
 /**
  * Durations one catalog entry offers, in seconds.
  *
- * Families whose wire values are not the panel's own list (snapgen speaks
- * 6/10/15, muse only 10, vela only 5) declare them on the entry; everything
- * else falls back to the shared list, so the pickers stay single-sourced here
- * instead of each rendering its own hardcoded copy.
+ * Families whose wire values are not the panel's own list (H3 speaks 5/10/15)
+ * declare them on the entry; everything else falls back to the shared list, so
+ * the pickers stay single-sourced here instead of each rendering its own
+ * hardcoded copy.
  */
 export function durationsOf(entry: VideoCatalogEntry): number[] {
   return entry.durations !== undefined && entry.durations.length > 0 ? [...entry.durations] : [...VIDEO_DURATIONS]

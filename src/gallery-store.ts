@@ -23,7 +23,6 @@ import { GALLERY_API, type HistoryEntry, type HistoryEntryInput, type StoredEntr
 
 /** Prefix route serving one favorited clip. */
 const GALLERY_VIDEO_FILE_ROUTE = GALLERY_API.videoFile
-import { notifyImageSaved } from './storage-sync.ts'
 import { imageDataRoot } from './image-storage-path.ts'
 
 function historyDir(): string { return imageDataRoot() }
@@ -326,7 +325,6 @@ export async function appendGallery(input: HistoryEntryInput): Promise<GalleryAp
         const image = input.images[index]!
         const file = `${prefix}-${index}.${extensionOf(image.mime)}`
         await fs.writeFile(path.join(imagesDir(), file), Buffer.from(image.b64, 'base64'))
-        notifyImageSaved('gallery', path.join(imagesDir(), file))
         storedImages.push({
           file,
           mime: image.mime,

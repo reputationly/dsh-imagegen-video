@@ -120,7 +120,7 @@ export function resolveAgentVideoModel(config: AgentVideoToolConfig, requested: 
 function requireKnownFamily(upstream: string): void {
   const entry = describeVideoModel(upstream)
   if (entry.family === 'unknown') {
-    throw new VideoGenError(`Video model "${upstream}" has an unknown protocol family, so it cannot be generated. Use a known video model such as agnes-video-2.5-flash.`, 'video-unknown-model')
+    throw new VideoGenError(`Video model "${upstream}" has an unknown protocol family, so it cannot be generated. Use a model the gateway catalog lists (for example minimax-h3-2k).`, 'video-unknown-model')
   }
 }
 

@@ -1,13 +1,13 @@
 /**
  * Product-listing copy generation (task-20): turns the product-set draft into
- * marketplace-ready listing copy over the SAME chat channel the prompt
- * enhancer uses. The host side owns the system prompt and the structured
+ * marketplace-ready listing copy through the SAME host conversation model the
+ * prompt enhancer uses. The host side owns the system prompt and the structured
  * output validation; the model is told to use only facts from the input, and
  * every failure mode (prose answers, malformed JSON, missing fields) surfaces
  * as an actionable error instead of silent fallback.
  */
 
-import { chatComplete, jsonPayload, type PromptModelConfig } from './prompt-enhancer.ts'
+import { jsonPayload, stripReasoning, type HostChatClient } from './prompt-enhancer.ts'
 import type { ListingCopy, ListingCopyRequest, ListingCopyResult, ListingSpec } from './protocol.ts'
 
 /** Platform title limits in characters. 「淘宝 / 京东」= 60, Amazon = 200. */
@@ -81,13 +81,16 @@ function asSpecs(value: unknown): ListingSpec[] | undefined {
  * `ok: false` with an actionable message when the answer carries no usable
  * JSON structure (prose replies must never be shown as listing copy).
  */
-export async function generateListingCopy(config: PromptModelConfig, request: ListingCopyRequest): Promise<ListingCopyResult> {
+export async function generateListingCopy(chat: HostChatClient, request: ListingCopyRequest): Promise<ListingCopyResult> {
   const limit = listingTitleLimit(request.platform)
-  const answer = await chatComplete(config, {
+  if (!chat.available()) {
+    return { ok: false, code: 'listing-copy-no-model', message: '当前没有可用的对话模型：请先在对话面板里选择一个模型后再生成文案。' }
+  }
+  const answer = stripReasoning(await chat.complete({
     temperature: 0.6,
     system: listingSystemPrompt(limit),
     content: listingUserPrompt(request),
-  })
+  }))
   const payload = jsonPayload(answer)
   if (payload === undefined || !isRecord(payload)) {
     return {
