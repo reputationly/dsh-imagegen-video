@@ -265,8 +265,11 @@ const CASES = [
     name: 'the settings page asks for a gateway again',
     runner: 'panel-contracts',
     file: 'src/client/SettingsCard.tsx',
-    from: "import type { ImageGenKey } from './locales.ts'",
-    to: "import type { ImageGenKey } from './locales.ts'\nconst channelSecrets: Record<string, string> = {}",
+    // 同前面几条：注入文本要与源码逐字一致，但不能让 verify-tracked 把这里的字面量
+    // 当成 verify-negative.mjs 自己的 import 去解析。
+    from: "import type { ImageGenKey } from " + "'./locales.ts'",
+    to: "import type { ImageGenKey } from " + "'./locales.ts'"
+      + "\nconst channelSecrets: Record<string, string> = {}",
     expect: /no longer configures channel editor/,
   },
   {
