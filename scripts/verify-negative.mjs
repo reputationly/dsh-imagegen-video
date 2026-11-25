@@ -15,7 +15,7 @@
  *   video     -- scripts/smoke-video.mjs, which drives the built host's video
  *                engine against a local upstream; also needs the rebuild.
  */
-import { cpSync, existsSync, symlinkSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readdirSync, realpathSync, symlinkSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -74,7 +74,31 @@ function freshCopy (needsGit = false) {
     mkdirSync(join(COPY, dir), { recursive: true })
     writeFileSync(join(COPY, dir, file), 'x')
   }
-  symlinkSync(join(SRC, 'node_modules'), join(COPY, 'node_modules'))
+  // NOT one symlink for the whole directory: the copy's builds run pnpm, and pnpm
+  // re-links `node_modules` relative to the cwd it is given. Through a directory symlink
+  // that re-link lands in the REAL tree, rewriting every top-level entry to point at
+  // `/tmp/dsh-neg-verify-*` -- and the next run of anything dies with "Cannot find
+  // package 'jsdom'" once the copy is deleted. Each entry is linked separately, to its
+  // resolved real path, so a re-link inside the copy cannot name the copy.
+  const source = join(SRC, 'node_modules')
+  const destination = join(COPY, 'node_modules')
+  mkdirSync(destination, { recursive: true })
+  const linkType = process.platform === 'win32' ? 'junction' : undefined
+  for (const entry of readdirSync(source)) {
+    if (entry === '.bin') continue
+    const target = realpathSync(join(source, entry))
+    if (linkType === undefined) symlinkSync(target, join(destination, entry))
+    else symlinkSync(target, join(destination, entry), linkType)
+  }
+  const binSource = join(source, '.bin')
+  if (existsSync(binSource)) {
+    mkdirSync(join(destination, '.bin'), { recursive: true })
+    for (const entry of readdirSync(binSource)) {
+      const target = realpathSync(join(binSource, entry))
+      if (linkType === undefined) symlinkSync(target, join(destination, '.bin', entry))
+      else symlinkSync(target, join(destination, '.bin', entry), linkType)
+    }
+  }
   // `verify-tracked.mjs` can only answer its question inside a checkout, and it
   // SKIPS (green) outside one. A runner that silently skips is exactly how the
   // incident it guards got through, so the copy becomes a real repository for
