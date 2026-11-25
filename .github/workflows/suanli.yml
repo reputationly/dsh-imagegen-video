@@ -52,29 +52,22 @@ jobs:
       - name: Pack
         run: pnpm pack
 
-      # 同一个版本重复发一次只会得到一个同名文件：先删掉旧文件，再提交新内容，历史里不会
-      # 出现两个内容不同却同名的 tgz。
+      # 同一个版本重复发一次只会得到一个同名文件：dist 分支整份重建，历史里不会出现两个
+      # 内容不同却同名的 tgz。用独立的临时仓库提交，再强推到 dist，避免动到工作树。
       - name: Publish to the dist branch
         run: |
           set -euo pipefail
+          archive=$(ls *.tgz | head -1)
           package=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
-          archive=$(node -p "require('node:path').basename(require('node:child_process').execSync('ls *.tgz', { encoding: 'utf8' }).trim())")
           work=$(mktemp -d)
-          git worktree add --detach "$work" 2>/dev/null || true
-          (
-            cd "$work"
-            git fetch --depth=1 origin dist || true
-            git checkout --orphan=dist-fresh >/dev/null 2>&1 || git checkout -b dist-fresh >/dev/null 2>&1
-            git rm -rf . >/dev/null 2>&1 || true
-            cp "$GITHUB_WORKSPACE/$archive" .
-            rm -f "${package#@*}-"*.tgz 2>/dev/null || true
-            printf '%s %s\n' "$package" "$version" > RELEASE.txt
-            git add .
-            git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
-              commit -m "dist: $package@$version"
-            git push --force origin HEAD:dist
-          )
+          git init -q "$work"
+          cp "$archive" "$work/"
+          printf '%s %s\n' "$package" "$version" > "$work/RELEASE.txt"
+          git -C "$work" add .
+          git -C "$work" -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            commit -q -m "dist: $package@$version"
+          git -C "$work" push --force "$(git remote get-url origin)" "HEAD:refs/heads/dist"
           rm -rf "$work"
         shell: bash
 
