@@ -134,6 +134,12 @@ export const CONVERSATION_IMAGE_API = '/api/dsh-imagegen/conversation-image' as 
  */
 export const USAGE_API = '/api/dsh-imagegen/usage' as const
 
+/** 网关目录：宿主媒体目录快照与「刷新」动作。 */
+export const GATEWAY_API = {
+  catalog: '/api/dsh-imagegen/gateway/catalog',
+  refresh: '/api/dsh-imagegen/gateway/refresh',
+} as const
+
 /** Host-resident generation queue endpoints. */
 export const TASK_API = {
   submit: '/api/dsh-imagegen/tasks/submit',
@@ -142,6 +148,48 @@ export const TASK_API = {
   cancel: '/api/dsh-imagegen/tasks/cancel',
   retry: '/api/dsh-imagegen/tasks/retry',
 } as const
+
+/**
+ * 网关目录状态。
+ *
+ * `not-configured` 只在插件视角出现：宿主没有挂载目录服务时（Web / headless 构建）。
+ */
+export type GatewayCatalogStatus =
+  | 'not-configured'
+  | 'loading'
+  | 'ready'
+  | 'empty'
+  | 'signed-out'
+  | 'unauthorized'
+  | 'kyc-required'
+  | 'rate-limited'
+  | 'unreachable'
+
+/** 工作台顶部状态条要渲染的东西。 */
+export interface GatewayCatalogSnapshot {
+  /** 最近一次读取的结果。 */
+  readonly status: GatewayCatalogStatus
+  /** 最近一份成功目录的版本；用于判断是否发生了目录变化。 */
+  readonly version: string | null
+  /** 最近一份成功目录的读取时间。 */
+  readonly fetchedAt: number | null
+  /** 面向用户的原因（中文），不含密钥与查询串。 */
+  readonly error?: string
+  /** 可渲染的图像模型（`displayName.zh` 优先）。 */
+  readonly image: readonly GatewayModelOption[]
+  /** 可渲染的视频模型。 */
+  readonly video: readonly GatewayModelOption[]
+}
+
+/** 状态条之外，工作台还要用的一项模型信息。 */
+export interface GatewayModelOption {
+  /** 提交时 `model` 字段的取值。 */
+  readonly model: string
+  /** 展示名。 */
+  readonly label: string
+  /** 是否为该操作类别的默认模型。 */
+  readonly isDefault: boolean
+}
 
 /** Reveal the host data directory (saved images) in the OS file manager. */
 export const DATA_FOLDER_API = '/api/dsh-imagegen/data-folder/open' as const

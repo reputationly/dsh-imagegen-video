@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { MODEL_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, LISTING_COPY_API, ECOMMERCE_LINK_API, PROMPT_ENHANCE_API, SIGNALS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, VIDEO_API, type CanvasAssetRef, type CanvasDocument, type CanvasFilePreview, type CanvasLayerPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type CanvasProposal, type CanvasSummary, type CodeRenderResponse, type CodeTarget, type DiagnosticEntry, type GenerateRequest, type GenerateResult, type ListingCopyRequest, type ListingCopyResult, type EcommerceLinkResult, type GenerationTask, type GenerationTaskSummary, type HistoryEntry, type HistoryEntryInput, type PptRunRequest, type PptRuntimeStatus, type SignalReportSummary, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type VideoDirectorPlan, type VideoGenerateRequest, type VideoGenerateResult, type VideoHistoryEntry, type VideoTask, type VideoTaskSummary, type StageFrameUpload, type StageEncodeResult } from '../protocol.ts'
+import { GATEWAY_API, type GatewayCatalogSnapshot, MODEL_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, LISTING_COPY_API, ECOMMERCE_LINK_API, PROMPT_ENHANCE_API, SIGNALS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, VIDEO_API, type CanvasAssetRef, type CanvasDocument, type CanvasFilePreview, type CanvasLayerPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type CanvasProposal, type CanvasSummary, type CodeRenderResponse, type CodeTarget, type DiagnosticEntry, type GenerateRequest, type GenerateResult, type ListingCopyRequest, type ListingCopyResult, type EcommerceLinkResult, type GenerationTask, type GenerationTaskSummary, type HistoryEntry, type HistoryEntryInput, type PptRunRequest, type PptRuntimeStatus, type SignalReportSummary, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type VideoDirectorPlan, type VideoGenerateRequest, type VideoGenerateResult, type VideoHistoryEntry, type VideoTask, type VideoTaskSummary, type StageFrameUpload, type StageEncodeResult } from '../protocol.ts'
 // The bundle contract lives in its own module rather than in `protocol.ts`,
 // because the host is the one that builds and parses bundles and only the
 // client's two thin wrappers need the constants. Importing it directly keeps
@@ -83,6 +83,23 @@ export class ImageGenApi {
     })
     return (await readEnvelope<{ ok: true; runtime: PptRuntimeStatus }>(response)).runtime
   }
+  /**
+   * 读取网关媒体目录快照（宿主已缓存，不触发网络）。
+   * @returns 工作台顶部状态条与模型列表要用的快照。
+   */
+  async gatewayCatalog(): Promise<GatewayCatalogSnapshot> {
+    return (await readEnvelope<{ ok: true; snapshot: GatewayCatalogSnapshot }>(await fetch(GATEWAY_API.catalog))).snapshot
+  }
+
+  /**
+   * 触发一次目录刷新并返回刷新后的快照。
+   * @returns 刷新后的快照；失败原因写在 `status` 与 `error` 里，不抛异常。
+   */
+  async gatewayRefresh(): Promise<GatewayCatalogSnapshot> {
+    const response = await fetch(GATEWAY_API.refresh, { method: 'POST' })
+    return (await readEnvelope<{ ok: true; snapshot: GatewayCatalogSnapshot }>(response)).snapshot
+  }
+
   /** Forward one generate request to the host proxy. */
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     const response = await fetch(GENERATE_API, {
