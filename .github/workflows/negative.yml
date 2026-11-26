@@ -1,0 +1,64 @@
+# 反向校验：往代码里逐个注入 271 处故障，确认每处都被测试抓到，整条链约 45 分钟。
+# 它验证的是测试本身有没有被削弱，不是这次的代码对不对，所以不放进发行流程拖慢出包，
+# 改为每天跑一次，`scripts/` 或 `package.json` 改动（测试代码都在这两处）合进 main 时也跑一次。
+name: Negative checks
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: negative-checks
+  cancel-in-progress: true
+
+jobs:
+  negative:
+    name: Run the reverse verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 测试链里的帧抽取与界面契约检查需要 ffmpeg 和无头浏览器，缺了会判失败；
+      # 与 ci.yml 装同样的两样东西。
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install chrome-headless-shell
+        run: |
+          set -euo pipefail
+          npx --yes @puppeteer/browsers install chrome-headless-shell@stable \
+            --path "$HOME/.cache/chrome-headless"
+          SHELL_BIN=$(find "$HOME/.cache/chrome-headless" -name 'chrome-headless-shell' -type f | head -1)
+          test -n "$SHELL_BIN"
+          echo "CHROME_HEADLESS_SHELL=$SHELL_BIN" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: pnpm build
+
+      - name: Negative checks
+        run: pnpm test:negative
