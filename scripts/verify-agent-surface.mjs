@@ -44,24 +44,15 @@ function collectTools(register) {
   return collected
 }
 
-const imageTools = collectTools(ctx => host.registerAgentImageTools(ctx, {}, () => ({
-  enabled: true,
-  allowAgentImageGeneration: true,
-  channels: [],
-  defaultChannelId: '',
-})))
-const videoTools = collectTools(ctx => host.registerAgentVideoTools(ctx, {}, () => ({
+const tools = collectTools(ctx => host.registerAgentCanvasTools(ctx, () => ({
   enabled: true,
   allowAgentVideoGeneration: true,
   channels: [],
   defaultChannelId: '',
 })))
-const catalogTools = collectTools(ctx => host.registerMediaModelsTool(ctx, () => ({
-  enabled: true,
-  announceToAgent: true,
-  snapshot: () => ({ status: 'ready', entries: [] }),
-})))
-const tools = [...imageTools, ...videoTools, ...catalogTools]
+/** 宿主自己的对话生成工具；插件再注册同名工具会让宿主启动时报重名。 */
+const HOST_TOOLS = ['generate_image', 'edit_image', 'generate_video', 'generate_video_from_image', 'get_image_generation_task',
+  'cancel_image_generation_task', 'get_video_generation_task', 'cancel_video_generation_task', 'list_media_models']
 
 // ---------------------------------------------------------------- 系统提示
 const guidance = host.IMAGEGEN_GUIDANCE
@@ -81,21 +72,13 @@ if (guidance.includes('${')) fail('system prompt carries template interpolation'
 // ---------------------------------------------------------------- 工具描述
 const names = tools.map(tool => tool.name)
 if (new Set(names).size !== names.length) fail('two tools share one name')
-if (!names.includes('list_media_models')) fail('list_media_models is not registered')
+for (const name of names.filter(candidate => HOST_TOOLS.includes(candidate))) fail(`${name} duplicates a host generation tool`)
 for (const tool of tools) {
   const length = [...tool.description].length
   if (length > TOOL_LIMIT) fail(`${tool.name} description is ${length} characters, over the ${TOOL_LIMIT} limit`)
 }
 pass(`${tools.length} tool descriptions are each within ${TOOL_LIMIT} characters`)
-// 生成工具的 model 参数必须指向清单工具，否则模型只能猜模型名。
-for (const tool of tools.filter(candidate => candidate.name.startsWith('generate_'))) {
-  const model = tool.parameters?.properties?.model
-  assert.ok(model !== undefined, `${tool.name} has no model parameter`)
-  if (!String(model.description).includes('list_media_models')) {
-    fail(`${tool.name} does not point model at list_media_models`)
-  }
-}
-pass('generation tools point model at list_media_models')
+pass('no tool duplicates a host generation tool')
 
 // ---------------------------------------------------------------- 快照
 const render = () => {
