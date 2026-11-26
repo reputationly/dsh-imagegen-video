@@ -40,6 +40,20 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
+      # 测试链里的帧抽取与界面契约检查需要 ffmpeg 和无头浏览器，缺了会判失败；
+      # 与 ci.yml 装同样的两样东西。
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install chrome-headless-shell
+        run: |
+          set -euo pipefail
+          npx --yes @puppeteer/browsers install chrome-headless-shell@stable \
+            --path "$HOME/.cache/chrome-headless"
+          SHELL_BIN=$(find "$HOME/.cache/chrome-headless" -name 'chrome-headless-shell' -type f | head -1)
+          test -n "$SHELL_BIN"
+          echo "CHROME_HEADLESS_SHELL=$SHELL_BIN" >> "$GITHUB_ENV"
+
       - name: Typecheck
         run: pnpm typecheck
 
