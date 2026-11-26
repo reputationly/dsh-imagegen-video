@@ -5,8 +5,8 @@
  * render. Generation costs the user money, and a model that can悄悄 spend it on
  * its own is a product decision no one has made: the Agent may lay out a graph,
  * write prompts into it and wire the nodes, and then the user presses run in the
- * canvas. Anything that submits a task belongs to `agent-image-tools.ts` /
- * `agent-video-tools.ts`, where the user asked for it explicitly.
+ * canvas. Anything that submits a task belongs to the `/edit_image` command or the
+ * host's chat generation tools, where the user asked for it explicitly.
  *
  * ## Writes are proposals
  *

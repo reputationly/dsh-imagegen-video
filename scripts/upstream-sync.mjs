@@ -52,7 +52,6 @@ const OUT_ROOT = join(ROOT, '.upstream')
 const OURS_ONLY = [
   /^src\/video-/, // the whole video chain exists only here
   /^src\/clip-/, // clip ordering / stitching
-  /^src\/agent-video-tools\.ts$/,
   /^src\/canvas-store\.ts$/, // video nodes live in the canvas document
   /^src\/client\/VideoPanel\.tsx$/,
   /^src\/client\/video-/,
