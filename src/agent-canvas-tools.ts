@@ -651,7 +651,7 @@ export function registerAgentCanvasTools(ctx: Context, config: () => { enabled: 
     })),
     ctx.tools.register(defineTool({
       name: 'read_canvas',
-      description: 'Read one canvas as a node graph: every node\'s id, type, title, position, prompt/model/text, plus the connections between them. Use the returned ids with the other canvas tools. Includes the changes you proposed that the user has not accepted yet (the same starting point the write tools use), so read it again after proposing instead of assuming your proposal is already on the canvas. This never starts a render.',
+      description: 'Read one canvas as a node graph: every node\'s id, type, title, position, prompt/model/text, plus the connections between them. Use the returned ids with the other canvas tools. Includes the changes you proposed that the user has not accepted yet, so read it again after proposing instead of assuming your proposal is already on the canvas. This never starts a render.',
       parameters: { canvas_id: { type: 'string', required: true, description: 'Canvas id from list_canvases.' } },
       output: {
         schema: canvasViewSchema,

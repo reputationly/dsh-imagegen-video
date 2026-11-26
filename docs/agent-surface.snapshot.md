@@ -8,19 +8,23 @@ diff.
 ## System prompt
 
 ```text
-本机有「创作」工作台（侧栏「创作」，可看历史与无限画布）。生图用 generate_image，改图用 edit_image（图片引用来自一次生成结果），生视频用 generate_video。不传 model 用该操作的默认模型；可用模型、玩法与参数见 list_media_models。默认等到任务结束：图片生成后把结果放在回复最前面，用 Markdown 图片语法展示，再写说明文字。视频渲染需要数分钟，提交后不要反复轮询。失败原因以工具结果为准，不要编造模型名。
+本机有「创作」工作台（侧栏「创作」，可看历史与无限画布）。用户要用模板、批量出图或在画布上编排时，引导用户到「创作」里操作。生视频用 generate_video，不传 model 用默认模型；可用模型、玩法与参数见 list_media_models。视频渲染需要数分钟，提交后不要反复轮询。失败原因以工具结果为准，不要编造模型名。
 ```
 
-Characters: 236
+Characters: 167
 
 ## Tools
 
-- `generate_image` (352): Generate an image. By default the call waits for the task and returns attachment references for each image; they are shown beside this tool call. Set wait_for_completion=false for background mode, then poll with get_image_generation_task. Omit model to use the default image model; call list_media_models for the models and parameters this account has.
-- `edit_image` (337): Edit an image with a prompt. source_image must be an image reference returned by a generation or get_image_generation_task, passed unchanged. By default the call waits and returns attachment references for the new image; set wait_for_completion=false for background mode. Omit model to use the default image model; see list_media_models.
-- `get_image_generation_task` (271): Check an image-generation task status. Completed tasks return image references; their images are shown beside this tool call and the references can be passed to edit_image. Generation tools normally wait for completion, so use this for explicit recovery or status checks.
-- `cancel_image_generation_task` (49): Cancel a queued or running image generation task.
 - `generate_video` (355): Generate a video from text. Rendering takes minutes, so by default the call waits for the task; set wait_for_completion=false for background mode, then poll with get_video_generation_task. The clip is saved on the host and returned as a same-origin URL, never attached to the conversation. Omit model to use the default video model; see list_media_models.
 - `generate_video_from_image` (353): Generate a video from reference image(s): mode image uses one reference frame, keyframe interpolates first and last frame, reference uses one or more style or subject images. References come from a finished generation or get_video_generation_task, passed unchanged. Rendering takes minutes; by default the call waits for the task. See list_media_models.
 - `get_video_generation_task` (216): Check a video-generation task status. Completed tasks return the served clip URL. Video renders usually take several minutes, so use this for polling or recovery instead of re-submitting; do not poll in a tight loop.
 - `cancel_video_generation_task` (49): Cancel a queued or running video generation task.
-- `list_media_models` (239): List the image and video models this account can use, with display name, modes, and parameter choices. Call it before choosing a model instead of guessing names; omit the model argument of a generation tool to use that operation's default.
+- `list_media_models` (229): List the video models this account can use, with display name, modes, and parameter choices. Call it before choosing a model instead of guessing names; omit the model argument of a generation tool to use that operation's default.
+- `list_canvases` (127): List the user's infinite-canvas projects with their ids, node counts and revision. Use this to find the canvas to read or edit.
+- `read_canvas` (367): Read one canvas as a node graph: every node's id, type, title, position, prompt/model/text, plus the connections between them. Use the returned ids with the other canvas tools. Includes the changes you proposed that the user has not accepted yet, so read it again after proposing instead of assuming your proposal is already on the canvas. This never starts a render.
+- `create_canvas` (88): Create a new empty canvas project. Returns its id; add nodes to it with add_canvas_node.
+- `add_canvas_node` (210): Add one node to a canvas. A config node holds a prompt and model and waits for the user to press run — adding a node never spends money. Omit x/y to place it in a free column to the right of the existing nodes.
+- `update_canvas_node` (162): Change one node's title, prompt, model, plain text, position, size, or (config nodes only) what pressing run should produce. Only the fields you pass are touched.
+- `remove_canvas_node` (49): Remove one node and every connection touching it.
+- `connect_canvas_nodes` (163): Connect one node's output to another node's input. This is what makes a canvas a runnable chain: the downstream node receives the upstream node's product as input.
+- `disconnect_canvas_nodes` (55): Remove the connection between two nodes, if one exists.

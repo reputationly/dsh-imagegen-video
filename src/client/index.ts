@@ -27,7 +27,6 @@ import { ImageGenSettingsSection, ImageGenSettingsCardController } from './Setti
 import { IMAGE_GEN_SECTION_ID, OPEN_IMAGE_GEN_CONFIG_EVENT } from './config-entry.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
 import { hostDirectoryPicker } from './host-directory.ts'
-import { registerImageToolviews, type ImageToolViewOwnerProps } from './image-toolview.tsx'
 import type { ConversationService } from './conversation-sync.ts'
 
 /** Locale namespace this plugin owns. */
@@ -45,11 +44,6 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** dsh-imagegen surface copy. */
     'dsh-imagegen': ImageGenKey
-  }
-
-  interface SlotMap {
-    /** Image-generation results render their durable image blocks inline. */
-    'tool.call.toolview': { kind: 'keyed'; scope: 'session'; owner: ImageToolViewOwnerProps }
   }
 }
 
@@ -105,7 +99,6 @@ export function apply(ctx: ClientContext): void {
     applyLocale()
     return ctx.locale.subscribe(applyLocale)
   }, 'dsh-imagegen: follow host locale')
-  registerImageToolviews(ctx)
 
   // The host route, not the page origin, decides whether the settings bridge
   // is reachable. A deployment commonly puts DSH behind a loopback reverse
@@ -256,4 +249,3 @@ export function apply(ctx: ClientContext): void {
   syncEnabled()
   ctx.effect(() => () => { uiLease.release() }, 'dsh-imagegen: client UI mount')
 }
-export { imageRefsOf } from './image-toolview.tsx'
