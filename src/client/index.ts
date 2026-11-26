@@ -22,7 +22,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { ImageGenApi } from './api.ts'
 import { tt, applyHostLocale } from './helpers.ts'
 import { en, ru, zh, type ImageGenKey } from './locales.ts'
-import { registerImageGenSlotSurface } from './slot-surface.tsx'
+import { IMAGE_GEN_PANEL_ID, registerImageGenSlotSurface } from './slot-surface.tsx'
+import { showImageGenGallery } from './config-entry.tsx'
 import { ImageGenSettingsSection, ImageGenSettingsCardController } from './SettingsCard.tsx'
 import { IMAGE_GEN_SECTION_ID, OPEN_IMAGE_GEN_CONFIG_EVENT } from './config-entry.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
@@ -48,6 +49,13 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /** Required services (fiber inject waiting — the runtime must be up first). */
+/** 宿主图片卡片交给「创作」的图片。 */
+interface CreativeImages {
+  prompt: string
+  model: string
+  images: Array<{ b64: string; mime: string }>
+}
+
 export const inject = ['slots', 'locale', 'connection', 'sessions', 'conversation']
 
 // Internals re-exported for the standalone smoke test (the browser bundle is
@@ -69,6 +77,26 @@ export function apply(ctx: ClientContext): void {
   // The host locale service only knows zh/en dictionaries (its type is
   // fixed); ru rides the untyped single-locale registration instead.
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-imagegen: dictionaries')
+  // 对话里生成的图片卡片点「在创作中打开」时调这里：收进画廊，再切到工作台的画廊。
+  ctx.provide('suanliCreative', {
+    openImages: async (input: CreativeImages): Promise<void> => {
+      await new ImageGenApi().galleryAppend({
+        id: '',
+        createdAt: Date.now(),
+        mode: 'text',
+        model: input.model,
+        prompt: input.prompt,
+        size: 'auto',
+        quality: 'auto',
+        detail: '',
+        n: input.images.length,
+        images: input.images,
+      })
+      const layout = ctx.get('layout') as { selectPanel: (id: string) => void } | undefined
+      layout?.selectPanel(IMAGE_GEN_PANEL_ID)
+      showImageGenGallery()
+    },
+  })
   // Russian ships as a language pack: the dictionary lands in this plugin's
   // namespace, and Russian joins the shared DSH language catalog (Settings →
   // General → Language) with per-key fallback to English for host copy.

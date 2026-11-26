@@ -11,6 +11,21 @@ export const IMAGE_GEN_SECTION_ID = 'dsh-imagegen'
 
 /** Event dispatched by in-app "configure" prompts. */
 export const OPEN_IMAGE_GEN_CONFIG_EVENT = 'dsh-imagegen:open-config'
+/** 已挂载的工作台切到画廊并重读画廊。 */
+export const SHOW_GALLERY_EVENT = 'dsh-imagegen:show-gallery'
+
+/** 请求在画廊打开；工作台此刻还没挂载时，挂载后取走这个请求。 */
+let galleryRequested = false
+export function takeGalleryRequest(): boolean {
+  const requested = galleryRequested
+  galleryRequested = false
+  return requested
+}
+
+export function showImageGenGallery(): void {
+  galleryRequested = true
+  window.dispatchEvent(new CustomEvent(SHOW_GALLERY_EVENT))
+}
 
 /** Settings groups an in-app prompt can jump to directly. */
 export type ImageGenConfigSection = 'storage' | 'skills' | 'ppt' | 'general'
