@@ -69,12 +69,15 @@ jobs:
       # dist 分支只追加：宿主按提交号固定 raw 地址，改写历史会让已发布的地址失效。
       # 同一个版本已经发过就停下，不覆盖；要重发请先改 package.json 的 version。
       - name: Publish to the dist branch
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           archive=$(ls *.tgz | head -1)
           package=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
-          remote=$(git remote get-url origin)
+          # 临时仓库拿不到 checkout 写在本地配置里的令牌，推送地址自带令牌。
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           work=$(mktemp -d)
           if git ls-remote --exit-code --heads "$remote" dist >/dev/null; then
             git clone -q --branch dist --single-branch "$remote" "$work"
