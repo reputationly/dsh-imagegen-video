@@ -32,7 +32,6 @@ export interface MediaModelsToolConfig {
 
 /** Operations this tool reports, in the order the workbench shows them. */
 const OPERATIONS: readonly { readonly operation: string; readonly title: string }[] = [
-  { operation: 'generate_image', title: 'image' },
   { operation: 'generate_video', title: 'video' },
 ]
 
@@ -80,7 +79,7 @@ export function mediaModelsListing(snapshot: { readonly status: GatewayStatus; r
   }
   if (sections.length === 0) {
     return snapshot.status === 'ready'
-      ? 'This account has no image or video model.'
+      ? 'This account has no video model.'
       : `The catalog is not available (status: ${snapshot.status}). Ask the user to sign in to the Create workbench.`
   }
   const body = sections.join('\n\n')
@@ -105,7 +104,7 @@ export function mediaModelsListing(snapshot: { readonly status: GatewayStatus; r
 export function registerMediaModelsTool(ctx: Context, config: () => MediaModelsToolConfig): () => void {
   return ctx.tools.register(defineTool({
     name: 'list_media_models',
-    description: 'List the image and video models this account can use, with display name, modes, and parameter choices. Call it before choosing a model instead of guessing names; omit the model argument of a generation tool to use that operation\'s default.',
+    description: 'List the video models this account can use, with display name, modes, and parameter choices. Call it before choosing a model instead of guessing names; omit the model argument of a generation tool to use that operation\'s default.',
     parameters: {},
     output: {
       schema: {
