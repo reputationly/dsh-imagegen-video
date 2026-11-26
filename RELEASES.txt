@@ -1,1 +1,2 @@
 @q253595422/dsh-imagegen-video 1.35.0-suanli.1 q253595422-dsh-imagegen-video-1.35.0-suanli.1.tgz
+@q253595422/dsh-imagegen-video 1.35.0-suanli.2 q253595422-dsh-imagegen-video-1.35.0-suanli.2.tgz
