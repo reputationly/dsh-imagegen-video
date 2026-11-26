@@ -90,8 +90,14 @@ jobs:
           if git fetch -q --depth 1 origin dist 2>/dev/null; then
             releases=$(git show FETCH_HEAD:RELEASES.txt 2>/dev/null || true)
           fi
-          # 这个提交已经发过（上次推完 dist、宿主 PR 没开成功后重跑）：沿用那个包，只补宿主 PR。
+          # 这个提交已经发过（上次推完 dist、宿主 PR 没开成功后重跑）：是最新一版就沿用它、只补宿主 PR；
+          # 之后又发过（例如文档提交手动重发），宿主该升到更新的那版，这次不动。
           released=$(printf '%s\n' "$releases" | awk -v sha="$GITHUB_SHA" '$4 == sha { line = $0 } END { print line }')
+          latest=$(printf '%s\n' "$releases" | awk 'NF { line = $0 } END { print line }')
+          if [ -n "$released" ] && [ "$released" != "$latest" ]; then
+            echo "::notice::$GITHUB_SHA was released before a newer build; this run does not touch the host"
+            exit 0
+          fi
           if [ -n "$released" ]; then
             read -r package version archive _ <<< "$released"
             {
