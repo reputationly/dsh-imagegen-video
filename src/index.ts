@@ -739,7 +739,8 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     return gatewayKey
   }
   void reloadGatewayKey().catch(() => { gatewayKey = '' })
-  ctx.effect(() => ctx.on('credentials/reference-updated', () => {
+  ctx.effect(() => ctx.on('credentials/reference-updated', (ref: string) => {
+    if (ref !== gatewayEndpoint()?.credential) return
     void reloadGatewayKey().catch(() => undefined)
   }), 'dsh-imagegen: gateway credential')
 
