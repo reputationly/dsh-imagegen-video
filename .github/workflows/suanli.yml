@@ -1,0 +1,103 @@
+# 蒜狸发行：把插件打成 tgz 并发布到 dist 分支。
+#
+# 小助手安装的是发行包本身，不是 npm 上的版本：宿主把 tgz 作为依赖，打包安装包时再用
+# `stage-external-packages` 取下来放进安装包，用户侧不联网。所以这条工作流只做一件事——
+# 通过全部门禁之后，把 `pnpm pack` 的产物提交到 `dist` 分支，文件名固定为
+# `<包名>-<版本>.tgz`（宿主的打包脚本按 `^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$` 匹配）。
+name: Suanli release
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: suanli-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Pack and publish the tarball
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the release branch
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 测试链里的帧抽取与界面契约检查需要 ffmpeg 和无头浏览器，缺了会判失败；
+      # 与 ci.yml 装同样的两样东西。
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install chrome-headless-shell
+        run: |
+          set -euo pipefail
+          npx --yes @puppeteer/browsers install chrome-headless-shell@stable \
+            --path "$HOME/.cache/chrome-headless"
+          SHELL_BIN=$(find "$HOME/.cache/chrome-headless" -name 'chrome-headless-shell' -type f | head -1)
+          test -n "$SHELL_BIN"
+          echo "CHROME_HEADLESS_SHELL=$SHELL_BIN" >> "$GITHUB_ENV"
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Negative checks
+        run: pnpm test:negative
+
+      - name: Pack
+        run: pnpm pack
+
+      # dist 分支只追加：宿主按提交号固定 raw 地址，改写历史会让已发布的地址失效。
+      # 同一个版本已经发过就停下，不覆盖；要重发请先改 package.json 的 version。
+      - name: Publish to the dist branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive=$(ls *.tgz | head -1)
+          package=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          # 临时仓库拿不到 checkout 写在本地配置里的令牌，推送地址自带令牌。
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          work=$(mktemp -d)
+          if git ls-remote --exit-code --heads "$remote" dist >/dev/null; then
+            git clone -q --branch dist --single-branch "$remote" "$work"
+          else
+            git init -q "$work"
+            git -C "$work" checkout -q --orphan dist
+          fi
+          if [ -e "$work/$archive" ]; then
+            echo "::error::$archive is already on dist; bump the version in package.json to publish again"
+            exit 1
+          fi
+          cp "$archive" "$work/"
+          printf '%s %s %s\n' "$package" "$version" "$archive" >> "$work/RELEASES.txt"
+          git -C "$work" add .
+          git -C "$work" -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            commit -q -m "dist: $package@$version"
+          git -C "$work" push "$remote" "HEAD:refs/heads/dist"
+          echo "dependency URL: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/$(git -C "$work" rev-parse HEAD)/$archive" >> "$GITHUB_STEP_SUMMARY"
+          rm -rf "$work"
+        shell: bash
+
+      - name: Report
+        run: echo "published $(node -p "require('./package.json').name")@$(node -p "require('./package.json').version") to the dist branch"

@@ -527,7 +527,7 @@ export interface PendingVideoTask {
   /**
    * When the submit succeeded. The poll deadline is counted from here, not from
    * the restart: a render that has already been running for 30 minutes must not
-   * get a fresh 40-minute budget (comemoe's ceiling), and a resumed task that
+   * get a fresh 40-minute budget (the family's poll ceiling), and a resumed task that
    * already exceeded it still gets one poll so a finished clip is not thrown
    * away.
    */

@@ -1515,16 +1515,13 @@ const ordering = [
   ['menu-flyout', 'menu-raised', 'the model flyout is a child of the model menu'],
   ['menu-raised', 'modal-backdrop', 'the model picker must clear the template library it can open over'],
   ['modal-backdrop', 'modal', 'the library backdrop sits above the settings editor backdrop'],
-  ['chat-resizer', 'takeover', 'the resize handle belongs to the column the panel takes over'],
   ['picker-backdrop', 'notice', 'the picker backdrop must cover the canvas notice (was a 60/60 tie)'],
-  ['notice', 'takeover', 'the canvas notice sits inside the panel container'],
-  ['scrim', 'takeover', 'the canvas modal scrim covers the whole panel it is opened over'],
   ['context-menu', 'scrim', 'the canvas context menu draws above the scrim it opened with'],
   ['popover-raised', 'scrim', 'the skills menu draws over its own scrim'],
   ['file-overlay', 'popover-raised', 'the file reader covers the skills popover'],
   ['diagnostics', 'file-overlay', 'the diagnostics record is a studio-wide overlay, so it covers the file reader'],
   ['diagnostics', 'context-menu', 'the diagnostics overlay is studio-wide, so it covers the canvas context menu anchored inside the studio'],
-  ['takeover', 'dock-raised', 'the panel container covers the compose strip'],
+  ['scrim', 'dock-raised', 'the canvas modal opens over the studio, compose strip included'],
   ['dock-raised', 'dock', 'the compose strip draws over the dock it floats above'],
   ['topbar', 'dock', 'the canvas top bar draws over the docks below it'],
   ['anchored-menu', 'topbar', 'the canvas background menu draws over the top bar'],
@@ -1558,13 +1555,11 @@ console.log(`stacking order holds for ${ordering.length} required comparisons`)
 // layer is not in this scale, so a rewrite could move the whole scale and still
 // satisfy every relative assertion. These are the values the layers had before
 // the scale existed; changing one is a deliberate decision, not a tidy-up.
-//   takeover   60 -- the panel container; sibling panels (task board, ssh) and
-//                    the shell's own column rules were written against it
 //   lightbox  1000 -- full-screen image preview, interleaves with the host's
 //                    own overlays
 //   guide     1100 -- the config guide, meant to sit above the plugin's own
 //                    fullest surface but below the host's dialogs
-const pinned = [['takeover', 60], ['lightbox', 1000], ['guide', 1100]]
+const pinned = [['lightbox', 1000], ['guide', 1100]]
 const moved = pinned.filter(([name, value]) => rungValue.get(name) !== value)
 if (moved.length > 0) {
   console.error('\nFAIL: a layer that interleaves with the host changed its number:')
@@ -1574,34 +1569,6 @@ if (moved.length > 0) {
   process.exit(1)
 }
 console.log(`host-facing rungs pinned: ${pinned.map(([name, value]) => `${name}=${value}`).join(', ')}`)
-
-// ------------------------------------------------- 3b. the host's window seat
-// On macOS the shell mounts `[data-shell-leading]` at the frame's top-left when
-// the sidebar is collapsed — it holds 打开侧边栏 and New Session. The shell draws
-// it at z-index 15 and publishes no variable to change that, so the only way the
-// studio (takeover 60) can avoid swallowing it is a rule of our own.
-// This is the failure that happened: 会话 kept its reopen control because its
-// view is `display: none`, and 生图 covered the same control, leaving no visible
-// way back to a wide sidebar. Neither the ordering table nor the pins can see
-// it — the seat is not in this scale at all — so it is asserted separately: the
-// rule that lifts the seat, and the rung it points at.
-const seatRule = /\[data-platform=['"]darwin['"]\]\s*\[data-shell-leading\]\s*\{\s*z-index:\s*var\(--z-shell-seat\)/
-const seatRung = rungValue.get('shell-seat')
-if (seatRung === undefined) {
-  console.error('\nFAIL: --z-shell-seat is not declared: the shell window seat has no layer of its own.')
-  process.exit(1)
-}
-if (!seatRule.test(read('panel.module.css'))) {
-  console.error('\nFAIL: the shell window seat is not lifted above the studio takeover.')
-  console.error('Without it, collapsing the sidebar in 生图 hides 打开侧边栏 behind the panel (z-index 15 vs 60).')
-  process.exit(1)
-}
-const takeoverRung = rungValue.get('takeover')
-if (!(seatRung > takeoverRung)) {
-  console.error(`\nFAIL: --z-shell-seat is ${seatRung}, not above the studio takeover (${takeoverRung}).`)
-  process.exit(1)
-}
-console.log(`shell window seat sits above the takeover: --z-shell-seat ${seatRung} > --z-takeover ${takeoverRung}`)
 
 // ------------------------------------------- 3c. panels vs the window drag band
 // On macOS the shell marks its title band with `[data-window-drag]`, which
@@ -1906,12 +1873,9 @@ const server = (await import('node:http')).createServer((req, res) => {
   // checks need the component relationship, not the whole app.
   if (req.url?.includes('toolbar=1') === true) res.end(toolbarPage)
   else if (req.url?.includes('stack=1') === true) res.end(stackPage)
-  else if (req.url?.includes('mainslot=1') === true) res.end(mainSlotPage)
   else if (req.url?.includes('sourcetabs=1') === true) res.end(sourceTabsPage)
-  else if (req.url?.includes('sidebartabs=1') === true) res.end(sidebarTabsPage)
   else if (req.url?.includes('shortcuts=1') === true) res.end(shortcutPage)
   else if (req.url?.includes('navscroll=1') === true) res.end(navScrollPage)
-  else if (req.url?.includes('historyscroll=1') === true) res.end(historyScrollPage)
   else if (req.url?.includes('settings850=1') === true) res.end(settingsPage)
   else res.end(page)
 })
@@ -2118,23 +2082,18 @@ console.log('canvas node root is a tab stop, so the toolbar is reachable by keyb
 // fit) and it is covered by its own check above. `tablist.ts` is the helper
 // itself, not a consumer.
 //
-// `.ts` is scanned too, and that is the point of this comment: the sidebar
-// switcher is built imperatively (`sidebar-entry.ts`, no React), so it declares
-// its roles with `setAttribute('role', …)` rather than a JSX attribute. While
-// this list was `.tsx`-only, adding `role="tab"` there was invisible to the
-// contract — issue #25's fix shipped two tabs with no arrow keys and no roving
-// tabIndex, and every gate stayed green. A role declared imperatively is the
-// same promise as one declared in JSX.
+// `.ts` is scanned too, and that is on purpose: a tablist declared with
+// `setAttribute('role', …)` instead of a JSX attribute is the same promise, and
+// it is invisible to a `.tsx`-only scan. That is how two tabs once shipped with
+// no arrow keys and no roving tabIndex while every gate stayed green.
 const TABLIST_FILES = readdirSync(clientDir)
   .filter(name => (name.endsWith('.tsx') || name.endsWith('.ts')) && name !== 'GooeyNav.tsx' && name !== 'tablist.ts')
 /**
  * `role="tablist"` / `setAttribute('role', 'tablist')` — a DECLARATION.
  *
- * The `(?<!\[)` is load-bearing: `'[role="tablist"]'` inside a querySelector
- * call is a string that CONTAINS the same characters, so a plain substring test
- * counts a selector as a declaration. `index.ts` queries
- * `'[role="tablist"][data-dsh-imagegen-session-tabs]'` to relabel the switcher;
- * without the lookbehind that file looks like a tablist it never renders.
+ * The `(?<!\[)` is load-bearing: a `querySelector('[role="tablist"]')` call
+ * holds the same characters inside a string, and without the lookbehind that
+ * file would look like a tablist it never renders.
  */
 const declaresTablist = source => /(?<!\[)role="tablist"/.test(source)
   || /setAttribute\(\s*'role'\s*,\s*'tablist'\s*\)/.test(source)
@@ -2171,6 +2130,106 @@ if (missingTablistContract.length > 0) {
 }
 console.log('every tablist wires the shared roving-tabIndex / arrow-key helper')
 
+// ------------------------------- 6. the surface is two shell slots, nothing else
+// The plugin appears in the shell ONLY through `sidebar.panellist` (the row whose
+// id is `imagegen`, ordered after the shell's own 0 and 10 rows) and the keyed
+// `main` panel. Everything it used to do by reaching into the shell — a two-tab
+// switcher above New Session, the sidebar's region area as a history host, a
+// container appended to the centre column — is gone. Three ways it could come
+// back are checked here: a third registration, a changed id/order/label, and a
+// DOM query or portal aimed at a surface the shell owns.
+const slotSurface = read('slot-surface.tsx')
+const slotProblems = []
+/** Every slot key the surface injects, in source order. */
+const injectedSlots = [...slotSurface.matchAll(/slots\.inject\(\s*'([^']+)'/g)].map(match => match[1])
+if (injectedSlots.join(',') !== 'main,sidebar.panellist') {
+  slotProblems.push(`the surface injects ${injectedSlots.join(',') || 'no slot'}; it must inject exactly main and sidebar.panellist`)
+}
+if (!/const PANEL_ID = 'imagegen'/.test(slotSurface)) {
+  slotProblems.push("PANEL_ID is no longer 'imagegen', the id the shell dispatches on")
+}
+// The main panel: keyed by the same id, and labelled 创作.
+if (!/register\(\{\s*name: 'main',\s*key: PANEL_ID,\s*label: \(\) => tt\('entry\.creative'\)\s*\},\s*Panel\)/.test(slotSurface)) {
+  slotProblems.push("the `main` registration is not { name: 'main', key: PANEL_ID, label: tt('entry.creative') }")
+}
+// The sidebar row: same id, order 20 (after the shell's 0 and 10), same label,
+// and the plugin's own icon as the row component.
+if (!/register\(\{\s*name: 'sidebar\.panellist',\s*id: PANEL_ID,\s*order: 20,\s*label: \(\) => tt\('entry\.creative'\),\s*\},\s*ImageGenPanelIcon\)/.test(slotSurface)) {
+  slotProblems.push("the `sidebar.panellist` registration is not { name, id: PANEL_ID, order: 20, label: tt('entry.creative') } with ImageGenPanelIcon")
+}
+// The label key itself: one `entry.creative` per dictionary, and the old
+// `entry.label` key is gone from every language.
+const localesSource = read('locales.ts')
+const creativeLabels = [...localesSource.matchAll(/'entry\.creative':\s*'([^']+)'/g)].map(match => match[1])
+if (creativeLabels.join('|') !== '创作|Create|Создать') {
+  slotProblems.push(`entry.creative must be 创作 / Create / Создать in zh / en / ru, found ${creativeLabels.join(' / ') || 'nothing'}`)
+}
+if (/'entry\.label':/.test(localesSource)) {
+  slotProblems.push("the retired 'entry.label' key is still in the dictionaries")
+}
+// The takeover modules are gone, and nothing re-exports their test hooks.
+for (const gone of ['sidebar-entry.ts', 'mount.tsx']) {
+  if (existsSync(new URL(gone, clientDir))) slotProblems.push(`${gone} is back: the plugin must not take over the shell's DOM`)
+}
+if (/sidebarEntryTestHooks/.test(read('index.ts'))) {
+  slotProblems.push('index.ts still exports sidebarEntryTestHooks')
+}
+if (slotProblems.length > 0) {
+  console.error('\nFAIL: the plugin surface is no longer the two shell slots.')
+  for (const problem of slotProblems) console.error(`  - ${problem}`)
+  console.error('The shell owns the centre column and the sidebar. A third registration,')
+  console.error('another id, or a different order puts 创作 somewhere the shell never')
+  console.error('reserves for it; the label key is what the row and the plugin page share.')
+  process.exit(1)
+}
+console.log(`surface: sidebar.panellist#imagegen (order 20) + main#imagegen, labels ${creativeLabels.join(' / ')}`)
+
+// No client module addresses a shell surface. A shell mark in a selector is the
+// signature of the removed takeover: the centre column (`data-slot="main"`,
+// `data-pane="conversation"`, the hashed `centerCol` class), the sidebar
+// (`data-slot="sidebar.*"`, `data-pane="sidebar"`, `data-sidebar-*`) and the
+// window chrome. Portals and lookups may only use the plugin's OWN marks
+// (`data-dsh-imagegen-*`), which is what `ImageGenPanel` does for the history
+// host, or the generic dialog affordances `index.ts` reads to open Settings.
+const SHELL_MARKS = ['data-slot=', 'data-pane=', 'data-sidebar', 'centerCol', 'data-shell-leading', 'data-window-drag']
+const shellOffenders = []
+for (const name of readdirSync(clientDir, { recursive: true })) {
+  const file = String(name)
+  if (!/\.tsx?$/.test(file)) continue
+  const source = read(file)
+  for (const mark of SHELL_MARKS) {
+    if (!source.includes(mark)) continue
+    shellOffenders.push(`${file}: mentions ${mark}`)
+  }
+}
+if (shellOffenders.length > 0) {
+  console.error('\nFAIL: a client module addresses the shell\'s own DOM.')
+  for (const offender of shellOffenders) console.error(`  - ${offender}`)
+  console.error('The studio renders inside the shell\'s keyed `main` slot and never styles or')
+  console.error('queries the shell\'s columns: those marks belong to surfaces this plugin does')
+  console.error('not own, and a rule or lookup that names one breaks on the next shell release.')
+  process.exit(1)
+}
+// Portals: an overlay may portal into `document.body` or into a node the plugin
+// itself renders (a ref, or the component's own container prop). `document.body`
+// is the page, not a shell surface; anything else resolved by hand off the
+// document is the shell's, and mounting the studio's overlays there is how the
+// removed takeover reached into the centre column.
+const portalOffenders = []
+for (const name of readdirSync(clientDir, { recursive: true })) {
+  const file = String(name)
+  if (!/\.tsx?$/.test(file)) continue
+  for (const match of read(file).matchAll(/createPortal\(([\s\S]{0,300})/g)) {
+    if (/document\.(?!body\b)/.test(match[1])) portalOffenders.push(`${file}: ${match[1].split('\n')[0].trim()}`)
+  }
+}
+if (portalOffenders.length > 0) {
+  console.error('\nFAIL: a portal mounts the plugin\'s UI into an element the shell owns.')
+  for (const offender of portalOffenders) console.error(`  - ${offender}`)
+  process.exit(1)
+}
+console.log(`client DOM: no shell mark in ${readdirSync(clientDir, { recursive: true }).filter(name => /\.tsx?$/.test(String(name))).length} modules, portals stay in the plugin's own subtree`)
+
 // --- 3. hidden node toolbars in a REAL browser ------------------------------
 // Layout, not source text: whether a hidden toolbar is still a tab stop, and
 // whether focusing one makes it visible. jsdom has no layout engine, so this is
@@ -2200,8 +2259,8 @@ const toolbarPage = `<!doctype html><html><head><style>
 // though every source-level invariant (distinct rungs, doc table, relative
 // order) stays green. Paint order is a fact only the browser can report.
 const videoPickerCss = read('canvas-video-picker.module.css')
-// panel.module.css carries the :root scale every module reads, and mount.tsx
-// imports it globally, so the fixture loads it the same way.
+// panel.module.css carries the :root scale every module reads, so the fixture
+// loads it the same way the client bundle does.
 const scaleCss = read('panel.module.css')
 const stackPage = `<!doctype html><html><head><style>
   body { margin: 0; }
@@ -2250,225 +2309,6 @@ const sourceTabsPage = `<!doctype html><html><head><style>
       ${tabMarkup}
     </div>
   </div>
-</body></html>`
-
-/**
- * The real `alignToSeat` from `sidebar-entry.ts`, with its type annotations
- * stripped so a plain browser can evaluate it.
- *
- * Reading the function out of the source (rather than re-typing it here) is the
- * whole point: the check must fail when the shipped logic changes, not when a
- * copy of it drifts. If the function is renamed or removed this throws instead,
- * so the check cannot silently stop covering it.
- *
- * Its second parameter is the SEAT the switcher was inserted before, which is
- * the New Session button only in shells that do not wrap the action. This page
- * reproduces the unwrapped 0.2.1 arrangement, so it passes the button; the
- * wrapped 0.2.2-rc.3 arrangement is covered by smoke D3c, which mounts the real
- * entry instead of lifting one function out of it.
- */
-const sidebarAlignScript = (() => {
-  const source = read('sidebar-entry.ts')
-  const match = source.match(/function alignToSeat\(tabs: HTMLElement, seat: HTMLElement\): void \{[\s\S]*?\n\}/)
-  if (match === null) {
-    console.error('\nFAIL: alignToSeat is gone from sidebar-entry.ts.')
-    console.error('The sidebar alignment check lifts that function into the page; without it there is')
-    console.error('nothing to exercise, and the check would pass by measuring a page it never aligned.')
-    process.exit(1)
-  }
-  return match[0]
-    .replace(/\(tabs: HTMLElement, seat: HTMLElement\): void/, '(tabs, seat)')
-    .replace(/\/\*\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '')
-})()
-
-// --- the injected switcher lines up with the shell's New Session button -----
-// Issue #25. The switcher is a SIBLING of the shell button, inserted with
-// `insertBefore`, so it inherits that button's alignment contract or it does
-// not line up at all. Two things decide it and neither is visible in a source
-// review: `box-sizing` (content-box makes `width: 100%` overflow its parent by
-// padding + border) and the horizontal inset.
-//
-// This fixture is reproduced from a LIVE shell (dsh 0.2.1-rc.5), and that is
-// the point of the second half of issue #25. The first version of this page
-// declared `--dsh-sidebar-paint-inset: 3px` on `body`, which matched the
-// fallback in the stylesheet and therefore only agreed with itself. The real
-// shell defines NO such property on any ancestor: its New Session button
-// carries a hard-coded `margin: 2px`. So this page defines no inset variable at
-// all, the button's margin is 2px, and the switcher has to measure it.
-//
-// The palette is the light theme on purpose. The defect was never about colour
-// -- it measured pixels of horizontal drift and a wrong vertical gap -- so the
-// fixture stays a light surface and the numbers are the whole assertion.
-const sidebarTabsPage = `<!doctype html><html><head><style>
-  body { margin: 0;
-    --dsw-alias-border-l1: #d9dade;
-    --dsw-alias-bg-layer-1: #ffffff;
-    --dsw-alias-label-primary: #17171c;
-    --dsw-alias-label-secondary: #5b5e6b;
-    --dsw-radius-md: 8px;
-    --dsw-radius-sm: 6px;
-  }
-  /* A block-level <button> with an auto width is fit-content, not fill: the
-     column has to be a flex column so both children stretch and their shared
-     margin — not a width declaration — decides where each edge lands. That is
-     the arrangement the live shell has, and the only one where the two boxes
-     can be compared at all. */
-  #root { width: 280px; padding: 6px 8px; box-sizing: border-box; display: flex; flex-direction: column; }
-  /* The shell's own button, as measured live: border-box, block, auto width,
-     and a flat 2px inline margin with no custom property behind it. */
-  .newSession {
-    box-sizing: border-box;
-    display: block;
-    width: auto;
-    height: 38px;
-    margin: 0 2px 12px;
-    padding: 0 12px;
-    border: 1px solid #d9dade;
-    border-radius: 8px;
-    background: #ffffff;
-    font: 13px/1.2 system-ui, sans-serif;
-  }
-  ${browserCss(read('panel.module.css'))}
-</style></head><body>
-  <div id="root">
-    <div class="sessionTabs" id="tabs" data-dsh-imagegen-session-tabs role="tablist" aria-label="会话 / 生图">
-      <button class="sessionTab" id="tabSession" role="tab" aria-selected="true" tabindex="0"><span class="sessionTabIcon"></span><span class="sessionTabLabel">会话</span></button>
-      <button class="sessionTab" id="tabImage" role="tab" aria-selected="false" tabindex="-1"><span class="sessionTabIcon"></span><span class="sessionTabLabel">生图</span></button>
-    </div>
-    <button class="newSession" data-dsh-imagegen-new-session aria-label="新建会话">新建会话</button>
-  </div>
-  <script>
-    // The REAL function, lifted out of sidebar-entry.ts and evaluated here. A
-    // fixture that hard-codes the expected margins cannot notice the expected
-    // answer changing -- and this very check passed the 4px-vs-2px defect it
-    // exists to catch, precisely because it wrote the margins itself.
-    ${sidebarAlignScript}
-    alignToSeat(document.getElementById('tabs'), document.querySelector('.newSession'))
-  </script>
-</body></html>`
-
-// --- the history surface owns its wheel events ------------------------------
-// DSH 0.2.2's sidebar runs a scroll handoff: a `wheel` listener (`passive:
-// false`) on `[data-sidebar-scrollport]` that, for every event NOT aimed at its
-// own session tree, calls `preventDefault()` and scrolls that tree instead. The
-// handed-off tree is an ANCESTOR-and-sibling arrangement around the region this
-// plugin paints its history into, so in the studio the visible list froze while
-// an invisible one scrolled behind it.
-//
-// The handoff below is copied from the 0.2.2 bundle (`createScrollHandoff`),
-// because the host that ships it is not a dependency of this repository — the
-// check needs its behaviour, not its package.
-const historyHandoffScript = `
-  const GESTURE_GAP_MS = 100
-  function verticalWheelPixels (event, page) {
-    if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return undefined
-    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16
-    if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * page
-    return event.deltaY
-  }
-  function scrollClamped (element, delta) { const before = element.scrollTop; element.scrollTop = before + delta; return element.scrollTop - before }
-  function atEnd (viewport) { return viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop < 1 }
-  function installHandoff (viewport, scroller) {
-    let lastSplit = Number.NEGATIVE_INFINITY
-    viewport.addEventListener('wheel', event => {
-      if (scroller === null || event.defaultPrevented) return
-      const delta = verticalWheelPixels(event, viewport.clientHeight)
-      if (delta === undefined || delta === 0) return
-      if (!(event.cancelable && event.timeStamp - lastSplit < GESTURE_GAP_MS)) {
-        const native = atEnd(viewport) && scroller.contains(event.target)
-        if (native && (delta > 0 || scroller.scrollTop + delta >= 0)) return
-        if (!event.cancelable) { if (native) scrollClamped(viewport, delta + scroller.scrollTop); return }
-      }
-      event.preventDefault()
-      lastSplit = event.timeStamp
-      if (delta > 0) { const rest = delta - scrollClamped(viewport, delta); if (rest > 0) scrollClamped(scroller, rest); return }
-      const rest = delta - scrollClamped(scroller, delta)
-      if (rest < 0) scrollClamped(viewport, rest)
-    }, { passive: false })
-  }
-`
-
-/**
- * The real `containHistoryWheel` from `sidebar-entry.ts`, type annotations
- * stripped so a plain browser can evaluate it.
- *
- * Lifted from the source for the same reason as `alignToSeat` above: a copy
- * would keep passing after the shipped logic changed, which is the failure this
- * check exists to catch.
- */
-const historyWheelScript = (() => {
-  const source = read('sidebar-entry.ts')
-  const match = source.match(/function containHistoryWheel\(host: HTMLElement\): void \{[\s\S]*?\n\}/)
-  if (match === null) {
-    console.error('\nFAIL: containHistoryWheel is gone from sidebar-entry.ts.')
-    console.error('The history wheel check lifts that function into the page; without it there is')
-    console.error('nothing to exercise, and the check would pass by measuring a page it never protected.')
-    process.exit(1)
-  }
-  // The function reads the module-level attribute name, which is not in scope
-  // once it is lifted out of the module. Taken from the source rather than
-  // retyped, so renaming the attribute cannot leave the fixture silently
-  // marking nothing.
-  const attr = source.match(/const WHEEL_CONTAINER_ATTR = '([^']+)'/)
-  if (attr === null) {
-    console.error('\nFAIL: WHEEL_CONTAINER_ATTR is gone from sidebar-entry.ts.')
-    process.exit(1)
-  }
-  return `const WHEEL_CONTAINER_ATTR = '${attr[1]}'\n` + match[0]
-    .replace(/\(host: HTMLElement\): void/, '(host)')
-    .replace(/\/\*\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '')
-})()
-
-// The DOM is the one 0.2.2 renders around the history host: a scroll viewport
-// that owns the session tree, the region the tree sits in, and the plugin's
-// absolutely-positioned host on top of it. The list is tall enough to scroll
-// and the tree tall enough to prove it did not move instead.
-const historyScrollPage = `<!doctype html><html data-dsh-imagegen-active><head><style>
-  body { margin: 0;
-    --dsw-alias-border-l1: #d9dade;
-    --dsw-alias-border-l2: #e6e7ea;
-    --dsw-alias-bg-layer-1: #ffffff;
-    --dsw-alias-bg-layer-2: #f7f7f8;
-    --dsw-alias-label-primary: #17171c;
-    --dsw-alias-label-secondary: #5b5e6b;
-    --dsw-alias-label-tertiary: #8a8d99;
-    --dsw-radius-md: 8px;
-    --dsw-radius-sm: 6px;
-  }
-  #column { width: 280px; height: 640px; display: flex; flex-direction: column; }
-  /* The shell's scroll viewport. Overflow is hidden (it scrolls nothing
-     itself), it owns the session tree and the region, and it is what carries
-     the wheel listener. */
-  #scrollport { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-  #tree { flex: 0 0 auto; height: 120px; overflow: hidden; }
-  #treeScroll { height: 100%; overflow-y: auto; }
-  #treeScroll div { height: 40px; }
-  #region { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-  ${browserCss(read('panel.module.css'))}
-</style></head><body>
-<div id="column">
-  <div id="scrollport" data-sidebar-scrollport>
-    <div id="tree"><div id="treeScroll">${Array.from({ length: 60 }, (_, i) => `<div>session ${i}</div>`).join('')}</div></div>
-    <div id="region">
-      <div class="sidebarHistoryHost" id="host" data-dsh-imagegen-history-host>
-        <aside class="history" data-dsh-imagegen-history>
-          <header class="historyHeader"><span class="historyTitle">历史记录</span></header>
-          <div class="historyList" id="list">${Array.from({ length: 40 }, (_, i) => `<div class="historyItem"><span class="historyPrompt">第 ${i} 条记录，用来把列表撑到可以滚动的高度</span></div>`).join('')}</div>
-        </aside>
-      </div>
-    </div>
-  </div>
-</div>
-<script>
-  ${historyHandoffScript}
-  ${historyWheelScript}
-  // The tree is INSIDE the scroll viewport, as the shell's is; without the
-  // containment every wheel over the list would be forwarded to it.
-  installHandoff(document.getElementById('scrollport'), document.getElementById('treeScroll'))
-  containHistoryWheel(document.getElementById('host'))
-</script>
 </body></html>`
 
 // --- the shortcut legend fits the canvas it opens over ----------------------
@@ -2534,32 +2374,6 @@ const shortcutPage = `<!doctype html><html><head><style>
   </div>
 </body></html>`
 
-// --- the keyed `main` slot is single-occupant (#38) -------------------------
-// The plugin market page and the Conversation both register into the shell's
-// keyed `main` slot. The studio takeover rule hid UNRELATED entries on the
-// column's direct-child axis and deliberately let the `main` anchor through,
-// because the Conversation lives inside it -- which left the market page
-// rendering inside that anchor at the same time, so switching to the studio
-// appeared to do nothing. The fix hides the anchor's non-Conversation entries.
-//
-// Measured here rather than read, because two things the source cannot show
-// decide the outcome: the anchor is `display: contents` (so the hidden entry is
-// laid out by the column), and the minifier escapes the dotted attribute value
-// in the Conversation branch, which is why the rule matches the chat entry
-// POSITIVELY and one bad branch would void the whole selector list.
-const mainSlotPage = `<!doctype html><html><head><style>
-  body { margin: 0; }
-  ${scaleCss}
-</style></head><body>
-  <div id="centre" data-dsh-imagegen-center-col>
-    <div data-dsh-imagegen-view id="studio">studio</div>
-    <div data-slot="main" style="display: contents">
-      <div data-slot="main.conversation" style="display: contents"><div id="conversation" data-phase="hero">conversation</div></div>
-      <div id="shellPanel">plugin market page</div>
-    </div>
-    <div data-other-plugin-entry id="otherEntry">another plugin</div>
-  </div>
-</body></html>`
 // Serve it from the same server by swapping the body through a query flag.
 const toolbarTarget = await (await fetch(`http://127.0.0.1:${launched.port}/json/new?${encodeURIComponent(`http://127.0.0.1:${port}/?toolbar=1`)}`, { method: 'PUT' })).json()
 const ws2 = new WebSocket(toolbarTarget.webSocketDebuggerUrl)
@@ -2687,74 +2501,6 @@ if (!stack.topIsPicker) {
 }
 console.log('stacking: the picker backdrop covers the notice regardless of render order')
 
-// --- the keyed `main` slot yields the column to the studio (#38) ------------
-// Switching to the studio used to leave a shell panel rendering inside the same
-// `main` anchor as the Conversation, so the studio never appeared to take over.
-// The activation attribute is set HERE (the shell sets it when the entry is
-// clicked), and the assertion reads COMPUTED display: only the cascade proves
-// the market page is gone, because the element is still mounted either way.
-const mainTarget = await (await fetch(`http://127.0.0.1:${launched.port}/json/new?${encodeURIComponent(`http://127.0.0.1:${port}/?mainslot=1`)}`, { method: 'PUT' })).json()
-const ws4 = new WebSocket(mainTarget.webSocketDebuggerUrl)
-await new Promise(r => { ws4.onopen = r })
-let id4 = 0
-const send4 = (method, params) => new Promise(resolve => {
-  const myId = ++id4
-  const onMessage = e => { const m = JSON.parse(e.data); if (m.id === myId) { ws4.removeEventListener('message', onMessage); resolve(m) } }
-  ws4.addEventListener('message', onMessage)
-  ws4.send(JSON.stringify({ id: myId, method, params }))
-})
-await send4('Runtime.enable', {})
-await new Promise(r => setTimeout(r, 300))
-const takeover = await send4('Runtime.evaluate', {
-  expression: `(() => {
-    document.documentElement.setAttribute('data-dsh-imagegen-active', '')
-    const display = id => getComputedStyle(document.getElementById(id)).display
-    return {
-      shellPanel: display('shellPanel'),
-      conversation: display('conversation'),
-      studio: display('studio'),
-      otherEntry: display('otherEntry'),
-      anchor: display('centre'),
-    }
-  })()`,
-  returnByValue: true,
-  awaitPromise: true,
-})
-if (takeover.result?.exceptionDetails !== undefined) {
-  throw new Error(`page threw: ${JSON.stringify(takeover.result.exceptionDetails)}`)
-}
-const slot = takeover.result.result.value
-console.log(`main slot: shell panel=${slot.shellPanel}, conversation=${slot.conversation}, studio=${slot.studio}, other plugin=${slot.otherEntry}`)
-if (slot.shellPanel !== 'none') {
-  console.error('\nFAIL: a shell panel inside the keyed `main` slot is still rendered (#38).')
-  console.error('The Conversation and a shell-global panel (the plugin market page)')
-  console.error('both register into that one slot, so the studio shares the column with a')
-  console.error('live panel and switching to it looks like it did nothing.')
-  process.exit(1)
-}
-if (slot.conversation === 'none') {
-  console.error('\nFAIL: the takeover hid the Conversation along with the shell panel.')
-  console.error('The studio keeps the conversation in its chat track, so the rule has to')
-  console.error('let the phase-bearing Conversation entry through.')
-  process.exit(1)
-}
-if (slot.studio === 'none') {
-  console.error('\nFAIL: the studio never became visible, so the fixture proves nothing.')
-  process.exit(1)
-}
-// The other half of the same takeover: an unrelated plugin entry that sits in
-// the column is evicted. Without this assertion the rule could stop matching
-// (as it did when the column was addressed by `[class*='centerCol']` and this
-// fixture still spelled the class) and the check would stay green.
-if (slot.otherEntry !== 'none') {
-  console.error('\nFAIL: an unrelated center-column plugin entry is still rendered inside the studio.')
-  console.error('The takeover is single-occupant: only the studio view, the keyed `main`')
-  console.error('anchor and the chat resizer may stay, so everything else in the column')
-  console.error('has to yield while the studio is active.')
-  process.exit(1)
-}
-console.log('main slot: the shell panel yields the column while the conversation stays')
-
 // --- the source row has to stay reachable as the registry grows -------------
 // The contract check above reads the declarations; a declaration is not the
 // same thing as a row a user can reach. This one only the browser can settle,
@@ -2849,135 +2595,6 @@ if (afterTabs.verticallyClipped) {
   process.exit(1)
 }
 console.log('source row: the last tab scrolls into view and hit-tests to itself')
-
-// --- the injected switcher lines up with the shell button (issue #25) -------
-// `openPage` from the shared launcher instead of a hand-rolled CDP session:
-// this file already carries seven of them, all numbered, and a duplicate `ws7`
-// is a syntax error rather than a bug you get to debug.
-const sidebarPage = await openPage(launched.port, `http://127.0.0.1:${port}/?sidebartabs=1`)
-// `openPage` returns as soon as the target exists, which can be before the
-// navigation commits. Polling for the element is the honest wait: a fixed sleep
-// would pass on this machine and fail on a slower one, and evaluating against a
-// blank document reports `null.getBoundingClientRect` rather than a layout bug.
-let sidebarReady = false
-for (let i = 0; i < 60; i++) {
-  sidebarReady = await sidebarPage.evaluate(`document.readyState === 'complete' && document.getElementById('tabs') !== null && document.querySelector('.newSession') !== null`)
-  if (sidebarReady === true) break
-  await new Promise(r => setTimeout(r, 50))
-}
-if (sidebarReady !== true) {
-  console.error('\nFAIL: the sidebar fixture never rendered its switcher and New Session button.')
-  console.error('That is a broken fixture, not a passing check: nothing was measured.')
-  process.exit(1)
-}
-
-// Sub-pixel: 272 vs 256px is 16px of drift, but the two edges can disagree by
-// a fraction after the browser rounds a calc() margin. A half-pixel is the
-// tolerance; anything a person could see is far past it.
-const sidebarGeometry = await sidebarPage.evaluate(`(() => {
-  const r = e => { const q = e.getBoundingClientRect(); return { left: q.left, right: q.right, width: q.width, top: q.top, bottom: q.bottom } }
-  const tabs = document.getElementById('tabs')
-  const button = document.querySelector('.newSession')
-  const t = r(tabs)
-  const b = r(button)
-  return {
-    tabs: t,
-    button: b,
-    leftDrift: Math.abs(t.left - b.left),
-    rightDrift: Math.abs(t.right - b.right),
-    gap: b.top - t.bottom,
-    boxSizing: getComputedStyle(tabs).boxSizing,
-    marginLeft: getComputedStyle(tabs).marginLeft,
-    marginRight: getComputedStyle(tabs).marginRight,
-    marginBottom: getComputedStyle(tabs).marginBottom,
-    columnWidth: document.getElementById('root').getBoundingClientRect().width,
-  }
-})()`)
-const fmt = n => `${Math.round(n * 100) / 100}px`
-console.log(`sidebar switcher: tabs ${fmt(sidebarGeometry.tabs.left)}..${fmt(sidebarGeometry.tabs.right)}, `
-  + `button ${fmt(sidebarGeometry.button.left)}..${fmt(sidebarGeometry.button.right)}, `
-  + `drift L/R ${fmt(sidebarGeometry.leftDrift)}/${fmt(sidebarGeometry.rightDrift)}, gap ${fmt(sidebarGeometry.gap)}, `
-  + `box ${sidebarGeometry.boxSizing}`)
-
-const sidebarProblems = []
-if (sidebarGeometry.boxSizing !== 'border-box') {
-  sidebarProblems.push(`the switcher computes box-sizing: ${sidebarGeometry.boxSizing}, so width:100% adds its padding and border on top`)
-}
-if (sidebarGeometry.leftDrift > 0.5) {
-  sidebarProblems.push(`its left edge is ${fmt(sidebarGeometry.leftDrift)} off the New Session button's`)
-}
-if (sidebarGeometry.rightDrift > 0.5) {
-  sidebarProblems.push(`its right edge is ${fmt(sidebarGeometry.rightDrift)} off the New Session button's — the left drift alone does not catch the width overflow`)
-}
-if (Math.abs(sidebarGeometry.gap - 8) > 0.5) {
-  sidebarProblems.push(`the gap above New Session is ${fmt(sidebarGeometry.gap)}, not the 8px every seat now carries`)
-}
-if (sidebarProblems.length > 0) {
-  console.error('\nFAIL: the injected session/image switcher does not line up with the shell button (issue #25):')
-  for (const problem of sidebarProblems) console.error(`  - ${problem}`)
-  console.error('It is a sibling of that button, so the two have to share one inset. Left drift,')
-  console.error('right drift and the vertical gap are three separate consequences of the same')
-  console.error('box model, and a source review can see none of them.')
-  process.exit(1)
-}
-console.log('sidebar switcher: same inset and one 8px gap against the shell button')
-
-// --- the history surface owns its wheel events ------------------------------
-// Measured with real wheel input, because the defect is a real-browser one: the
-// shell's handoff calls preventDefault() on the same bubble path, and nothing
-// in jsdom can tell you whether the browser then scrolled the list or not.
-const historyPage = await openPage(launched.port, `http://127.0.0.1:${port}/?historyscroll=1`)
-let historyReady = false
-for (let i = 0; i < 60; i++) {
-  historyReady = await historyPage.evaluate(`document.readyState === 'complete' && document.getElementById('list') !== null && document.getElementById('host').hasAttribute('data-dsh-imagegen-wheel-owner')`)
-  if (historyReady === true) break
-  await new Promise(r => setTimeout(r, 50))
-}
-if (historyReady !== true) {
-  console.error('\nFAIL: the history fixture never installed its wheel containment.')
-  console.error('Either the page did not load or containHistoryWheel did not mark the host;')
-  console.error('nothing was measured either way.')
-  process.exit(1)
-}
-await historyPage.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false })
-const historyGeometry = await historyPage.evaluate(`(() => {
-  const list = document.getElementById('list')
-  const tree = document.getElementById('treeScroll')
-  list.scrollTop = 0
-  tree.scrollTop = 0
-  const r = list.getBoundingClientRect()
-  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + Math.min(100, r.height / 2)), listScrollable: list.scrollHeight - list.clientHeight, treeScrollable: tree.scrollHeight - tree.clientHeight }
-})()`)
-if (historyGeometry.listScrollable < 200 || historyGeometry.treeScrollable < 200) {
-  console.error('\nFAIL: the history fixture cannot show the defect.')
-  console.error(`list scrollable ${historyGeometry.listScrollable}px, tree scrollable ${historyGeometry.treeScrollable}px —`)
-  console.error('both have to overflow, or "the list scrolled" and "the tree scrolled instead" are')
-  console.error('indistinguishable from "there was nothing to scroll".')
-  process.exit(1)
-}
-await historyPage.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: historyGeometry.x, y: historyGeometry.y })
-await new Promise(r => setTimeout(r, 80))
-for (let i = 0; i < 3; i++) {
-  await historyPage.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: historyGeometry.x, y: historyGeometry.y, deltaX: 0, deltaY: 200 })
-  await new Promise(r => setTimeout(r, 120))
-}
-await new Promise(r => setTimeout(r, 200))
-const historyAfter = await historyPage.evaluate(`({ list: Math.round(document.getElementById('list').scrollTop), tree: Math.round(document.getElementById('treeScroll').scrollTop) })`)
-historyPage.close()
-if (historyAfter.list < 100) {
-  console.error('\nFAIL: a wheel over the history surface does not scroll the history list.')
-  console.error(`After three wheel steps the list is at ${historyAfter.list}px and the shell's session tree at ${historyAfter.tree}px.`)
-  console.error('DSH 0.2.2 runs a scroll handoff on an ancestor of this host: for any event that is')
-  console.error('not its own tree it calls preventDefault() and scrolls the tree instead, which in the')
-  console.error('studio is painted over by the list. The host has to claim its own wheel events.')
-  process.exit(1)
-}
-if (historyAfter.tree > 0) {
-  console.error('\nFAIL: the wheel over the history list also scrolled the shell session tree.')
-  console.error(`list ${historyAfter.list}px, tree ${historyAfter.tree}px — the handoff still received the event.`)
-  process.exit(1)
-}
-console.log(`history list: wheel scrolled it ${historyAfter.list}px while the shell session tree stayed at ${historyAfter.tree}px`)
 
 // --- the shortcut legend fits the canvas it opens over ----------------------
 const shortcutTarget = await (await fetch(`http://127.0.0.1:${launched.port}/json/new?${encodeURIComponent(`http://127.0.0.1:${port}/?shortcuts=1`)}`, { method: 'PUT' })).json()
@@ -3215,27 +2832,25 @@ for (const state of observed) {
 }
 console.log('nav pill: follows the active tab at every scroll offset, no double label')
 
-// --- #14: a long model-alias badge must not push the channel row out --------
-// `.channelBadge` carried `white-space: nowrap` with no way to shrink, so a
-// channel whose catalog is a long alias list set the row's min-content width.
-// In the host's 850px settings window (≈640px of pane) the rows ran wider than
-// the card, and `.settingsSection`'s `overflow: clip` swallowed the excess with
-// no scrollbar -- the user saw a cut edge and had no way to know content was
-// there. Measured in a real browser because this is entirely a layout outcome:
-// jsdom has no layout engine and would report a width of 0 for everything.
+// --- #14: a long configured path must not push the card out of its pane -----
+// The settings card is a grid item of the host's 850px settings window (≈640px
+// of pane). `.settingsSection` used to clip its overflow (`overflow: clip`), so
+// anything wider than the card was swallowed with no scrollbar and no hint that
+// content was reachable. Two invariants survive that fix and are measured here:
+// the card stays inside the pane (its `min-width: 0` chain is what lets a wide
+// child wrap instead of widening the grid track), and the section's overflow
+// stays reachable rather than clipped.
+//
+// Measured in a real browser because this is entirely a layout outcome: jsdom
+// has no layout engine and would report a width of 0 for everything. The card
+// renders the sections it actually has left (general + storage + the commit
+// footer); the channel rows this fixture used to stage are no longer part of
+// the card, because the deployment's gateway owns the channels.
 const settingsCss = read('settings-card.module.css')
-const longAliases = '已设置密钥 · qwen-image-3.0-pro · qwen-image-3.0 · qwen-vl-max-2025-08-13 · qwen-image-edit-plus · wan-2.5-i2v'
-const settingsRow = name => `
-  <li class="channelRow">
-    <span class="channelDotReady" aria-hidden="true"></span>
-    <button type="button" class="channelMain">
-      <span class="channelName">★ ${name}</span>
-      <span class="channelMeta"><span class="channelBadge">${longAliases}</span></span>
-    </button>
-    <button type="button" class="channelAction">编辑</button>
-    <button type="button" class="channelAction" data-danger>删除</button>
-  </li>`
 const settingsPage = `<!doctype html><html><head><style>
+  /* The host's client ships a global border-box reset; without it every card
+     row with horizontal padding would report a fake overflow. */
+  *, *::before, *::after { box-sizing: border-box; }
   body { margin: 0; display: flex; }
   /* The host's settings window is 850px wide and its nav takes ~210px. */
   #nav { flex: none; width: 210px; }
@@ -3247,12 +2862,38 @@ const settingsPage = `<!doctype html><html><head><style>
   <div id="nav"></div>
   <div id="pane">
     <section class="card">
+      <div class="header">
+        <span class="headText"><span class="name">创作</span><span class="description">生图、生视频与无限画布</span></span>
+      </div>
       <div class="body">
         <section class="settingsSection" data-open>
-          <ul class="channelList">
-            ${settingsRow('即梦方舟 (Seedream / Seedance)')}
-            ${settingsRow('清衍 API')}
-          </ul>
+          <button type="button" class="sectionToggle" aria-expanded="true">
+            <span class="sectionToggleText">
+              <span class="sectionToggleTitle">通用</span>
+              <span class="sectionToggleHint">Agent 能否直接调用生图与生视频工具</span>
+            </span>
+            <span class="sectionSummary" data-tone="ready">已就绪</span>
+            <span class="sectionChevron" aria-hidden="true">⌃</span>
+          </button>
+          <div class="sectionContent">
+            <div class="field">
+              <div class="head"><span class="label">保存目录</span></div>
+              <div class="hint">留空使用宿主默认目录。当前：/Users/someone/Library/Application Support/DeepSeekHarness/dsh-imagegen-data/images</div>
+            </div>
+          </div>
+        </section>
+        <section class="settingsSection" data-open>
+          <button type="button" class="sectionToggle" aria-expanded="true">
+            <span class="sectionToggleText">
+              <span class="sectionToggleTitle">存储</span>
+              <span class="sectionToggleHint">图片与视频落在哪个目录</span>
+            </span>
+            <span class="sectionSummary">/Users/someone/Library/Application Support/DeepSeekHarness/data</span>
+            <span class="sectionChevron" aria-hidden="true">⌃</span>
+          </button>
+          <div class="sectionContent">
+            <div class="field"><div class="head"><span class="label">本地目录</span></div></div>
+          </div>
         </section>
         <div class="footer"><button type="button" class="save">保存</button></div>
       </div>
@@ -3269,18 +2910,17 @@ const settingsFit = await settingsPageSession.evaluate(`(() => {
   const pb = pane.getBoundingClientRect()
   const card = document.querySelector('.card')
   const cb = card.getBoundingClientRect()
-  const rows = [...document.querySelectorAll('.channelRow')]
+  const sections = [...document.querySelectorAll('.settingsSection')]
   const doc = document.documentElement
   return {
     pane: Math.round(pb.width),
     cardWidth: Math.round(cb.width),
     cardInside: cb.left >= pb.left - 0.5 && cb.right <= pb.right + 0.5,
-    rowOverflow: rows.map(r => r.scrollWidth - r.clientWidth),
+    sectionOverflowX: sections.map(section => getComputedStyle(section).overflowX),
     docOverflow: doc.scrollWidth > doc.clientWidth,
-    sectionOverflowX: getComputedStyle(document.querySelector('.settingsSection')).overflowX,
   }
 })()`)
-console.log(`settings card at 850px: pane ${settingsFit.pane}px, card ${settingsFit.cardWidth}px, row overflow ${JSON.stringify(settingsFit.rowOverflow)}, section overflow-x=${settingsFit.sectionOverflowX}`)
+console.log(`settings card at 850px: pane ${settingsFit.pane}px, card ${settingsFit.cardWidth}px, section overflow-x=${JSON.stringify(settingsFit.sectionOverflowX)}`)
 
 if (!settingsFit.cardInside) {
   console.error('\nFAIL: at the host\'s default 850px settings window the card hangs outside its pane.')
@@ -3288,28 +2928,20 @@ if (!settingsFit.cardInside) {
   console.error('A card that is a grid item takes its automatic minimum from min-content,')
   console.error('so one wide child widens the track and the card overhangs both edges —')
   console.error('which is what the user reported as "titles cut off on both sides".')
-  console.error('Keep `min-width: 0` on .card / .body and let the badge shrink.')
-  process.exit(1)
-}
-if (settingsFit.rowOverflow.some(delta => delta > 1)) {
-  console.error('\nFAIL: a channel row is wider than its container, so its content is clipped.')
-  console.error(`  row scrollWidth - clientWidth = ${JSON.stringify(settingsFit.rowOverflow)}`)
-  console.error('The badge names the whole model catalog with `white-space: nowrap`;')
-  console.error('without `min-width: 0; overflow: hidden` it sets the row\'s floor and')
-  console.error('pushes the trailing 编辑/删除 buttons out of the visible card.')
+  console.error('Keep `min-width: 0` on .card / .body and let the wide child wrap.')
   process.exit(1)
 }
 if (settingsFit.docOverflow) {
   console.error('\nFAIL: the settings page scrolls horizontally at 850px.')
   process.exit(1)
 }
-if (settingsFit.sectionOverflowX === 'clip') {
+if (settingsFit.sectionOverflowX.some(value => value === 'clip')) {
   console.error('\nFAIL: `.settingsSection` clips its overflow, so any excess is lost')
   console.error('silently — no scrollbar, no hint that content was reachable. That was')
   console.error('the third symptom in #14: the user could not tell the page overflowed.')
   process.exit(1)
 }
-console.log('settings card: fits the 850px pane, no row overflows, overflow stays reachable')
+console.log('settings card: fits the 850px pane, no page overflow, section overflow stays reachable')
 
 settingsPageSession.close()
 
@@ -3905,7 +3537,6 @@ lightboxSession.close()
 
 ws7.close()
 ws6.close()
-ws4.close()
 ws3.close()
 ws2.close()
 ws5.close()

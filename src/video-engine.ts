@@ -22,23 +22,12 @@ import type { UpstreamConfig } from './engine.ts'
 import {
   clampVideoSeconds,
   describeVideoModel,
-  isComemoeVideoModel,
   normalizeVideoResolution,
-  type VideoCatalogEntry,
 } from './video-model-catalog.ts'
 import {
-  SNAPGEN_API_BASE,
-  SnapgenError,
-  SnapgenSession,
-  fetchSnapgenHistory,
-  mintSnapgenTurnstile,
-  parseSnapgenCredentials,
-  snapgenWire,
-  snapgenWireParams,
-  submitSnapgenVideo,
-} from './snapgen-engine.ts'
-import {
   bodyByteLength,
+  bodyShapeOf,
+  diagnoseNonJsonBody,
   excerptOf,
   networkErrorFields,
   readResponseText,
@@ -46,8 +35,7 @@ import {
   type DiagnosticPhase,
 } from './diagnostics-store.ts'
 import { recordSignal } from './signal-store.ts'
-import { bodyShapeOf, diagnoseNonJsonBody } from './upstream-diagnosis.ts'
-import type { VideoGenerateRequest, VideoMode, VideoResolution } from './protocol.ts'
+import type { VideoGenerateRequest } from './protocol.ts'
 
 /** A video generation failure with a user-presentable message. */
 export class VideoGenError extends Error {
@@ -100,16 +88,9 @@ export class VideoGenError extends Error {
  * concept.
  */
 const REMOTE_CANCEL: Record<string, 'supported' | 'unsupported'> = {
-  agnes: 'unsupported',
-  comemoe: 'unsupported',
   'openai-video': 'unsupported',
-  seedance: 'unsupported',
-  xai: 'unsupported',
-  minimax: 'unsupported',
-  qihang: 'unsupported',
-  unknown: 'unsupported',  snapgen: 'unsupported',
-  muse: 'unsupported',
-
+  'h3-v2': 'unsupported',
+  unknown: 'unsupported',
 }
 
 /** The families this build knows how to cancel remotely (none, today). */
@@ -181,45 +162,15 @@ const MAX_VIDEO_BYTES = 512 * 1024 * 1024
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
 
 /**
- * Poll budgets per family. Rendering a short clip is slow: Agnes took several
- * minutes in testing and comemoe took ~9 minutes for a 5s clip, so the poll
- * deadline is generous and the interval is family-tuned rather than shared
- * with the image path.
+ * Poll budgets per family. Rendering a short clip is slow: a 5s render measured
+ * several minutes, so the poll deadline is generous and the interval is
+ * family-tuned rather than shared with the image path.
  */
 const POLL_POLICY: Record<string, { intervalMs: number; deadlineMs: number }> = {
-  // Agnes documents a 1-2s poll cadence, and its render queue can sit in
-  // `queued` for a long time (measured: a 4s clip still queued after 35
-  // minutes), so the 20-minute ceiling used to time out on renders that were
-  // still coming. Match the documented cadence and give the queue room.
-  agnes: { intervalMs: 2_000, deadlineMs: 40 * 60_000 },
-  // comemoe measured at ~522s for a 5s clip: allow a much longer deadline and
-  // a slower poll so a long render does not hammer the status endpoint.
-  comemoe: { intervalMs: 6_000, deadlineMs: 40 * 60_000 },
   'openai-video': { intervalMs: 5_000, deadlineMs: 20 * 60_000 },
-  // Seedance renders 5s clips in roughly a minute or two, but 1080p/long
-  // durations queue: keep the same interval and a 30-minute ceiling.
-  seedance: { intervalMs: 5_000, deadlineMs: 30 * 60_000 },
-  // xAI renders take "up to several minutes"; the default poll cadence is fine,
-  // the deadline matches the other async video families.
-  xai: { intervalMs: 5_000, deadlineMs: 20 * 60_000 },
-  // snapgen answers with a history uuid and a numeric status; measured renders
-  // of a 6s clip landed in 1-2 minutes, and a queue slot can add a wait, so the
-  // shared cadence with a 20-minute ceiling is enough.
-  snapgen: { intervalMs: 5_000, deadlineMs: 20 * 60_000 },
-  // Muse measured at 1-2 minutes for a 5s clip; the shared cadence with the
-  // same ceiling covers a queue slot as well.
-  muse: { intervalMs: 5_000, deadlineMs: 20 * 60_000 },
-  // MiniMax-H3 measured at ~3 minutes for a 5s clip; the documented advice is
-  // to poll every 5-10s, so the shared cadence with a longer ceiling covers a
-  // queue slot without hammering the status endpoint.
-  minimax: { intervalMs: 5_000, deadlineMs: 30 * 60_000 },
-  // 自家 MaaS 的 H3：单实例串行，768P 一段 5 秒约 3 分钟，2K 聚合还要再走一遍
+  // 部署自家网关的 H3：单实例串行，768P 一段 5 秒约 3 分钟，2K 聚合还要再走一遍
   // 超分，排队另计，所以给 40 分钟——比别的族更宽，但不至于让用户干等一小时。
   'h3-v2': { intervalMs: 5_000, deadlineMs: 40 * 60_000 },
-  // 启航AIGC documents a 3s cadence and asks clients to keep polling for at
-  // least an hour; Wan renders queue for minutes and a long clip can take
-  // longer than the other families' ceilings.
-  qihang: { intervalMs: 3_000, deadlineMs: 60 * 60_000 },
   unknown: { intervalMs: 5_000, deadlineMs: 20 * 60_000 },
 }
 
@@ -271,73 +222,6 @@ function referencesOf(request: VideoGenerateRequest): DecodedReferences {
   return { ...all.length > 0 ? { primary: all[0]! } : {}, all }
 }
 
-/** A data URL for one decoded reference (the wire form providers expect). */
-function dataUrlOf(reference: { mime: string; base64: string }): string {
-  return `data:${reference.mime};base64,${reference.base64}`
-}
-
-/**
- * Seedance's accepted durations.
- *
- * The panel offers 5 and 10 seconds; 2.x accepts 4-15 and 1.0 accepts 2-12.
- * A value outside the window is CLAMPED rather than rejected: the panel's own
- * options are valid on every id, but a caller (Agent tool, graph runner) can
- * pass anything, and a 400 from the provider explains nothing.
- */
-function seedanceSeconds(model: string, seconds: number): number {
-  const seedance2 = /seedance[-_.]?2/i.test(model)
-  const min = seedance2 ? 4 : 2
-  const max = seedance2 ? 15 : 12
-  return Math.min(max, Math.max(min, Math.round(seconds)))
-}
-
-/**
- * Seedance resolutions, lowercase, narrowed for the fast/mini ids.
- *
- * `doubao-seedance-2-0-fast-*` and `-mini-*` reject 1080p and 4k upstream, so
- * asking for 1080P on those would be a guaranteed 400 — downgrade to 720p.
- */
-function seedanceResolution(model: string, resolution: VideoResolution): string {
-  // The id is `doubao-seedance-2-0-fast-260128`: a minor version sits between
-  // the major and the tier word, so `2-fast` alone never matches.
-  const light = /seedance[-_.]?2(?:[-_.]\d+)*[-_.](?:fast|mini)/i.test(model)
-  if (light) return resolution === '480P' ? '480p' : '720p'
-  return resolution.toLowerCase()
-}
-
-/** Wan 3.0 on 启航AIGC: integer seconds, 4-30 inclusive. */
-function qihangSeconds(seconds: number): number {
-  return Math.min(30, Math.max(4, Math.round(seconds)))
-}
-
-/** Map the panel's video mode onto 启航's mode vocabulary. */
-function qihangMode(mode: VideoMode, referenceCount: number): string {
-  if (mode === 'text') return 'text-to-video'
-  if (mode === 'reference') return 'reference'
-  if (mode === 'keyframe') {
-    // `first-last` is a two-frame mode; a keyframe request with only a first
-    // frame is a first-frame request, and sending it as first-last would make
-    // the gateway reject a render that has everything it needs.
-    return referenceCount >= 2 ? 'first-last' : 'first-frame'
-  }
-  return 'first-frame'
-}
-
-/** Wan 3.0 accepts at most ten reference images per request. */
-const MAX_QIHANG_REFERENCES = 10
-
-/** Map the panel's video mode onto a family's own mode vocabulary. */
-function familyMode(family: string, mode: VideoMode): string {
-  if (family === 'agnes') {
-    // Agnes speaks 'text' | 'keyframe' | 'reference'; a single image-to-video
-    // frame is sent as a one-element reference list.
-    if (mode === 'text') return 'text'
-    if (mode === 'keyframe') return 'keyframe'
-    return 'reference'
-  }
-  return mode === 'text' ? 'text' : 'image'
-}
-
 /** Resolve the request URL: base URL + path, or the exact configured URL. */
 function endpointUrl(upstream: VideoUpstreamConfig, baseUrl: string, path: string): string {
   // `apiUrlFull` means "this is the exact submit URL". It used to apply only to
@@ -349,25 +233,17 @@ function endpointUrl(upstream: VideoUpstreamConfig, baseUrl: string, path: strin
 /**
  * Submit and status paths for one family.
  *
- * xAI is the odd one out: it serves `POST /videos/generations` and returns a
- * `request_id`, while polling is the same `GET /videos/{id}` every other family
- * uses. Posting to `/videos` — what the generic family did — answers 404 (#5).
+ * An empty table means every remaining family speaks the generic
+ * `POST /videos` + `GET /videos/{id}` pair.
  */
-const VIDEO_PATHS: Record<string, { submit: string; status: string }> = {
-  xai: { submit: '/videos/generations', status: '/videos/{id}' },
-  // Volcengine Ark's task API: create under the collection, read one by id.
-  seedance: { submit: '/contents/generations/tasks', status: '/contents/generations/tasks/{id}' },
-  // 启航AIGC: flat parameters on submit, one shared task reader for every
-  // modality under `/tasks/{id}`.
-  qihang: { submit: '/videos/generations', status: '/tasks/{id}' },
-}
+const VIDEO_PATHS: Record<string, { submit: string; status: string }> = {}
 
 /**
  * The status URL for a task id.
  *
  * `apiUrlFull` names the exact SUBMIT url, so the status url is derived from it
  * rather than from the base: without this, a user who configured
- * `https://api.x.ai/v1/videos/generations` got polled at
+ * `https://gateway.example/v1/videos/special` got polled at
  * `…/videos/generations/videos/{id}`, which is a 404 every time (#5).
  */
 function statusUrlFor(upstream: VideoUpstreamConfig, baseUrl: string, family: string, taskId: string): string {
@@ -790,18 +666,18 @@ async function getJson(attempt: VideoAttempt, url: string, apiKey: string, signa
 /** Extract the task id from any of the submit response shapes we have seen. */
 function taskIdOf(payload: Record<string, unknown>): string {
   // The poll route is `GET <base>/videos/{id}`, so the id must be the RESOURCE
-  // id, never the task id: comemoe returns both in one flat body, and polling
-  // by its `task_id` would 404. Resource ids come first; `task_id` is only a
-  // last resort for relays that return nothing else.
+  // id, never the task id: some submit bodies return both in one flat body,
+  // and polling by `task_id` would 404. Resource ids come first; `task_id` is
+  // only a last resort for relays that return nothing else.
   //
-  // comemoe returns a FLAT body ({"id","status","task_id"}), contradicting its
-  // own documentation, which shows {"task":{"id":…}}. Agnes returns
-  // video_id/task_id. Accept every shape rather than trusting one.
+  // Bodies differ between gateways (a flat `{"id","status","task_id"}`, a
+  // nested `{"task":{"id":…}}`, a `video_id`/`task_id` pair), so every shape
+  // is accepted rather than trusting one.
   const nested = payload.task
   const candidates = [
     payload.video_id,
     payload.id,
-    // xAI answers a submit with `{ request_id }` and nothing else.
+    // Some gateways answer a submit with `{ request_id }` and nothing else.
     payload.request_id,
     nested !== null && typeof nested === 'object' ? (nested as Record<string, unknown>).id : undefined,
     payload.task_id,
@@ -837,18 +713,18 @@ type PollOutcome =
 /**
  * Interpret one poll response.
  *
- * Status vocabularies differ and are incomplete in the docs: Agnes reports
- * `completed`/`failed`, while comemoe adds a `processing` state its docs omit
- * (they claim `queued → running → succeeded`). Treat the union as canonical
- * and resolve the URL from either the nested metadata or the flat top level.
+ * Status vocabularies differ and gateways document them incompletely: one
+ * reports `completed`/`failed`, another adds a `processing` state its docs
+ * omit. Treat the union as canonical and resolve the URL from either the nested
+ * metadata or the flat top level.
  */
 function readPoll(payload: Record<string, unknown>): PollOutcome {
   const status = String(payload.status ?? '').toLowerCase().trim()
   if (['failed', 'error', 'cancelled', 'canceled', 'expired'].includes(status)) {
     const message = errorTextOf(payload, status === 'expired' ? '视频任务已过期' : '视频生成失败')
-    // 启航 puts the machine-readable category beside the human message. Keep
-    // both: the panel can show one line, but "content_blocked" is what tells a
-    // caller whether editing the prompt is worth trying.
+    // A gateway may put a machine-readable category beside the human message.
+    // Keep both: the panel can show one line, but "content_blocked" is what
+    // tells a caller whether editing the prompt is worth trying.
     const errorClass = typeof payload.error_class === 'string' ? payload.error_class.trim() : ''
     return {
       kind: 'failed',
@@ -862,15 +738,15 @@ function readPoll(payload: Record<string, unknown>): PollOutcome {
   const video = payload.video !== null && typeof payload.video === 'object'
     ? payload.video as Record<string, unknown>
     : undefined
-  // comemoe puts the result at the top level (`url`); Agnes nests it under
-  // `metadata.url`; Volcengine Ark nests it under `content.video_url` (and
-  // optionally `content.last_frame_url`). Accept every shape regardless of
-  // which family we are polling.
+  // Some gateways put the result at the top level (`url`); the deployed
+  // gateway nests it under `metadata.url`; others nest it under
+  // `content.video_url` (and optionally `content.last_frame_url`). Accept every
+  // shape regardless of which family we are polling.
   const content = payload.content !== null && typeof payload.content === 'object'
     ? payload.content as Record<string, unknown>
     : undefined
-  // 启航's task reader puts the authoritative address in `output_url` and
-  // repeats it in `data[]` (and, for some task types, `result.videos[]`).
+  // A gateway task reader may put the authoritative address in `output_url`
+  // and repeat it in `data[]` (and, for some task types, `result.videos[]`).
   const result = payload.result !== null && typeof payload.result === 'object'
     ? payload.result as Record<string, unknown>
     : undefined
@@ -1146,192 +1022,6 @@ function videoMimeOf(contentType: string | undefined, url: string): string {
   }
 }
 
-/** Agnes reference cap (Flash: `images length must not exceed 5`). */
-const MAX_AGNES_REFERENCES = 5
-
-/**
- * MiniMax-H3's reference-image cap (`reference_image` items, up to 9).
- *
- * The canvas only ever wires four, but the tool surface can pass more, and the
- * upstream answers a 400 for the whole submit rather than dropping the extras.
- */
-const MAX_MINIMAX_REFERENCES = 9
-
-/**
- * Where Nbility's upload endpoint lives, relative to the API base.
- *
- * Not in {@link VIDEO_PATHS}: that table is about submit/status pairs, and an
- * upload is neither. It is resolved from the same base so a channel that sets
- * `apiUrlFull` still points at the right host.
- */
-const MINIMAX_UPLOAD_PATH = '/media/uploads'
-
-/** File name for one uploaded reference frame; the extension comes from mime. */
-function uploadFileName(mime: string, index: number): string {
-  const extension = mime === 'image/jpeg' ? 'jpg'
-    : mime === 'image/webp' ? 'webp'
-      : mime === 'image/heic' ? 'heic'
-        : mime === 'image/heif' ? 'heif'
-          : 'png'
-  return `reference-${index + 1}.${extension}`
-}
-
-/**
- * The upload URL for a family that requires public reference URLs.
- *
- * Derived like {@link statusUrlFor}: with `apiUrlFull` the configured URL is the
- * exact SUBMIT address, so the submit path is trimmed off to recover the base.
- */
-function uploadUrlFor(upstream: VideoUpstreamConfig, baseUrl: string, family: string): string {
-  if (upstream.apiUrlFull !== true) return `${baseUrl}${MINIMAX_UPLOAD_PATH}`
-  const configured = baseUrl.replace(/\/+$/, '')
-  const submitPath = VIDEO_PATHS[family]?.submit ?? '/videos'
-  const base = configured.endsWith(submitPath)
-    ? configured.slice(0, configured.length - submitPath.length)
-    : configured
-  return `${base}${MINIMAX_UPLOAD_PATH}`
-}
-
-/**
- * Upload one reference frame and return the public URL the submit body needs.
- *
- * Nbility rejects data URIs outright (`Reference media requires a public HTTPS
- * URL; uploads and Base64 are not supported`), so for that family each frame
- * must be parked in its media storage first. The URL is valid for one hour,
- * which is why the task is submitted immediately after the uploads finish.
- */
-async function uploadMinimaxMedia(
-  upstream: VideoUpstreamConfig,
-  request: VideoGenerateRequest,
-  model: string,
-  url: string,
-  reference: { mime: string; base64: string },
-  index: number,
-  signal: AbortSignal,
-): Promise<string> {
-  const form = new FormData()
-  form.append(
-    'file',
-    new Blob([new Uint8Array(Buffer.from(reference.base64, 'base64'))], { type: reference.mime }),
-    uploadFileName(reference.mime, index),
-  )
-  // `video-upload` rather than `video-submit`: a frame the upstream refused to
-  // store is a different conversation from a render request it rejected, and
-  // the byte size and format limits only apply here.
-  const attempt = videoAttempt(upstream, request, model, 'video-upload', url, 'POST')
-  let response: Response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${upstream.apiKey}` },
-      body: form,
-      signal,
-    })
-  } catch (error) {
-    if (signal.aborted) throw error
-    const network = networkErrorFields(error)
-    const failure = new VideoGenError(
-      `无法上传参考图片：${network.detail}${network.errorCode === undefined ? '' : ` [${network.errorCode}]`} · 请求地址 ${attempt.url}`,
-      'video-unreachable',
-    )
-    recordVideoFailure(attempt, failure)
-    throw failure
-  }
-  const { payload, text, bodyIsJson } = await readJsonWithText(response)
-  if (!bodyIsJson) {
-    const failure = nonJsonVideoFailure(attempt, response, text, 'video-upload-failed', '参考图片上传接口')
-    recordVideoFailure(attempt, failure, { status: response.status, bodyExcerpt: excerptOf(text) })
-    throw failure
-  }
-  const uploaded = typeof payload.url === 'string' ? payload.url.trim() : ''
-  if (!response.ok || uploaded === '') {
-    const failure = new VideoGenError(
-      `${errorTextOf(payload, `参考图片上传失败（HTTP ${response.status}）`)}（HTTP ${response.status} · ${attempt.url}）`,
-      'video-upload-failed',
-      false,
-      response.status,
-    )
-    recordVideoFailure(attempt, failure, { status: response.status, bodyExcerpt: excerptOf(text) })
-    throw failure
-  }
-  return uploaded
-}
-
-/** Aspect ratios MiniMax-H3 accepts, in the panel's own vocabulary. */
-const ENTRIES_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']
-
-/**
- * The `role` one reference frame travels under.
- *
- * The contract separates "this is the first frame of the shot" from "use this
- * as a style/subject reference", and forbids mixing the two: `first_frame` /
- * `last_frame` are one each, `reference_image` up to nine.
- */
-function minimaxRole(mode: VideoMode, index: number): string {
-  if (mode === 'keyframe') return index === 0 ? 'first_frame' : 'last_frame'
-  if (mode === 'reference') return 'reference_image'
-  return 'first_frame'
-}
-
-/**
- * Build the MiniMax-H3 submit body, uploading every reference first.
- *
- * Text-only requests use the documented flat `prompt` form; anything carrying
- * frames needs the `content` array, whose media items can only hold URLs. The
- * `duration`/`ratio` names are the upstream's own -- sending the generic
- * `seconds`/`aspect_ratio`/`size` triple would be answered with the resolution
- * complaint instead of anything useful.
- */
-async function minimaxSubmitBody(
-  upstream: VideoUpstreamConfig,
-  request: VideoGenerateRequest,
-  model: string,
-  references: DecodedReferences,
-  baseUrl: string,
-  seconds: number,
-  signal: AbortSignal,
-): Promise<Record<string, unknown>> {
-  const ratio = ENTRIES_RATIOS.includes(request.aspectRatio) ? request.aspectRatio : '16:9'
-  const prompt = request.prompt.trim()
-  if (prompt === '') {
-    // `Error` before any upload: an empty prompt is answered with a 400 whose
-    // message never mentions the prompt, and the frames would already be paid
-    // for in upload time.
-    throw new VideoGenError('提示词不能为空：MiniMax-H3 要求文本项非空', 'video-bad-prompt')
-  }
-  if (references.all.length === 0) {
-    return {
-      model: request.upstream ?? request.model,
-      prompt: request.prompt,
-      resolution: '768P',
-      duration: seconds,
-      ratio,
-    }
-  }
-  if (request.mode === 'reference' && references.all.length > MAX_MINIMAX_REFERENCES) {
-    throw new VideoGenError(
-      `MiniMax-H3 最多支持 ${MAX_MINIMAX_REFERENCES} 张参考图，本次是 ${references.all.length} 张`,
-      'video-bad-reference',
-    )
-  }
-  const uploadUrl = uploadUrlFor(upstream, baseUrl, 'minimax')
-  const urls: string[] = []
-  for (const [index, reference] of references.all.entries()) {
-    urls.push(await uploadMinimaxMedia(upstream, request, model, uploadUrl, reference, index, signal))
-  }
-  const content: Array<Record<string, unknown>> = [{ type: 'text', text: request.prompt }]
-  for (const [index, url] of urls.entries()) {
-    content.push({ type: 'image_url', image_url: { url }, role: minimaxRole(request.mode, index) })
-  }
-  return {
-    model: request.upstream ?? request.model,
-    content,
-    resolution: '768P',
-    duration: seconds,
-    ratio,
-  }
-}
-
 /** 参考图上限：网关的参考族（r2va）最多吃 9 张图。 */
 const MAX_H3_REFERENCES = 9
 
@@ -1474,173 +1164,28 @@ async function h3v2SubmitBody(
   return body
 }
 
-/** Build the family-specific submit body. */
-function submitBody(
-  entry: VideoCatalogEntry,
-  family: string,
-  request: VideoGenerateRequest,
-  references: DecodedReferences,
-): Record<string, unknown> {
+/**
+ * Build the submit body of the generic OpenAI-style video endpoint: best
+ * effort, widened parameters.
+ *
+ * The H3 family never reaches this function — `h3v2SubmitBody` owns it, because
+ * its references have to be uploaded to gateway media storage first.
+ */
+function submitBody(request: VideoGenerateRequest, references: DecodedReferences): Record<string, unknown> {
   const seconds = clampVideoSeconds(request.seconds)
-  // Capabilities belong to the UPSTREAM id, not the alias: a channel can map
-  // `seedance-2.0` → `doubao-seedance-2-0-fast-260128`, and the fast id is the
-  // one that rejects 1080p. Using the alias here would miss that narrowing.
+  // Capabilities belong to the UPSTREAM id, not the alias: a channel maps an
+  // alias onto the id the gateway expects.
   const wireModel = (request.upstream ?? request.model).trim()
-  const resolution = normalizeVideoResolution(wireModel, request.resolution)
-  const familyName = entry.family
-
-  if (familyName === 'comemoe') {
-    // Measured contract: duration (seconds), aspect_ratio limited to
-    // 16:9|9:16|1:1, resolution 'standard'|'720P'|'1080P'. wan2.2-t2v accepts
-    // only 'standard'; the i2v-capable model takes a single image_url.
-    const body: Record<string, unknown> = {
-      model: request.upstream ?? request.model,
-      prompt: request.prompt,
-      duration: seconds,
-      aspect_ratio: ['16:9', '9:16', '1:1'].includes(request.aspectRatio) ? request.aspectRatio : '16:9',
-      resolution: entry.modes.includes('text') && entry.modes.length === 1 ? 'standard'
-        : resolution === '1080P' ? '1080P' : '720P',
-    }
-    if (references.primary !== undefined && entry.modes.includes('image')) {
-      body.image_url = dataUrlOf(references.primary)
-    }
-    return body
-  }
-
-  if (familyName === 'agnes') {
-    const body: Record<string, unknown> = {
-      model: request.upstream ?? request.model,
-      prompt: request.prompt,
-      mode: familyMode('agnes', request.mode),
-      seconds: String(seconds),
-      size: resolution,
-    }
-    if (entry.aspectRatios.includes(request.aspectRatio)) body.aspect_ratio = request.aspectRatio
-    if (request.mode === 'keyframe') {
-      if (references.all[0] !== undefined) body.first_frame = dataUrlOf(references.all[0])
-      if (references.all[1] !== undefined) body.last_frame = dataUrlOf(references.all[1])
-    } else if (request.mode === 'image' || request.mode === 'reference') {
-      // `agnes-video-2.5-flash` rejects more than five references
-      // (`400 images length must not exceed 5`), so the cap is applied here
-      // instead of letting the canvas send a body the provider refuses.
-      if (references.all.length > 0) body.images = references.all.slice(0, MAX_AGNES_REFERENCES).map(dataUrlOf)
-    }
-    if (entry.supportsSeed && request.seed !== undefined && Number.isFinite(request.seed)) body.seed = request.seed
-    return body
-  }
-
-  if (familyName === 'seedance') {
-    // Volcengine Ark's own contract (create-video-generation-task): the prompt
-    // and every reference ride in a `content` ARRAY, images carry a `role`,
-    // the ratio field is `ratio` (not aspect_ratio), resolution is lowercase,
-    // duration is an integer number of seconds, and both `watermark` and
-    // `generate_audio` default to TRUE upstream.
-    const wireModelId = (request.upstream ?? request.model).trim()
-    const content: Array<Record<string, unknown>> = [{ type: 'text', text: request.prompt }]
-    const image = (reference: { mime: string; base64: string }, role: string): Record<string, unknown> => ({
-      type: 'image_url',
-      image_url: { url: dataUrlOf(reference) },
-      role,
-    })
-    if (request.mode === 'keyframe') {
-      if (references.all[0] !== undefined) content.push(image(references.all[0], 'first_frame'))
-      if (references.all[1] !== undefined) content.push(image(references.all[1], 'last_frame'))
-    } else if (request.mode === 'reference') {
-      for (const reference of references.all) content.push(image(reference, 'reference_image'))
-    } else if (request.mode === 'image' && references.primary !== undefined) {
-      content.push(image(references.primary, 'first_frame'))
-    }
-    const body: Record<string, unknown> = {
-      model: wireModelId,
-      content,
-      resolution: seedanceResolution(wireModelId, resolution),
-      duration: seedanceSeconds(wireModelId, seconds),
-      // Documented default is false, but sending it keeps the request explicit
-      // and survives a future default change.
-      watermark: false,
-    }
-    // `generate_audio` exists on 2.5 / 2.0 only. Its documented default is
-    // TRUE, so a silent clip has to say so — and a 1.0 id must not receive the
-    // field at all, because there is no audio track to switch off there.
-    if (!/seedance[-_.]?1/i.test(wireModelId)) body.generate_audio = false
-    if (entry.aspectRatios.includes(request.aspectRatio)) body.ratio = request.aspectRatio
-    if (entry.supportsSeed && request.seed !== undefined && Number.isFinite(request.seed)) {
-      // Documented range is [-1, 2147483647] (-1 = random).
-      body.seed = Math.max(-1, Math.min(2_147_483_647, Math.round(request.seed)))
-    }
-    return body
-  }
-
-  if (familyName === 'qihang') {
-    // 启航AIGC's flat video endpoint: every parameter is TOP-LEVEL (the
-    // `params` envelope belongs to `/v1/media/generate`, not this endpoint).
-    // References travel as data URIs in `images`; the gateway accepts base64
-    // image data directly, so no upload leg is needed.
-    if (request.prompt.trim() === '') {
-      // The gateway rejects an empty prompt with a 400 that does not say which
-      // field is missing, and the panel/tool boundary is the clearer place.
-      throw new VideoGenError('Wan 3.0 需要非空提示词', 'video-bad-prompt')
-    }
-    const body: Record<string, unknown> = {
-      model: request.upstream ?? request.model,
-      prompt: request.prompt,
-      mode: qihangMode(request.mode, references.all.length),
-      duration: qihangSeconds(seconds),
-      // The documented enum is lowercase 480p / 720p / 1080p.
-      resolution: resolution.toLowerCase(),
-    }
-    if (entry.aspectRatios.includes(request.aspectRatio)) body.aspect_ratio = request.aspectRatio
-    if (references.all.length > 0) {
-      body.images = references.all
-        .slice(0, MAX_QIHANG_REFERENCES)
-        .map(dataUrlOf)
-    }
-    return body
-  }
-
-  if (familyName === 'xai') {
-    // docs.x.ai: `duration` is seconds as a NUMBER, `resolution` is lowercase,
-    // and an image goes as `{ url }` (a data URL is accepted in that slot).
-    const body: Record<string, unknown> = {
-      model: request.upstream ?? request.model,
-      prompt: request.prompt,
-      duration: seconds,
-      resolution: resolution.toLowerCase(),
-    }
-    if (entry.aspectRatios.includes(request.aspectRatio)) body.aspect_ratio = request.aspectRatio
-    if (references.primary !== undefined) body.image = { url: dataUrlOf(references.primary) }
-    return body
-  }
-
-  if (familyName === 'muse') {
-    // Measured against the upstream's /v1/videos: the body is a CLOSED set --
-    // "invalid Muse video parameters; supported fields: model, prompt, duration,
-    // aspect_ratio, resolution, image, images, videos, audios, files". Anything
-    // else (the generic `seconds`/`size` pair included) is a 400 before the
-    // task exists, so only these keys are ever sent.
-    const body: Record<string, unknown> = {
-      model: request.upstream ?? request.model,
-      prompt: request.prompt,
-      // A NUMBER here; the string "5" is rejected.
-      duration: seconds,
-      // Lowercase: "720P" is rejected, "720p" is accepted.
-      resolution: resolution.toLowerCase(),
-    }
-    if (entry.aspectRatios.includes(request.aspectRatio)) body.aspect_ratio = request.aspectRatio
-    // A bare data URL in `image` (no `{ url }` wrapper, unlike xAI).
-    if (references.primary !== undefined && entry.modes.includes('image')) body.image = dataUrlOf(references.primary)
-    return body
-  }
-
-  // Generic OpenAI-style video endpoint: best effort, widened parameters.
   const body: Record<string, unknown> = {
-    model: request.upstream ?? request.model,
+    model: wireModel,
     prompt: request.prompt,
     seconds: String(seconds),
-    size: resolution,
+    size: normalizeVideoResolution(wireModel, request.resolution),
   }
   if (request.aspectRatio.trim() !== '') body.aspect_ratio = request.aspectRatio
-  if (references.primary !== undefined) body.image = dataUrlOf(references.primary)
+  if (references.primary !== undefined) {
+    body.image = `data:${references.primary.mime};base64,${references.primary.base64}`
+  }
   return body
 }
 
@@ -1692,310 +1237,6 @@ function publishSubmit(event: VideoSubmitEvent): void {
   }
 }
 
-/** Build the credential session one snapgen channel carries. */
-function snapgenSessionOf(upstream: VideoUpstreamConfig): SnapgenSession {
-  return new SnapgenSession(parseSnapgenCredentials(upstream.apiKey))
-}
-
-/**
- * Translate a snapgen protocol failure into the shared video failure type.
- *
- * Every other family already speaks VideoGenError; keeping one error class at
- * the engine boundary is what lets routes.ts forward the code unchanged and the
- * panel render a single failure shape.
- */
-function snapgenToVideoError(error: unknown): VideoGenError {
-  if (error instanceof VideoGenError) return error
-  if (error instanceof SnapgenError) {
-    return new VideoGenError(error.message, error.code, error.retryable, error.status)
-  }
-  const reason = error instanceof Error ? error.message : String(error)
-  return new VideoGenError('snapgen 调用失败：' + reason, 'snapgen-failed', true)
-}
-
-/** Convert a snapgen failure and record it on the leg that raised it. */
-function failSnapgen(attempt: VideoAttempt, error: unknown): VideoGenError {
-  const failure = snapgenToVideoError(error)
-  const excerpt = error instanceof SnapgenError ? error.bodyExcerpt : undefined
-  recordVideoFailure(attempt, failure, {
-    ...failure.status === undefined ? {} : { status: failure.status },
-    ...excerpt === undefined ? {} : { bodyExcerpt: excerpt },
-  })
-  return failure
-}
-
-/**
- * Poll one snapgen history uuid until it reports a terminal status.
- *
- * snapgen answers with a NUMERIC status (1 running, 2 finished, 3 failed) that
- * the shared readPoll cannot interpret, so this mirrors pollUntilDone -- same
- * delay policy, same transient-retry budget, same deadline rules -- on top of
- * the snapgen history reader.
- */
-async function pollSnapgenUntilDone(
-  attempt: VideoAttempt,
-  upstream: VideoUpstreamConfig,
-  session: SnapgenSession,
-  uuid: string,
-  signal?: AbortSignal,
-  since: { submittedAt?: number } = {},
-): Promise<{ source: VideoClipSource; duration?: number; poster?: string }> {
-  const policy = POLL_POLICY.snapgen ?? POLL_POLICY.unknown!
-  const already = since.submittedAt === undefined ? 0 : Math.max(0, Date.now() - since.submittedAt)
-  const deadline = since.submittedAt === undefined
-    ? Date.now() + policy.deadlineMs
-    : since.submittedAt + policy.deadlineMs
-  // Same rule as the shared loop: a resume whose budget is already spent still
-  // gets one poll, because the render may have finished while nobody watched.
-  let mustPollOnce = already >= policy.deadlineMs
-  const statusAttempt: VideoAttempt = { ...attempt, phase: 'video-poll', method: 'GET' }
-  let attemptCount = 0
-  let transientRetries = 0
-  while (mustPollOnce || Date.now() < deadline) {
-    mustPollOnce = false
-    await waitForPoll(pollDelayMs(policy, attemptCount), signal)
-    attemptCount += 1
-    const budget = requestSignal(signal, SUBMIT_TIMEOUT_MS)
-    try {
-      const state = await fetchSnapgenHistory(session, uuid, { signal: budget.signal })
-      transientRetries = 0
-      if (state.status === 2) {
-        // The pre-signed object URL is preferred: the worker-proxied fallback
-        // is unreachable from this machine and both point at the same object.
-        const url = state.videoUrl !== '' ? state.videoUrl : state.fallbackUrl
-        if (url === '') {
-          const failure = new VideoGenError('snapgen 报告渲染完成，但没有返回视频地址', 'video-download-failed')
-          recordVideoFailure(statusAttempt, failure, { requestExcerpt: excerptOf({ uuid, status: state.status }) })
-          throw failure
-        }
-        return {
-          source: { kind: 'url', url },
-          ...state.durationSeconds === undefined ? {} : { duration: state.durationSeconds },
-          ...state.poster === undefined ? {} : { poster: state.poster },
-        }
-      }
-      if (state.status !== 0 && state.status !== 1) {
-        // 3 is the measured failure status; any other unrecognised number is
-        // treated the same way, because waiting on a status this build cannot
-        // name would only turn a provider failure into a local timeout.
-        const message = state.errorMessage !== undefined && state.errorMessage !== ''
-          ? state.errorMessage
-          : 'snapgen 渲染失败（status ' + state.status + '）'
-        const failure = new VideoGenError(message, 'video-failed')
-        recordVideoFailure(statusAttempt, failure, {
-          requestExcerpt: excerptOf({ uuid, status: state.status, errorCode: state.errorCode }),
-        })
-        throw failure
-      }
-    } catch (error) {
-      if (signal?.aborted === true) throw error
-      // A named failure is final; a transport problem (timeout, dropped
-      // connection, 5xx from the history endpoint) is worth another ask inside
-      // the same deadline, exactly like the shared poll loop.
-      const transient = error instanceof VideoGenError
-        ? error.retryable
-        : error instanceof SnapgenError
-          ? error.retryable
-          : error instanceof TypeError
-            || (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError'))
-      if (!transient) throw snapgenToVideoError(error)
-      transientRetries += 1
-      if (transientRetries > MAX_POLL_TRANSIENT_RETRIES) {
-        const failure = snapgenToVideoError(error)
-        recordPollExhausted(statusAttempt, failure, uuid, 'snapgen', transientRetries)
-        throw failure
-      }
-      if (Date.now() + pollRetryDelayMs(transientRetries) >= deadline) break
-      await waitForPoll(pollRetryDelayMs(transientRetries), signal)
-    } finally {
-      budget.dispose()
-    }
-  }
-  const timeout = new VideoGenError(
-    '视频生成超时（已等待 ' + Math.round(policy.deadlineMs / 60_000) + ' 分钟）',
-    'video-timeout',
-  )
-  recordVideoFailure(statusAttempt, timeout, {
-    requestExcerpt: excerptOf({ uuid, family: 'snapgen', polls: attemptCount, waitedMs: policy.deadlineMs }),
-  })
-  throw timeout
-}
-
-/**
- * Reattach to a submitted snapgen render: poll the history uuid, then download.
- *
- * Shares pollSnapgenUntilDone with the submit path so both shape the result and
- * record failures identically.
- */
-async function resumeSnapgenVideo(
-  upstream: VideoUpstreamConfig,
-  request: VideoGenerateRequest,
-  resume: { taskId: string; submittedAt?: number },
-  options: { signal?: AbortSignal } = {},
-): Promise<VideoEngineResult> {
-  const model = (request.upstream ?? request.model).trim()
-  const attempt = videoAttempt(
-    upstream,
-    request,
-    model,
-    'video-poll',
-    displayUrl(SNAPGEN_API_BASE + '/history/' + encodeURIComponent(resume.taskId)),
-    'GET',
-  )
-  let session: SnapgenSession
-  try {
-    session = snapgenSessionOf(upstream)
-  } catch (error) {
-    throw failSnapgen(attempt, error)
-  }
-  const finished = await pollSnapgenUntilDone(
-    attempt,
-    upstream,
-    session,
-    resume.taskId,
-    options.signal,
-    resume.submittedAt === undefined ? {} : { submittedAt: resume.submittedAt },
-  )
-  const downloadAttempt: VideoAttempt = {
-    ...attempt,
-    phase: 'video-download',
-    url: displayUrl(resolveResultUrl(finished.source.url, upstream.apiUrl)),
-    method: 'GET',
-  }
-  const downloaded = await downloadVideo(downloadAttempt, upstream, finished.source.url, options.signal)
-  return {
-    videos: [{
-      ...downloaded,
-      ...finished.duration === undefined ? {} : { duration: finished.duration },
-      ...finished.poster === undefined ? {} : { poster: finished.poster },
-    }],
-  }
-}
-
-/**
- * Submit one snapgen render, then poll and download it.
- *
- * None of generateVideo transport applies here: the submit is multipart behind
- * the x-guard-id anti-bot header, the task id is a history uuid, and most models
- * additionally refuse the submit without a single-use Cloudflare Turnstile token
- * that only a running Chrome can mint.
- */
-async function generateSnapgenVideo(
-  upstream: VideoUpstreamConfig,
-  request: VideoGenerateRequest,
-  model: string,
-  options: { signal?: AbortSignal } = {},
-): Promise<VideoEngineResult> {
-  if (request.mode !== 'text' && request.mode !== 'image') {
-    // Measured: reference images ride the same multipart submit as `files`, and
-    // the job reports them back as `reference_item` (a muse render with one PNG
-    // finished normally). Only the single-frame mode is wired; first/last-frame
-    // and multi-reference were never measured, so they stay refused up front
-    // instead of failing after the user has waited for a submit.
-    throw new VideoGenError('snapgen 渠道目前支持文生视频与单张图生视频：请把生成模式切成「文本」或「图生视频」', 'video-bad-reference')
-  }
-  const wire = snapgenWire(model)
-  if (wire === undefined) {
-    throw new VideoGenError('未知的 snapgen 视频模型：' + model, 'video-unknown-model')
-  }
-  const submitAttempt = videoAttempt(
-    upstream,
-    request,
-    model,
-    'video-submit',
-    displayUrl(SNAPGEN_API_BASE + wire.endpoint),
-    'POST',
-  )
-  if (upstream.apiKey.trim() === '') {
-    const failure = new VideoGenError(
-      'snapgen 渠道还没有填写密钥：请填入 refresh_token，或 {"refresh_token":"…","cdp_port":9333} 形式的 JSON',
-      'snapgen-credentials',
-    )
-    recordVideoFailure(submitAttempt, failure)
-    throw failure
-  }
-  let session: SnapgenSession
-  let params: { aspectRatio: string; resolution: string; seconds: number }
-  try {
-    session = snapgenSessionOf(upstream)
-    params = snapgenWireParams(model, {
-      aspectRatio: request.aspectRatio,
-      resolution: request.resolution,
-      seconds: request.seconds,
-    })
-  } catch (error) {
-    throw failSnapgen(submitAttempt, error)
-  }
-/** File name handed to snapgen for one decoded reference frame. */
-function snapgenReferenceName(mime: string, index: number): string {
-  const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : mime === 'image/gif' ? 'gif' : 'png'
-  return 'reference-' + (index + 1) + '.' + extension
-}
-
-  let turnstileToken: string | undefined
-  if (wire.turnstile) {
-    try {
-      turnstileToken = await mintSnapgenTurnstile({ cdpPort: session.credentials.cdpPort })
-    } catch (error) {
-      throw failSnapgen(submitAttempt, error)
-    }
-  }
-  // Image mode sends the single primary frame; text mode sends nothing.
-  const references = referencesOf(request)
-  if (request.mode === 'image' && references.primary === undefined) {
-    throw new VideoGenError('图生视频需要一张参考图片', 'video-bad-reference')
-  }
-  const files = references.all.map((reference, index) => ({
-    bytes: Buffer.from(reference.base64, 'base64'),
-    mime: reference.mime,
-    filename: snapgenReferenceName(reference.mime, index),
-  }))
-  const budget = requestSignal(options.signal, SUBMIT_TIMEOUT_MS)
-  let uuid = ''
-  try {
-    const submitted = await submitSnapgenVideo(session, {
-      model,
-      prompt: request.prompt,
-      aspectRatio: params.aspectRatio,
-      resolution: params.resolution,
-      seconds: params.seconds,
-      ...turnstileToken === undefined ? {} : { turnstileToken },
-      ...files.length === 0 ? {} : { files },
-    }, { signal: budget.signal })
-    uuid = submitted.uuid
-  } catch (error) {
-    throw failSnapgen(submitAttempt, error)
-  } finally {
-    budget.dispose()
-  }
-  // Publish before polling: the poll leg takes minutes, and a restart reattaches
-  // to this uuid instead of paying for a second render.
-  publishSubmit({
-    ...options.signal === undefined ? {} : { signal: options.signal },
-    remoteTaskId: uuid,
-    family: 'snapgen',
-    model,
-    submittedAt: Date.now(),
-    upstream,
-    request,
-  })
-  const finished = await pollSnapgenUntilDone(submitAttempt, upstream, session, uuid, options.signal)
-  const downloadAttempt: VideoAttempt = {
-    ...submitAttempt,
-    phase: 'video-download',
-    url: displayUrl(resolveResultUrl(finished.source.url, upstream.apiUrl)),
-    method: 'GET',
-  }
-  const downloaded = await downloadVideo(downloadAttempt, upstream, finished.source.url, options.signal)
-  return {
-    videos: [{
-      ...downloaded,
-      ...finished.duration === undefined ? {} : { duration: finished.duration },
-      ...finished.poster === undefined ? {} : { poster: finished.poster },
-    }],
-  }
-}
-
 /**
  * Poll one already-submitted render and download its clip.
  *
@@ -2019,11 +1260,6 @@ export async function resumeVideo(
   const model = (request.upstream ?? request.model).trim()
   if (model === '') throw new VideoGenError('未指定视频模型', 'video-no-model')
   const family = resume.family.trim() === '' ? describeVideoModel(model).family : resume.family
-  // snapgen subscribes to nothing OpenAI-shaped: the uuid is a history id whose
-  // numeric status has to be read by the snapgen poller.
-  if (family === 'snapgen') {
-    return await resumeSnapgenVideo(upstream, request, resume, options)
-  }
   const baseUrl = upstream.apiUrl.replace(/\/+$/, '')
   const statusUrl = statusUrlFor(upstream, baseUrl, family, resume.taskId)
   const attempt = videoAttempt(upstream, request, model, 'video-poll', statusUrl, 'GET')
@@ -2078,11 +1314,6 @@ export async function generateVideo(
   // checks would reject a request that is perfectly valid — the provider
   // already has the frames and only polling is left.
   if (request.resume !== undefined) return await resumeVideo(upstream, request, request.resume, options)
-  // snapgen cannot ride the shared submit path: multipart plus a guard header,
-  // a history uuid instead of a task id, and a Turnstile token for most models.
-  if (family === 'snapgen') {
-    return await generateSnapgenVideo(upstream, request, model, options)
-  }
   const references = referencesOf(request)
   if (request.mode === 'keyframe' && references.all.length === 0) {
     throw new VideoGenError('首尾帧模式至少需要一张首帧图片', 'video-bad-reference')
@@ -2100,15 +1331,16 @@ export async function generateVideo(
 
   const baseUrl = upstream.apiUrl.replace(/\/+$/, '')
   const url = endpointUrl(upstream, baseUrl, VIDEO_PATHS[family]?.submit ?? '/videos')
-  // One budget for the whole "get this render started" leg: for MiniMax-H3 that
-  // includes parking each reference frame in media storage, and a task created
-  // after the uploads outlive their own deadline is useless.
+  // One budget for the whole "get this render started" leg: for the H3 family
+  // that includes parking each reference frame in gateway media storage, and a
+  // task created after the uploads outlive their own deadline is useless.
   const submitBudget = requestSignal(options.signal, SUBMIT_TIMEOUT_MS)
   let submitAttempt: VideoAttempt
   let taskId = ''
   try {
-    const body = family === 'minimax'
-      ? await minimaxSubmitBody(
+    // H3 builds its body asynchronously because references upload first.
+    const body = family === 'h3-v2'
+      ? await h3v2SubmitBody(
         upstream,
         request,
         model,
@@ -2117,17 +1349,7 @@ export async function generateVideo(
         clampVideoSeconds(request.seconds),
         submitBudget.signal,
       )
-      : family === 'h3-v2'
-        ? await h3v2SubmitBody(
-          upstream,
-          request,
-          model,
-          references,
-          baseUrl,
-          clampVideoSeconds(request.seconds),
-          submitBudget.signal,
-        )
-        : submitBody(entry, family, request, references)
+      : submitBody(request, references)
     // The submit leg's own context: every failure from here to the task id is a
     // "the render never started" report, which is a different problem from a
     // render that started and then failed.
@@ -2178,9 +1400,4 @@ export async function generateVideo(
       ...finished.poster === undefined ? {} : { poster: finished.poster },
     }],
   }
-}
-
-/** Whether a request would be routed to the comemoe family. */
-export function isComemoeRequest(model: string): boolean {
-  return isComemoeVideoModel(model)
 }

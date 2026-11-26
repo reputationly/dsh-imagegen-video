@@ -53,7 +53,7 @@
  * rebuilding only what changed would not exercise the path the release takes.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { delimiter, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -294,14 +294,61 @@ function mirrorSourceTree () {
     // as a syntax error in this script rather than as a failed copy.
     copyTree(join(ROOT, input), join(dir, input))
   }
-  const target = join(ROOT, 'node_modules')
+  // 一个「整个目录链过去」的 node_modules 会让构建把链接路径算成镜像路径，写回真实目录
+  // 后就成了指向临时目录的悬空链接（实测：跑完本检查，真实 node_modules 全挂）。
+  // 因此镜像里逐个条目建链接，且指向解析后的真实路径：镜像怎么写都不会把临时目录写进
+  // 真实目录，真实目录也不会被改写。
+  const source = join(ROOT, 'node_modules')
   const link = join(dir, 'node_modules')
-  // A junction is the only directory link Windows creates without administrator
-  // rights or developer mode — the default type raised EPERM there. The type
-  // argument means nothing on posix, so it is passed only where it exists.
-  if (process.platform === 'win32') symlinkSync(target, link, 'junction')
-  else symlinkSync(target, link)
+  mkdirSync(link, { recursive: true })
+  const linkType = process.platform === 'win32' ? 'junction' : undefined
+  for (const entry of readdirSync(source)) {
+    if (entry === '.bin') continue
+    if (linkType === undefined) symlinkSync(realpathSync(join(source, entry)), join(link, entry))
+    else symlinkSync(realpathSync(join(source, entry)), join(link, entry), linkType)
+  }
+  // `.bin` 里是脚本自己的链接，逐个按真实目标重建。
+  const binSource = join(source, '.bin')
+  if (existsSync(binSource)) {
+    mkdirSync(join(link, '.bin'), { recursive: true })
+    for (const entry of readdirSync(binSource)) {
+      if (linkType === undefined) symlinkSync(realpathSync(join(binSource, entry)), join(link, '.bin', entry))
+      else symlinkSync(realpathSync(join(binSource, entry)), join(link, '.bin', entry), linkType)
+    }
+  }
   return dir
+}
+
+/** 真实 node_modules 里每个条目的链接目标，用来确认本检查没有改写工作树。 */
+function snapshotNodeModules () {
+  const source = join(ROOT, 'node_modules')
+  const snapshot = new Map()
+  for (const entry of readdirSync(source)) {
+    const path = join(source, entry)
+    try {
+      snapshot.set(entry, realpathSync(path))
+    } catch {
+      snapshot.set(entry, '')
+    }
+  }
+  return snapshot
+}
+
+/**
+ * 确认检查没有把工作树的依赖链接改坏。
+ * @param before - 检查开始前的快照。
+ * @param after - 检查结束后的快照。
+ * @returns 出错说明，或空字符串。
+ */
+function nodeModulesDrift (before, after) {
+  const drifted = [...before.keys()].filter(entry => before.get(entry) !== after.get(entry))
+  if (drifted.length === 0) return ''
+  return [
+    '',
+    'FAIL: this check left the working tree\'s node_modules rewritten:',
+    ...drifted.map(entry => `  - ${entry}: ${before.get(entry)} -> ${after.get(entry)}`),
+    '  (the mirror must never write into the real node_modules)',
+  ].join('\n')
 }
 
 function compare (label, left, right, leftName, rightName, names) {
@@ -333,6 +380,7 @@ const sameDirDrift = compare(
 
 let mirror
 let crossDirDrift = []
+const nodeModulesBefore = snapshotNodeModules()
 try {
   mirror = mirrorSourceTree()
   build(mirror)
@@ -348,6 +396,11 @@ try {
   // is how a check becomes something people disable.
   if (mirror !== undefined) rmSync(mirror, { recursive: true, force: true })
 }
+
+// 本检查会构建两次，任何一次都不该改写工作树的依赖链接；改写了就必须当场说出来，
+// 否则下一次 `pnpm build` 报的是一个指向已删除临时目录的 ENOENT。
+const nodeModulesDriftReport = nodeModulesDrift(nodeModulesBefore, snapshotNodeModules())
+if (nodeModulesDriftReport !== '') fail([nodeModulesDriftReport])
 
 if (sameDirDrift.length > 0 || crossDirDrift.length > 0) {
   fail([

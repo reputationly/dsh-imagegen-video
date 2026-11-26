@@ -80,7 +80,7 @@ export function ensureAgentImageConfigured(config: AgentImageToolConfig): void {
 export function resolveAgentImageModel(config: AgentImageToolConfig, requested: unknown): { channel: RuntimeChannel; alias: string; upstream: string } {
   const entries = config.channels.flatMap(channel => channel.models.map(model => ({ channel, alias: model.alias, upstream: model.id })))
   if (entries.length === 0) {
-    throw new ImageGenError('No image models are configured. Open Settings → Image / Video and add a service with at least one image model.', 'no-models-configured')
+    throw new ImageGenError('This account has no image model available. Sign in to the Create workbench and check that the account may use an image model.', 'no-models-configured')
   }
   const wanted = typeof requested === 'string' && requested.trim() !== ''
     ? requested.trim()
@@ -88,12 +88,13 @@ export function resolveAgentImageModel(config: AgentImageToolConfig, requested: 
   if (wanted === '') {
     if (entries.length === 1) return entries[0]!
     const options = config.channels.flatMap(channel => channel.models.map(model => `"${channel.name} · ${model.alias}"`)).join(', ')
-    throw new ImageGenError(`Multiple image models are available — ask the user which channel and model to use, then call this tool again with that exact model name. Options: ${options}.`, 'model-choice-required')
+    throw new ImageGenError(`Multiple image models are available — ask the user which one to use, then call this tool again with that exact model name. Options: ${options}.`, 'model-choice-required')
   }
-  const hosting = entries.filter(entry => entry.alias === wanted)
+  // list_media_models 报的是模型名，面板里存的是展示名，两种都认。
+  const hosting = entries.filter(entry => entry.alias === wanted || entry.upstream === wanted)
   if (hosting.length === 0) {
     const available = [...new Set(entries.map(entry => entry.alias))].join(', ')
-    throw new ImageGenError(`Image model "${wanted}" is not configured in any channel. Choose one of: ${available}.`, 'image-model-not-configured')
+    throw new ImageGenError(`Image model "${wanted}" is not available to this account. Choose one of: ${available}.`, 'image-model-not-configured')
   }
   const preferred = hosting.find(entry => entry.channel.id === config.defaultChannelId)
   return preferred ?? hosting[0]!
@@ -345,10 +346,10 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'generate_image',
-      description: 'Generate an image. By default this tool call stays pending until the task reaches a final state; completed images are shown beside this tool call, while the model receives their attachment references, without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. Only use models configured for this plugin; omit model to use the configured default image model (or the first model when none is configured).',
+      description: 'Generate an image. By default the call waits for the task and returns attachment references for each image; they are shown beside this tool call. Set wait_for_completion=false for background mode, then poll with get_image_generation_task. Omit model to use the default image model; call list_media_models for the models and parameters this account has.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'Detailed image-generation prompt.' },
-        model: { type: 'string', description: 'One of the configured image models. Defaults to the configured default image model, or the first model when none is configured.' },
+        model: { type: 'string', description: 'Optional model id from list_media_models. Defaults to the default image model.' },
         size: { type: 'string', description: 'Aspect ratio such as 1:1, 16:9, 9:16, or auto.' },
         quality: { type: 'string', description: 'auto, 1k, 2k, or 4k.' },
         count: { type: 'integer', description: 'Number of images, 1 to 4. Defaults to 1.' },
@@ -382,11 +383,11 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
     })),
     ctx.tools.register(defineTool({
       name: 'edit_image',
-      description: 'Edit an image. By default this tool call stays pending until the task reaches a final state; completed images are shown beside this tool call, while the model receives their attachment references, without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. source_image must be an image reference returned by a completed generation or get_image_generation_task; pass that entire object unchanged. Only configured image models are allowed; omit model to use the configured default image model (or the first model when none is configured).',
+      description: 'Edit an image with a prompt. source_image must be an image reference returned by a generation or get_image_generation_task, passed unchanged. By default the call waits and returns attachment references for the new image; set wait_for_completion=false for background mode. Omit model to use the default image model; see list_media_models.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'How to transform the source image.' },
         source_image: { ...imageRefSchema, required: true, description: 'Image reference returned by get_image_generation_task.' },
-        model: { type: 'string', description: 'One of the configured image models. Defaults to the configured default image model, or the first model when none is configured.' },
+        model: { type: 'string', description: 'Optional model id from list_media_models. Defaults to the default image model.' },
         size: { type: 'string', description: 'Aspect ratio such as 1:1, 16:9, 9:16, or auto.' },
         quality: { type: 'string', description: 'auto, 1k, 2k, or 4k.' },
         count: { type: 'integer', description: 'Number of images, 1 to 4. Defaults to 1.' },

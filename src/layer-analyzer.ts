@@ -1,18 +1,18 @@
 /**
  * Canvas layer decomposition (the 图层拆分 / magic-layers tool).
  *
- * The host asks the configured *chat* model — the same OpenAI-compatible
- * endpoint the prompt enhancer uses — to read the picture and answer with a
- * strict JSON layer plan (background / object / text). The browser half then
- * rasterizes that plan into real canvas nodes: text layers become editable text
- * nodes, object layers are cropped and locally matted into transparent PNGs,
- * and the background layer reuses the source asset.
+ * The host asks the deployment's own conversation model — the one the chat
+ * panel already talks to — to look at the picture and answer with a strict JSON
+ * layer plan (background / object / text). The browser half then rasterizes
+ * that plan into real canvas nodes: text layers become editable text nodes,
+ * object layers are cropped and locally matted into transparent PNGs, and the
+ * background layer reuses the source asset.
  *
  * Nothing here is trusted: the model output is normalized, clamped and
  * length-capped before it reaches the client.
  */
 
-import { stripReasoning, type PromptModelConfig } from './prompt-enhancer.ts'
+import { stripReasoning, type HostChatClient } from './prompt-enhancer.ts'
 import type { CanvasLayerKind, CanvasLayerPlan, CanvasLayerPlanItem, CanvasRect } from './protocol.ts'
 
 /** Cap on the image payload accepted for analysis (base64 data URL). */
@@ -23,11 +23,6 @@ const MAX_LAYERS = 16
 
 /** Cap on recognized text length per text layer. */
 const MAX_LAYER_TEXT = 200
-
-/** Bounded wait for the vision call. Layer decomposition sends a whole image,
- *  so it needs a longer budget than a plain chat completion — but without a
- *  ceiling a stalled endpoint leaves the canvas tool spinning forever. */
-const LAYER_TIMEOUT_MS = 120_000
 
 const LAYER_SYSTEM_PROMPT = [
   '你是图像图层拆解引擎。用户会给你一张图片，请把它拆成可独立编辑的图层，并且只输出一个 JSON 对象，不要输出任何解释、markdown 或代码块。',
@@ -133,52 +128,31 @@ export function normalizeLayerPlan(value: unknown): CanvasLayerPlan | undefined 
 }
 
 /**
- * Decompose one image into a layer plan through the configured chat model.
- * The image travels as an OpenAI-style `image_url` data URL, so the model must
- * accept vision input; endpoints without it answer with an upstream error that
+ * Decompose one image into a layer plan through the host conversation model.
+ * The image travels as an `image_url` data-URL part, so the selected model must
+ * accept vision input; a model without it answers with an upstream error that
  * is surfaced verbatim.
+ * @param chat - the host conversation model.
+ * @param image - the source image as a base64 data URL.
+ * @param signal - caller cancellation.
+ * @returns the normalized layer plan.
  */
-export async function analyzeLayers(config: PromptModelConfig, image: string): Promise<CanvasLayerPlan> {
-  if (config.apiUrl.trim() === '' || config.model.trim() === '') {
-    throw new Error('图层拆分需要先在左侧「生图配置」的「提示词增强」中配置一个支持视觉的聊天模型（API 地址 + 模型）')
+export async function analyzeLayers(chat: HostChatClient, image: string, signal?: AbortSignal): Promise<CanvasLayerPlan> {
+  if (!chat.available()) {
+    throw new Error('图层拆分需要一个可用的对话模型：请先在对话面板里选择一个模型')
   }
-  const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...config.apiKey.trim() === '' ? {} : { authorization: `Bearer ${config.apiKey.trim()}` },
-    },
-    body: JSON.stringify({
-      model: config.model.trim(),
-      temperature: 0.2,
-      messages: [
-        { role: 'system', content: LAYER_SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: '请拆解这张图片的图层，只输出 JSON。' },
-            { type: 'image_url', image_url: { url: image } },
-          ],
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(LAYER_TIMEOUT_MS),
+  const answer = await chat.complete({
+    system: LAYER_SYSTEM_PROMPT,
+    temperature: 0.2,
+    content: [
+      { type: 'text', text: '请拆解这张图片的图层，只输出 JSON。' },
+      { type: 'image_url', image_url: { url: image } },
+    ],
+    ...signal === undefined ? {} : { signal },
   })
-  const body: unknown = await response.json().catch(() => undefined)
-  if (!response.ok) {
-    const message = body !== null && typeof body === 'object'
-      ? (body as { error?: { message?: unknown } }).error?.message
-      : undefined
-    throw new Error(typeof message === 'string' && message !== '' ? message : `HTTP ${response.status}`)
-  }
-  const choices = body !== null && typeof body === 'object' && Array.isArray((body as { choices?: unknown }).choices)
-    ? (body as { choices: unknown[] }).choices
-    : []
-  const content = choices[0] !== null && typeof choices[0] === 'object'
-    ? (choices[0] as { message?: { content?: unknown } }).message?.content
-    : undefined
-  if (typeof content !== 'string' || content.trim() === '') throw new Error('聊天模型没有返回图层数据')
+  const content = stripReasoning(answer)
+  if (content === '') throw new Error('对话模型没有返回图层数据')
   const plan = normalizeLayerPlan(jsonPayload(content))
-  if (plan === undefined) throw new Error('聊天模型返回的图层 JSON 无法解析（可能不支持视觉输入）')
+  if (plan === undefined) throw new Error('对话模型返回的图层 JSON 无法解析（可能不支持视觉输入）')
   return plan
 }

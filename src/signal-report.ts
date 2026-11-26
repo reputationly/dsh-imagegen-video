@@ -8,7 +8,7 @@
  * Three decisions shape this file, and each one is a correction of the obvious
  * approach:
  *
- * 1. BUCKET BY model × mode, never by model alone. "seedream retried 40% of the
+ * 1. BUCKET BY model × mode, never by model alone. "model X retried 40% of the
  *    time" is meaningless if the user only ever runs their hardest prompts on
  *    it. A model that leads on t2i and is never chosen for i2i must not inherit
  *    i2i's numbers, so modes never mix inside one bucket.
@@ -64,8 +64,6 @@ export interface IssueDraft {
   /** Markdown, ready to paste. Contains aggregates only — no prompt text, no
    *  image, no channel address. */
   body: string
-  /** Prefilled GitHub "new issue" URL, opened in the user's browser on click. */
-  url: string
 }
 
 export interface SignalReport {
@@ -80,8 +78,6 @@ export interface SignalReport {
   gaps: SignalReportGaps
   issue: IssueDraft
 }
-
-const ISSUE_REPO = 'https://github.com/q253595422/dsh-imagegen-video'
 
 function rate(count: number, total: number): number {
   return total === 0 ? 0 : count / total
@@ -218,10 +214,10 @@ function findingsOf(buckets: SignalBucket[]): SignalFinding[] {
 
 /**
  * Build the issue draft. This is the "send it back upstream" path, and it is a
- * DRAFT: the host writes the markdown and the prefilled URL, and the browser
- * opens it. Nothing is posted behind the user's back, because the signal log
- * lives on their machine and uploading it silently would make every later
- * consent question meaningless.
+ * DRAFT: the host writes the markdown and the browser copies it into a report
+ * the user files themselves. Nothing is posted behind the user's back, because
+ * the signal log lives on their machine and uploading it silently would make
+ * every later consent question meaningless.
  */
 function issueOf(report: Omit<SignalReport, 'issue'>, language: 'zh' | 'en'): IssueDraft {
   const actionable = report.findings.filter(finding => finding.severity !== 'info')
@@ -276,8 +272,7 @@ function issueOf(report: Omit<SignalReport, 'issue'>, language: 'zh' | 'en'): Is
     )
   }
   const body = lines.join('\n')
-  const params = new URLSearchParams({ title, body, labels: 'signal' })
-  return { title, body, url: `${ISSUE_REPO}/issues/new?${params.toString()}` }
+  return { title, body }
 }
 
 /**

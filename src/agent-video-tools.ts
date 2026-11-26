@@ -107,7 +107,8 @@ export function resolveAgentVideoModel(config: AgentVideoToolConfig, requested: 
     const options = entries.map(entry => `"${entry.channel.name} · ${entry.alias}"`).join(', ')
     throw new VideoGenError(`Multiple video models are available — ask the user which channel and model to use, then call this tool again with that exact model name. Options: ${options}.`, 'video-model-choice-required')
   }
-  const hosting = entries.filter(entry => entry.alias === wanted)
+  // list_media_models 报的是模型名，面板里存的是展示名，两种都认。
+  const hosting = entries.filter(entry => entry.alias === wanted || entry.upstream === wanted)
   if (hosting.length === 0) {
     const available = [...new Set(entries.map(entry => entry.alias))].join(', ')
     throw new VideoGenError(`Video model "${wanted}" is not configured in any channel. Choose one of: ${available}.`, 'video-model-not-configured')
@@ -120,7 +121,7 @@ export function resolveAgentVideoModel(config: AgentVideoToolConfig, requested: 
 function requireKnownFamily(upstream: string): void {
   const entry = describeVideoModel(upstream)
   if (entry.family === 'unknown') {
-    throw new VideoGenError(`Video model "${upstream}" has an unknown protocol family, so it cannot be generated. Use a known video model such as agnes-video-2.5-flash.`, 'video-unknown-model')
+    throw new VideoGenError(`Video model "${upstream}" has an unknown protocol family, so it cannot be generated. Use a model the gateway catalog lists (for example minimax-h3-2k).`, 'video-unknown-model')
   }
 }
 
@@ -259,10 +260,10 @@ export function registerAgentVideoTools(ctx: Context, runtime: ImageGenerationRu
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'generate_video',
-      description: 'Generate a video (text-to-video). Video rendering is asynchronous and usually takes several minutes, so by default this tool call stays pending until the task settles; set wait_for_completion to false for background mode and then use get_video_generation_task. The finished clip is saved as a file on the host and returned as a same-origin URL (it is never attached to the conversation). Only models configured in the channel\'s video catalog are allowed; omit model to use the configured default video model.',
+      description: 'Generate a video from text. Rendering takes minutes, so by default the call waits for the task; set wait_for_completion=false for background mode, then poll with get_video_generation_task. The clip is saved on the host and returned as a same-origin URL, never attached to the conversation. Omit model to use the default video model; see list_media_models.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'Detailed video prompt: subject, action, camera movement, lighting and mood.' },
-        model: { type: 'string', description: 'One of the configured video models. Defaults to the configured default video model.' },
+        model: { type: 'string', description: 'Optional model id from list_media_models. Defaults to the default video model.' },
         aspect_ratio: { type: 'string', description: 'Aspect ratio such as 16:9, 9:16 or 1:1. Defaults to 16:9.' },
         resolution: { type: 'string', description: 'One of the tiers the chosen model accepts: usually 480P, 720P (default) or 1080P; MiniMax-H3 takes 768P only.' },
         seconds: { type: 'integer', description: 'Clip length in seconds. Defaults to 5.' },
@@ -282,14 +283,14 @@ export function registerAgentVideoTools(ctx: Context, runtime: ImageGenerationRu
     })),
     ctx.tools.register(defineTool({
       name: 'generate_video_from_image',
-      description: 'Generate a video from reference image(s). Use mode "image" for one reference frame, "keyframe" for first/last-frame interpolation (providers that accept both), or "reference" for one or more style/subject references. Reference images must be image references returned by a completed generation or get_video_generation_task; pass that entire object unchanged. Rendering is asynchronous and usually takes minutes; by default this tool call stays pending until the task settles.',
+      description: 'Generate a video from reference image(s): mode image uses one reference frame, keyframe interpolates first and last frame, reference uses one or more style or subject images. References come from a finished generation or get_video_generation_task, passed unchanged. Rendering takes minutes; by default the call waits for the task. See list_media_models.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'Detailed video prompt describing the motion and mood.' },
         mode: { type: 'string', required: true, description: 'image (one reference), keyframe (first/last frame) or reference (multiple references).' },
         image: { ...imageRefSchema, description: 'Reference image for mode=image or mode=reference.' },
         first_frame: { ...imageRefSchema, description: 'First-frame image for mode=keyframe.' },
         last_frame: { ...imageRefSchema, description: 'Optional last-frame image for mode=keyframe.' },
-        model: { type: 'string', description: 'One of the configured video models. Defaults to the configured default video model.' },
+        model: { type: 'string', description: 'Optional model id from list_media_models. Defaults to the default video model.' },
         aspect_ratio: { type: 'string', description: 'Aspect ratio such as 16:9, 9:16 or 1:1.' },
         resolution: { type: 'string', description: 'One of the tiers the chosen model accepts: usually 480P, 720P (default) or 1080P; MiniMax-H3 takes 768P only.' },
         seconds: { type: 'integer', description: 'Clip length in seconds. Defaults to 5.' },

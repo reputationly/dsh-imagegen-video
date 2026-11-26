@@ -278,9 +278,14 @@ await check('计划：设定板只收跑出图的，空位不写', () => {
 // ---------------------------------------------------------------- 宿主写入
 
 const roots = []
+// 工作区根总是经一层符号链接给出：macOS 的临时目录本来就是 `/var` → `/private/var`，
+// Linux 上不是，这里自己造一层，两个平台都覆盖「字面 root 与真实路径不同」的情况。
 function makeRoot () {
-  const root = mkdtempSync(join(tmpdir(), 'drama-write-'))
-  roots.push(root)
+  const real = mkdtempSync(join(tmpdir(), 'drama-write-real-'))
+  const holder = mkdtempSync(join(tmpdir(), 'drama-write-'))
+  roots.push(real, holder)
+  const root = join(holder, 'workspace')
+  symlinkSync(real, root, 'dir')
   mkdirSync(join(root, '剧集', 'EP001'), { recursive: true })
   writeFileSync(join(root, '剧集', 'EP001', '分镜.md'), STORYBOARD, 'utf8')
   return root

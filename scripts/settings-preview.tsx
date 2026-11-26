@@ -2,8 +2,10 @@
  * Visual-only entry for the dsh-imagegen settings card.
  *
  * Renders the real `ImageGenSettingsSection` against an in-memory settings
- * scope, so the beginner setup path and the service editor can be checked in a
- * real browser at the host's settings-pane width. No host routes are used.
+ * scope, so both states of the card (a fresh install and one that has been
+ * configured) can be checked in a real browser at the host's settings-pane
+ * width. No host routes are used: the card only edits local choices, because
+ * the gateway channel and its credentials belong to the deployment.
  */
 
 import { createElement, useSyncExternalStore } from 'react'
@@ -18,49 +20,20 @@ const variant = new URLSearchParams(location.search).get('state') === 'new' ? 'n
 
 const EMPTY: ImageGenConfig = {
   enabled: true,
-  channels: [],
 }
 
 const CONFIGURED: ImageGenConfig = {
   enabled: true,
   announceToAgent: true,
-  channels: [
-    {
-      id: 'volc',
-      preset: 'volc-ark-seedream',
-      name: '火山方舟（Seedream / Seedance）',
-      apiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-      apiUrlFull: false,
-      models: [
-        { alias: 'doubao-seedream-5-0-pro-260628', id: 'doubao-seedream-5-0-pro-260628' },
-        { alias: 'doubao-seedream-5-0-260128', id: 'doubao-seedream-5-0-260128' },
-        { alias: 'doubao-seedream-4-5-251128', id: 'doubao-seedream-4-5-251128' },
-      ],
-      videoModels: [
-        { alias: 'doubao-seedance-2-0-260128', id: 'doubao-seedance-2-0-260128' },
-        { alias: 'doubao-seedance-2-0-fast-260128', id: 'doubao-seedance-2-0-fast-260128' },
-      ],
-    },
-    {
-      id: 'openai',
-      preset: 'openai-official',
-      name: 'OpenAI 官方',
-      apiUrl: 'https://api.openai.com/v1',
-      apiUrlFull: false,
-      models: [
-        { alias: 'gpt-image-2.5', id: 'gpt-image-2.5' },
-        { alias: 'gpt-image-2', id: 'gpt-image-2' },
-      ],
-    },
-  ],
-  defaultChannelId: 'volc',
-  defaultModel: 'doubao-seedream-5-0-pro-260628',
-  defaultVideoModel: 'doubao-seedance-2-0-260128',
-  promptModel: 'deepseek-chat',
+  allowAgentImageGeneration: true,
+  allowAgentVideoGeneration: true,
+  localStoragePath: '/Users/you/Pictures/dsh-imagegen',
+  skillsEnabled: true,
+  allowHeavySkills: true,
+  skillHeavyTimeoutMinutes: 20,
 }
 
 const config = variant === 'new' ? EMPTY : CONFIGURED
-const secretIds = new Set(variant === 'new' ? [] : ['channelSecrets.volc', 'channelSecrets.openai'])
 
 const scope = {
   getSnapshot: () => ({
@@ -78,9 +51,10 @@ const scope = {
   unset: async () => {},
   load: async () => {},
   mutateOps: async () => {},
-  getKeySetSnapshot: (field: string) => secretIds.has(field),
+  // 这张卡片不编辑任何密钥：网关凭据由宿主凭据服务持有，提交时现取。
+  getKeySetSnapshot: () => false,
   subscribeKeySet: () => () => {},
-  getSecretSetSnapshot: (field: string) => secretIds.has(field),
+  getSecretSetSnapshot: () => false,
   subscribeSecretSets: () => () => {},
 } as unknown as ImageGenScope
 

@@ -1,63 +1,36 @@
 /**
- * The dsh-imagegen settings card. The first screen is a three-step newcomer
- * path: connect a model service, choose the image and video catalogs
- * separately, then save. Professional options stay in the advanced block.
- * The service editor keeps the model-catalog alias → upstream mapping and
- * built-in provider presets; image and video catalogs get their own tabs so a
- * provider can expose one, the other, or both.
+ * The dsh-imagegen settings card.
  *
- * The interaction mirrors the host's model-provider page: one row per channel
- * (status dot + edit/delete), two add buttons (built-in provider / custom),
- * and an editor holding API key, display name, API URL, and the model catalog
- * with detection.
+ * The plugin's generation channels, credentials and prompt-enhancement route
+ * belong to the deployment, not to this card: models and the gateway endpoint
+ * come from the host media catalog, and the prompt helper runs on the host
+ * conversation model. What is left here is the handful of choices that are
+ * genuinely local — whether Agents may generate, where the files land, and how
+ * the infinite-canvas skills run.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import { CardForm, booleanField, secretField, textField, type CardActions, type CardSaveOutcome, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
-import { ChannelsForm, type ChannelDraft, type ChannelIssue, type ChannelsFormActions, type ChannelsFormState, type ChannelsSaveOutcome } from './channels-form.ts'
-import { ImageGenApi } from './api.ts'
+import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { CardForm, booleanField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
-import { describeModel, modelFamily } from '../model-catalog.ts'
-import { DEFAULT_VIDEO_MODELS, describeVideoModel } from '../video-model-catalog.ts'
-import { IMAGE_MODEL_API, PLUGIN_VERSION, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isChatCompletionsUrl, isSubscriptionProvider, resolveChannelProtocol, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
+import { CANVAS_SKILL_API, PLUGIN_VERSION } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
-import { tt, type TranslateValues } from './helpers.ts'
+import { tt } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
 import { OPEN_IMAGE_GEN_CONFIG_EVENT, takeImageGenConfigSection } from './config-entry.tsx'
 import { PptSetup } from './PptSetup.tsx'
 import { Select } from './Select.tsx'
-import { onTablistKeyDown, tabIndexFor } from './tablist.ts'
 import css from './settings-card.module.css'
 
-/**
- * The card's own API client (update checks today).
- *
- * Module scope, not a per-render instance: `api.ts` holds no state, and the
- * update check is fired from a button on a card that re-renders on every
- * keystroke elsewhere on the page.
- */
-const settingsApi = new ImageGenApi()
-
-/** The global (non-channel) fields this card's staged form edits. */
+/** The fields this card's staged form edits. */
 export interface ImageGenSettings {
   enabled?: boolean
   announceToAgent?: boolean
   allowAgentImageGeneration?: boolean
-  promptApiUrl?: string
-  promptApiKey?: string
-  promptModel?: string
+  allowAgentVideoGeneration?: boolean
   localStoragePath?: string
-  storageEnabled?: boolean
-  storageEndpoint?: string
-  storageRegion?: string
-  storagePrefix?: string
-  storageAccessKey?: string
-  storageSecretKey?: string
-  storageSyncGallery?: boolean
-  storageSyncHistory?: boolean
   skillsEnabled?: boolean
   allowHeavySkills?: boolean
   skillAllowlist?: string
@@ -68,25 +41,13 @@ export interface ImageGenSettings {
 
 /** What the card renders. */
 export interface ImageGenSettingsCardState extends CardShell {
-  /** Channel list staging (channels + per-channel key edits + default). */
-  channels: ChannelsFormState
   /** Master switch. */
   enabled: CardFieldState
   /** System-prompt announcement flag. */
   announceToAgent: CardFieldState
   allowAgentImageGeneration: CardFieldState
-  promptApiUrl: CardFieldState
-  promptApiKey: CardFieldState
-  promptModel: CardFieldState
+  allowAgentVideoGeneration: CardFieldState
   localStoragePath: CardFieldState
-  storageEnabled: CardFieldState
-  storageEndpoint: CardFieldState
-  storageRegion: CardFieldState
-  storagePrefix: CardFieldState
-  storageAccessKey: CardFieldState
-  storageSecretKey: CardFieldState
-  storageSyncGallery: CardFieldState
-  storageSyncHistory: CardFieldState
   skillsEnabled: CardFieldState
   allowHeavySkills: CardFieldState
   skillAllowlist: CardFieldState
@@ -95,23 +56,8 @@ export interface ImageGenSettingsCardState extends CardShell {
   skillAgentPreset: CardFieldState
 }
 
-/** Result of probing the configured object storage from the card. */
-export type SubscriptionStatus = { state: 'logged-in'; email?: string; error?: string } | { state: 'logged-out'; error?: string } | { state: 'unknown'; error?: string }
-export type SubscriptionStatusMap = Record<SubscriptionProvider, SubscriptionStatus>
-
-/** Result of probing the configured object storage from the card. */
-export interface StorageTestOutcome {
-  ok: boolean
-  ms?: number
-  message?: string
-}
-
 /** The registration-side face the card's slot entry injects. */
 export interface ImageGenSettingsCardFace extends CardActions {
-  /** Channel staging actions (committed together with the card's save). */
-  channels: ChannelsFormActions
-  /** Save staged edits, then upload a probe object to the configured store. */
-  storageTest: () => Promise<StorageTestOutcome>
   hooks: {
     /** Card snapshot bound by the renderer as useImageGenSettingsCard. */
     imageGenSettingsCard: SnapshotStore<ImageGenSettingsCardState>
@@ -121,7 +67,6 @@ export interface ImageGenSettingsCardFace extends CardActions {
 /** Bridges the imagegen scope onto the card's staged forms. */
 export class ImageGenSettingsCardController {
   private readonly form: CardForm<ImageGenSettings>
-  private readonly channelsForm: ChannelsForm
 
   /** @param scope - the bound bridge scope for the dsh-imagegen namespace. */
   constructor(private readonly scope: ImageGenScope) {
@@ -129,51 +74,25 @@ export class ImageGenSettingsCardController {
       booleanField('enabled'),
       booleanField('announceToAgent'),
       booleanField('allowAgentImageGeneration'),
-      textField('promptApiUrl'),
-      secretField('promptApiKey'),
-      textField('promptModel'),
+      booleanField('allowAgentVideoGeneration'),
       textField('localStoragePath'),
-      booleanField('storageEnabled'),
-      textField('storageEndpoint'),
-      textField('storageRegion'),
-      textField('storagePrefix'),
-      textField('storageAccessKey'),
-      secretField('storageSecretKey'),
-      booleanField('storageSyncGallery'),
-      booleanField('storageSyncHistory'),
       booleanField('skillsEnabled'),
       booleanField('allowHeavySkills'),
       textField('skillAllowlist'),
       textField('skillOutputDir'),
       textField('skillHeavyTimeoutMinutes'),
       textField('skillAgentPreset'),
-    ], {
-      secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
-    })
-    this.channelsForm = new ChannelsForm(scope)
+    ])
   }
 
   private projection(): ImageGenSettingsCardState {
-    const shell = this.form.shell()
     return {
-      ...shell,
-      dirty: shell.dirty || this.channelsForm.snapshot().dirty,
-      channels: this.channelsForm.snapshot(),
+      ...this.form.shell(),
       enabled: this.form.field('enabled'),
       announceToAgent: this.form.field('announceToAgent'),
       allowAgentImageGeneration: this.form.field('allowAgentImageGeneration'),
-      promptApiUrl: this.form.field('promptApiUrl'),
-      promptApiKey: this.form.field('promptApiKey'),
-      promptModel: this.form.field('promptModel'),
+      allowAgentVideoGeneration: this.form.field('allowAgentVideoGeneration'),
       localStoragePath: this.form.field('localStoragePath'),
-      storageEnabled: this.form.field('storageEnabled'),
-      storageEndpoint: this.form.field('storageEndpoint'),
-      storageRegion: this.form.field('storageRegion'),
-      storagePrefix: this.form.field('storagePrefix'),
-      storageAccessKey: this.form.field('storageAccessKey'),
-      storageSecretKey: this.form.field('storageSecretKey'),
-      storageSyncGallery: this.form.field('storageSyncGallery'),
-      storageSyncHistory: this.form.field('storageSyncHistory'),
       skillsEnabled: this.form.field('skillsEnabled'),
       allowHeavySkills: this.form.field('allowHeavySkills'),
       skillAllowlist: this.form.field('skillAllowlist'),
@@ -185,28 +104,12 @@ export class ImageGenSettingsCardController {
 
   /**
    * Build the face the card's slot registration injects.
-   * @returns the card's snapshot and the form/channel actions.
+   * @returns the card's snapshot and the staged-form actions.
    */
   inject(): ImageGenSettingsCardFace {
-    const cardStore = this.form.bind(() => this.projection())
-    this.channelsForm.subscribe(() => { cardStore.set(this.projection()) })
     return {
       hooks: {
-        imageGenSettingsCard: cardStore,
-      },
-      channels: this.channelsForm.actions(),
-      // The probe needs the values the user is looking at, so staged edits are
-      // committed first; the host route then resolves the saved config itself.
-      storageTest: async (): Promise<StorageTestOutcome> => {
-        await this.form.save()
-        try {
-          const response = await fetch('/api/dsh-imagegen/storage/test', { method: 'POST' })
-          const body = await response.json() as { ok?: unknown; ms?: unknown; message?: unknown }
-          if (body.ok === true) return { ok: true, ms: typeof body.ms === 'number' ? body.ms : undefined }
-          return { ok: false, message: typeof body.message === 'string' ? body.message : `HTTP ${response.status}` }
-        } catch (error) {
-          return { ok: false, message: error instanceof Error ? error.message : String(error) }
-        }
+        imageGenSettingsCard: this.form.bind(() => this.projection()),
       },
       ...this.form.actions(),
     }
@@ -219,16 +122,7 @@ export type ImageGenSettingsSectionProps =
   & PropsLocale<'dsh-imagegen'>
   & InjectFace<ImageGenSettingsCardFace>
 
-/** Host-computed usage counters (generation-count badges). */
-interface UsageCounters {
-  byChannel: Record<string, Record<string, number>>
-  totals: Record<string, number>
-}
-
-type SettingsSectionId = 'channels' | 'prompt' | 'storage' | 'skills' | 'ppt' | 'general' | null
-
-/** The two independent model catalogs a service can expose. */
-type ModelCatalogTab = 'image' | 'video'
+type SettingsSectionId = 'general' | 'storage' | 'skills' | 'ppt' | null
 
 /** One mutually-exclusive settings group. */
 function SettingsSection(props: {
@@ -263,71 +157,6 @@ function SettingsSection(props: {
   )
 }
 
-/** Small, text-free mode mark so the two capabilities read differently at a glance. */
-function ModeMark(props: { mode: ModelCatalogTab }) {
-  return (
-    <span className={css.modeMark} data-mode={props.mode} aria-hidden="true">
-      <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
-        {props.mode === 'image'
-          ? <><rect x="2.75" y="3.25" width="14.5" height="13.5" rx="2.25" /><circle cx="7.25" cy="7.5" r="1.35" /><path d="m4.25 14 3.8-3.55 2.65 2.4 2.05-1.85 3 3" /></>
-          : <><rect x="2.25" y="4.25" width="12.75" height="11.5" rx="2.25" /><path d="m15 8 3.25-1.85v7.7L15 12" /></>}
-      </svg>
-    </span>
-  )
-}
-
-/** One capability card inside the beginner setup path. */
-function ModeSetupCard(props: {
-  mode: ModelCatalogTab
-  title: string
-  hint: string
-  status: string
-  ready: boolean
-  groups: Array<{ id: string; name: string; models: string[] }>
-  value: string
-  defaultLabel: string
-  emptyLabel: string
-  configureLabel: string
-  disabled: boolean
-  onChange: (value: string) => void
-  onConfigure: () => void
-}) {
-  return (
-    <div className={css.modeCard} data-mode={props.mode} data-ready={props.ready ? '' : undefined}>
-      <div className={css.modeCardHead}>
-        <ModeMark mode={props.mode} />
-        <span className={css.modeCardTitle}>{props.title}</span>
-        <span className={css.modeStatus} data-ready={props.ready ? '' : undefined}>{props.status}</span>
-      </div>
-      <p className={css.modeHint}>{props.hint}</p>
-      {props.groups.length > 0
-        ? (
-          <label className={css.modeSelectRow}>
-            <span>{props.defaultLabel}</span>
-            <Select
-              className={css.modeSelect}
-              value={props.value}
-              disabled={props.disabled}
-              searchable
-              title={props.value}
-              aria-label={props.defaultLabel}
-              onChange={props.onChange}
-            >
-              {props.groups.map(group => <optgroup key={group.id} label={group.name}>
-                {group.models.map(model => <option key={`${group.id}:${model}`} value={model}>{model}</option>)}
-              </optgroup>)}
-            </Select>
-          </label>
-        )
-        : <p className={css.modeEmpty}>{props.emptyLabel}</p>}
-      <button type="button" className={css.modeConfigure} disabled={props.disabled} onClick={props.onConfigure}>
-        {props.configureLabel}
-        <span aria-hidden="true">→</span>
-      </button>
-    </div>
-  )
-}
-
 /**
  * Render the card.
  * @param props - locale copy, the card snapshot, and the form actions.
@@ -342,273 +171,24 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
   const [initialSection] = useState(() => takeImageGenConfigSection())
   const [open, setOpen] = useState(true)
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => initialSection ?? 'channels')
-  /** Professional options stay out of the first-run path until asked for. */
-  const [advancedOpen, setAdvancedOpen] = useState(initialSection !== undefined && initialSection !== 'channels')
-  /** Which catalog the service editor opens on. */
-  const [editorTab, setEditorTab] = useState<ModelCatalogTab>('image')
-  /** Capability filter for the provider picker launched from either mode card. */
-  const [presetPickerMode, setPresetPickerMode] = useState<ModelCatalogTab | 'all'>('all')
-  // "Set up PPT" elsewhere in the panel jumps straight to this section.
-  useEffect(() => {
-    const open = (): void => {
-      const section = takeImageGenConfigSection()
-      if (section !== undefined) {
-        setActiveSection(section)
-        setAdvancedOpen(section !== 'channels')
-      }
-    }
-    window.addEventListener(OPEN_IMAGE_GEN_CONFIG_EVENT, open)
-    return () => { window.removeEventListener(OPEN_IMAGE_GEN_CONFIG_EVENT, open) }
-  }, [])
-  // Global-section local states (prompt enhancement etc.).
-  const [promptModels, setPromptModels] = useState<string[]>([])
-  const [loadingPromptModels, setLoadingPromptModels] = useState(false)
-  const [promptModelsError, setPromptModelsError] = useState<string | null>(null)
-  const [manualPromptModelOpen, setManualPromptModelOpen] = useState(false)
-  const [manualPromptModel, setManualPromptModel] = useState('')
-  const [promptApiOpen, setPromptApiOpen] = useState(false)
-  const [storageTesting, setStorageTesting] = useState(false)
-  const [storageTestResult, setStorageTestResult] = useState<string | null>(null)
-  const [skillProbing, setSkillProbing] = useState(false)
-  const [skillProbeResult, setSkillProbeResult] = useState<string | null>(null)
-  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusMap>(() => ({
-    'chatgpt-sub': { state: 'unknown' },
-    'grok-sub': { state: 'unknown' },
-    'google-sub': { state: 'unknown' },
-    'openrouter-sub': { state: 'unknown' },
-  }))
-  const [subscriptionBusy, setSubscriptionBusy] = useState<Partial<Record<SubscriptionProvider, 'login' | 'logout'>>>({})
-  const [subscriptionPending, setSubscriptionPending] = useState<SubscriptionProvider[]>([])
-  const [subscriptionMessage, setSubscriptionMessage] = useState<Partial<Record<SubscriptionProvider, string>>>({})
-  /** Browser OAuth/device tabs opened for each pending subscription login. */
-  const subscriptionPopups = useRef<Partial<Record<SubscriptionProvider, Window>>>({})
-  // Channel list local states.
-  const [editingId, setEditingId] = useState<string | null>(null)
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(initialSection ?? 'general')
   /** The result line under the save button: which outcome the last save had. */
   const [saveNote, setSaveNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [updateState, setUpdateState] = useState<'idle' | 'checking'>('idle')
-  const [updateNote, setUpdateNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [presetPickerOpen, setPresetPickerOpen] = useState(false)
-  const [presets, setPresets] = useState<PresetProviderView[]>([])
-  const [presetError, setPresetError] = useState<string | null>(null)
-  const [usage, setUsage] = useState<UsageCounters | null>(null)
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-
-  useEffect(() => () => {
-    for (const popup of Object.values(subscriptionPopups.current)) {
-      try { popup?.close() } catch { /* ignore */ }
+  const [skillProbing, setSkillProbing] = useState(false)
+  const [skillProbeResult, setSkillProbeResult] = useState<string | null>(null)
+  // "Set up PPT" elsewhere in the panel jumps straight to this section.
+  useEffect(() => {
+    const reveal = (): void => {
+      const section = takeImageGenConfigSection()
+      if (section === undefined) return
+      setActiveSection(section)
     }
-    subscriptionPopups.current = {}
+    window.addEventListener(OPEN_IMAGE_GEN_CONFIG_EVENT, reveal)
+    return () => { window.removeEventListener(OPEN_IMAGE_GEN_CONFIG_EVENT, reveal) }
   }, [])
-
-  const refreshSubscriptions = async (): Promise<SubscriptionStatusMap> => {
-    const response = await fetch(SUBSCRIPTION_API.status, { method: 'POST', cache: 'no-store' })
-    const body = await response.json() as { ok?: boolean; statuses?: Record<string, { state?: string; email?: string; error?: string }>; message?: string }
-    if (!response.ok || body.ok !== true || body.statuses === undefined) throw new Error(body.message ?? `HTTP ${response.status}`)
-    const next: SubscriptionStatusMap = {
-      'chatgpt-sub': { state: 'unknown' },
-      'grok-sub': { state: 'unknown' },
-      'google-sub': { state: 'unknown' },
-      'openrouter-sub': { state: 'unknown' },
-    }
-    for (const provider of SUBSCRIPTION_PROVIDERS) {
-      const row = body.statuses[provider]
-      if (row?.state === 'logged-in') next[provider] = { state: 'logged-in', ...(typeof row.email === 'string' ? { email: row.email } : {}) }
-      else if (row?.state === 'logged-out') next[provider] = { state: 'logged-out', ...(typeof row.error === 'string' ? { error: row.error } : {}) }
-    }
-    const errors = Object.fromEntries(Object.entries(next).flatMap(([provider, status]) => status.error === undefined ? [] : [[provider, status.error]]))
-    if (Object.keys(errors).length > 0) setSubscriptionMessage(current => ({ ...current, ...errors }))
-    setSubscriptionStatus(next)
-    return next
-  }
-
-  useEffect(() => {
-    if (!state.exposed || !open) return
-    let active = true
-    const load = (): void => {
-      void refreshSubscriptions().catch(() => { /* badge is best-effort */ })
-    }
-    load()
-    const onFocus = (): void => { if (active) load() }
-    window.addEventListener('focus', onFocus)
-    return () => { active = false; window.removeEventListener('focus', onFocus) }
-  }, [state.exposed, open])
-
-  useEffect(() => {
-    const pending = subscriptionPending.filter(provider => subscriptionStatus[provider].state !== 'logged-in')
-    if (!open || pending.length === 0) return
-    const timer = window.setInterval(() => {
-      void refreshSubscriptions().then(next => {
-        const landed = pending.filter(provider => next[provider].state === 'logged-in')
-        if (landed.length > 0) {
-          for (const provider of landed) {
-            const popup = subscriptionPopups.current[provider]
-            if (popup !== undefined) {
-              try { popup.close() } catch { /* cross-origin close is still best-effort */ }
-              delete subscriptionPopups.current[provider]
-            }
-          }
-          setSubscriptionPending(current => current.filter(provider => next[provider].state !== 'logged-in'))
-          setSubscriptionMessage(current => ({ ...current, ...Object.fromEntries(landed.map(provider => [provider, t('settings.subscriptionLoginOk')])) }))
-        }
-      }).catch(() => { /* keep polling through transient failures */ })
-    }, 2000)
-    const timeout = window.setTimeout(() => { setSubscriptionPending([]) }, 10 * 60_000)
-    return () => { window.clearInterval(timer); window.clearTimeout(timeout) }
-  }, [open, subscriptionPending.join(','), subscriptionStatus])
-
-  const subscriptionLogin = async (provider: SubscriptionProvider): Promise<void> => {
-    const previous = subscriptionPopups.current[provider]
-    if (previous !== undefined) { try { previous.close() } catch { /* ignore */ } }
-    const popup = window.open('about:blank', '_blank')
-    if (popup !== null) {
-      subscriptionPopups.current[provider] = popup
-      try { popup.opener = null } catch { /* ignore */ }
-    }
-    setSubscriptionBusy(current => ({ ...current, [provider]: 'login' }))
-    setSubscriptionMessage(current => ({ ...current, [provider]: '' }))
-    try {
-      const response = await fetch(SUBSCRIPTION_API.login, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ provider }),
-      })
-      const body = await response.json() as { ok?: boolean; url?: string; code?: string; expiresInSeconds?: number; message?: string }
-      if (!response.ok || body.ok !== true || typeof body.url !== 'string') throw new Error(body.message ?? `HTTP ${response.status}`)
-      if (popup !== null) popup.location.replace(body.url)
-      else window.open(body.url, '_blank')
-      if (typeof body.code === 'string' && body.code !== '') {
-        setSubscriptionMessage(current => ({ ...current, [provider]: t('settings.subscriptionDeviceCode', { code: body.code ?? '' }) }))
-      }
-      setSubscriptionPending(current => current.includes(provider) ? current : [...current, provider])
-    } catch (error) {
-      popup?.close()
-      delete subscriptionPopups.current[provider]
-      setSubscriptionMessage(current => ({ ...current, [provider]: error instanceof Error ? error.message : String(error) }))
-    } finally {
-      setSubscriptionBusy(current => { const next = { ...current }; delete next[provider]; return next })
-    }
-  }
-
-  const subscriptionComplete = async (provider: SubscriptionProvider, input: string): Promise<void> => {
-    setSubscriptionBusy(current => ({ ...current, [provider]: 'login' }))
-    setSubscriptionMessage(current => ({ ...current, [provider]: '' }))
-    try {
-      const response = await fetch(SUBSCRIPTION_API.login, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ provider, action: 'complete', input }),
-      })
-      const body = await response.json() as { ok?: boolean; message?: string }
-      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-      await refreshSubscriptions()
-      const popup = subscriptionPopups.current[provider]
-      if (popup !== undefined) {
-        try { popup.close() } catch { /* ignore */ }
-        delete subscriptionPopups.current[provider]
-      }
-      setSubscriptionPending(current => current.filter(item => item !== provider))
-      setSubscriptionMessage(current => ({ ...current, [provider]: t('settings.subscriptionLoginOk') }))
-    } catch (error) {
-      setSubscriptionMessage(current => ({ ...current, [provider]: error instanceof Error ? error.message : String(error) }))
-    } finally {
-      setSubscriptionBusy(current => { const next = { ...current }; delete next[provider]; return next })
-    }
-  }
-
-  const subscriptionLogout = async (provider: SubscriptionProvider): Promise<void> => {
-    setSubscriptionBusy(current => ({ ...current, [provider]: 'logout' }))
-    setSubscriptionMessage(current => ({ ...current, [provider]: '' }))
-    try {
-      const response = await fetch(SUBSCRIPTION_API.login, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ provider, action: 'logout' }),
-      })
-      const body = await response.json() as { ok?: boolean; message?: string }
-      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-      const popup = subscriptionPopups.current[provider]
-      if (popup !== undefined) {
-        try { popup.close() } catch { /* ignore */ }
-        delete subscriptionPopups.current[provider]
-      }
-      setSubscriptionStatus(current => ({ ...current, [provider]: { state: 'logged-out' } }))
-      setSubscriptionPending(current => current.filter(item => item !== provider))
-    } catch (error) {
-      setSubscriptionMessage(current => ({ ...current, [provider]: error instanceof Error ? error.message : String(error) }))
-    } finally {
-      setSubscriptionBusy(current => { const next = { ...current }; delete next[provider]; return next })
-    }
-  }
-
-  // Usage counters: refreshed once per card open (and after a successful save).
-  useEffect(() => {
-    if (!state.exposed) return
-    let alive = true
-    void fetch(USAGE_API, { method: 'POST' })
-      .then(async response => { const body = await response.json() as { ok?: boolean; usage?: UsageCounters }; if (alive && body.ok === true && body.usage !== undefined) setUsage(body.usage) })
-      .catch(() => { /* counters are best-effort */ })
-    return () => { alive = false }
-  }, [state.exposed])
 
   if (!state.available) return null
   const title = t('settings.title')
-  const blocked = !state.dirty || state.invalid || state.saving || state.channels.saving
-
-  /**
-   * Save both halves and say what happened.
-   *
-   * Channel drafts are validated first: a save used to fire the writes and show
-   * nothing, so an empty API URL looked saved while nothing reached the Host.
-   * Blocking fields are reported in place and the first one takes focus.
-   */
-  /** Run the update check by hand and always say what came back. */
-  const checkUpdate = async (): Promise<void> => {
-    if (updateState === 'checking') return
-    setUpdateState('checking')
-    setUpdateNote(null)
-    try {
-      const info = await settingsApi.updateCheck()
-      setUpdateNote(info.updateAvailable
-        ? { ok: true, text: t('settings.updateAvailable', { version: info.latestVersion, current: info.currentVersion }) }
-        : { ok: true, text: t('settings.updateLatest', { version: info.currentVersion }) })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setUpdateNote({ ok: false, text: t('settings.updateCheckFailed', { error: message }) })
-    } finally {
-      setUpdateState('idle')
-    }
-  }
-
-  const saveAll = async (): Promise<boolean> => {
-    const blocking = Object.entries(state.channels.issues).find(([, list]) => list.length > 0)
-    if (blocking !== undefined) {
-      const [channelId, list] = blocking
-      const first = list[0]
-      setSaveNote({
-        ok: false,
-        text: first === undefined
-          ? t('channels.fixBeforeSave', { n: 0 })
-          : `${t(`channels.${first.code}` as never)} · ${t('channels.fixBeforeSave', { n: list.length })}`,
-      })
-      const fieldId = first?.field === 'apiUrl' ? `dsh-imagegen-channel-url-${channelId}` : `dsh-imagegen-channel-models-${channelId}`
-      const field = document.getElementById(fieldId)
-      if (field !== null) {
-        field.scrollIntoView?.({ block: 'center' })
-        field.focus?.()
-      }
-      return false
-    }
-    setSaveNote(null)
-    const [channels, card] = await Promise.all([props.channels.commit(), props.save()])
-    const failure = channels.ok ? card : channels
-    const ok = failure.ok
-    setSaveNote(ok
-      ? { ok: true, text: t('settings.saved') }
-      : { ok: false, text: t('settings.saveFailedReason', { error: failure.message ?? t('settings.saveFailed') }) })
-    return ok
-  }
   const disabled = !state.writable
   const fieldProps = {
     overriddenLabel: t('settings.overridden'),
@@ -616,6 +196,10 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
     invalidLabel: t('settings.invalidNumber'),
     disabled,
   }
+  const generalSummary = state.enabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
+  const localPath = state.localStoragePath.text.trim()
+  const storageSummary = localPath === '' ? t('settings.summaryDefault') : localPath
+  const skillsSummary = state.skillsEnabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
 
   if (!state.exposed) {
     return (
@@ -650,94 +234,6 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
     )
   }
 
-  const channels = state.channels.channels
-  const modelGroups = channels
-    .map(channel => ({ id: channel.id, name: channel.name.trim() || channel.id, models: [...new Set(channel.models.map(model => model.alias).filter(alias => alias !== ''))] }))
-    .filter(group => group.models.length > 0)
-  const videoModelGroups = channels
-    .map(channel => ({ id: channel.id, name: channel.name.trim() || channel.id, models: [...new Set((channel.videoModels ?? []).map(model => model.alias).filter(alias => alias !== ''))] }))
-    .filter(group => group.models.length > 0)
-  const modelAliases = [...new Set(modelGroups.flatMap(group => group.models))]
-  const videoModelAliases = [...new Set(videoModelGroups.flatMap(group => group.models))]
-  const editing = editingId === null ? undefined : channels.find(channel => channel.id === editingId)
-  const channelAuthReady = (channel: ChannelDraft): boolean => {
-    const provider = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
-    return provider === undefined
-      ? state.channels.keySet[channel.id] === true
-      : subscriptionStatus[provider].state === 'logged-in'
-  }
-  const connectedChannels = channels.filter(channelAuthReady).length
-  const imageReadyChannels = channels.filter(channel => channelAuthReady(channel) && channel.models.length > 0)
-  const videoReadyChannels = channels.filter(channel => channelAuthReady(channel) && (channel.videoModels ?? []).length > 0)
-  const readyImageModels = [...new Set(imageReadyChannels.flatMap(channel => channel.models.map(model => model.alias).filter(alias => alias !== '')))].length
-  const readyVideoModels = [...new Set(videoReadyChannels.flatMap(channel => (channel.videoModels ?? []).map(model => model.alias).filter(alias => alias !== '')))].length
-  const imageReady = imageReadyChannels.length > 0
-  const videoReady = videoReadyChannels.length > 0
-  const imageConfigured = modelGroups.length > 0
-  const videoConfigured = videoModelGroups.length > 0
-  const overallReady = imageReady || videoReady
-  const readyChannels = channels.filter(channel => channelAuthReady(channel) && channelModelCount(channel) > 0).length
-  const channelSummary = channels.length === 0
-    ? t('settings.summaryNotConfigured')
-    : t('settings.summaryChannels', { ready: readyChannels, total: channels.length })
-  const promptSummary = state.promptModel.text.trim() || t('settings.summaryOptional')
-  const storageSummary = state.storageEnabled.text === 'true' ? t('settings.summaryEnabled') : t('settings.summaryDisabled')
-  const skillsSummary = state.skillsEnabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
-  const generalSummary = state.enabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
-  const headerDescription = channels.length === 0
-    ? t('settings.headerNeedsChannel')
-    : t('settings.headerSummary', { channels: channels.length, image: new Set(modelAliases).size, video: new Set(videoModelAliases).size })
-  const pluginEnabled = state.enabled.text !== 'false'
-  const readinessLabel = !pluginEnabled
-    ? t('settings.pluginOff')
-    : imageReady && videoReady
-      ? t('settings.readyBoth')
-      : imageReady
-        ? t('settings.readyImage')
-        : videoReady
-          ? t('settings.readyVideo')
-          : t('settings.summaryNeedsSetup')
-  const imageStatus = imageReady
-    ? t('settings.modeReady', { n: readyImageModels })
-    : imageConfigured
-      ? t('settings.modeNeedsKey')
-      : t('settings.imageModeMissing')
-  const videoStatus = videoReady
-    ? t('settings.modeReady', { n: readyVideoModels })
-    : videoConfigured
-      ? t('settings.modeNeedsKey')
-      : t('settings.videoModeMissing')
-  const firstImageChannel = channels.find(channel => channelAuthReady(channel) && channel.models.length > 0)
-    ?? channels.find(channel => channel.models.length > 0)
-  const firstVideoChannel = channels.find(channel => channelAuthReady(channel) && (channel.videoModels ?? []).length > 0)
-    ?? channels.find(channel => (channel.videoModels ?? []).length > 0)
-  const openChannelEditor = (id: string, tab: ModelCatalogTab): void => {
-    setEditorTab(tab)
-    setEditingId(id)
-  }
-  const openModelPicker = (mode: ModelCatalogTab | 'all'): void => {
-    setPresetPickerMode(mode)
-    setPresetError(null)
-    setPresetPickerOpen(true)
-  }
-  const configureMode = (mode: ModelCatalogTab): void => {
-    if (mode === 'image' && firstImageChannel !== undefined) {
-      setActiveSection('channels')
-      openChannelEditor(firstImageChannel.id, 'image')
-      return
-    }
-    if (mode === 'video' && firstVideoChannel !== undefined) {
-      setActiveSection('channels')
-      openChannelEditor(firstVideoChannel.id, 'video')
-      return
-    }
-    openModelPicker(mode)
-  }
-  const configureServices = (): void => {
-    setActiveSection('channels')
-    if (channels.length === 0) openModelPicker('all')
-  }
-
   return (
     <section
       className={css.card}
@@ -755,359 +251,73 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
       >
         <span className={css.headText}>
           <span className={css.name}>{title} <span className={css.version}>v{PLUGIN_VERSION}</span></span>
-          <span className={css.description}>{headerDescription}</span>
+          <span className={css.description}>{t('settings.description')}</span>
         </span>
         {state.dirty ? <span className={css.pending}>{t('settings.unsaved')}</span> : null}
-        {/* Manual check: the plugin used to run its update check once, on mount,
-            and swallow any failure, so a stale install had no way to find out. */}
-        <span
-          role="button"
-          tabIndex={0}
-          className={css.updateCheck}
-          data-update-check=""
-          aria-disabled={updateState === 'checking'}
-          title={updateState === 'checking' ? t('settings.checkingUpdate') : t('settings.checkUpdate')}
-          onClick={event => { event.stopPropagation(); void checkUpdate() }}
-          onKeyDown={event => {
-            if (event.key !== 'Enter' && event.key !== ' ') return
-            event.preventDefault()
-            event.stopPropagation()
-            void checkUpdate()
-          }}
-        >
-          {updateState === 'checking' ? t('settings.checkingUpdate') : t('settings.checkUpdate')}
-        </span>
         <span className={open ? css.chevronOpen : css.chevron}>▾</span>
       </button>
-      {updateNote !== null ? (
-        <p className={updateNote.ok ? css.saved : css.failed} role="status" data-update-note="">{updateNote.text}</p>
-      ) : null}
       {open
         ? (
           <div className={css.body}>
             {!state.writable ? <p className={css.readOnly} role="status">{t('settings.readOnly')}</p> : null}
 
-            <section className={css.quickSetup} aria-labelledby="dsh-imagegen-quick-start-title">
-              <header className={css.quickHead}>
-                <div className={css.quickHeadText}>
-                  <span className={css.quickEyebrow}>{t('settings.quickStart')}</span>
-                  <h3 id="dsh-imagegen-quick-start-title" className={css.quickTitle}>{t('settings.quickStartTitle')}</h3>
-                  <p className={css.quickHint}>{t('settings.quickStartHint')}</p>
-                </div>
-                <span className={css.healthBadge} data-state={pluginEnabled && overallReady ? 'ready' : 'attention'}>
-                  {readinessLabel}
-                </span>
-              </header>
-              <ol className={css.setupRows}>
-                <li className={css.setupRow}>
-                  <span className={css.stepNumber} aria-hidden="true">1</span>
-                  <div className={css.stepBody}>
-                    <strong className={css.stepTitle}>{t('settings.stepConnect')}</strong>
-                    <p className={css.stepHint}>{t('settings.stepConnectHint')}</p>
-                  </div>
-                  <div className={css.stepAside}>
-                    <span className={css.stepStatus} data-ready={connectedChannels > 0 ? '' : undefined}>
-                      {channels.length === 0
-                        ? t('settings.stepConnectEmpty')
-                        : connectedChannels > 0
-                          ? t('settings.stepConnectDone', { n: connectedChannels })
-                          : t('settings.stepConnectPending', { n: channels.length })}
-                    </span>
-                    <button type="button" className={css.stepAction} disabled={disabled} onClick={configureServices}>
-                      {channels.length === 0 ? t('settings.addService') : t('settings.manageService')}
-                    </button>
-                  </div>
-                </li>
-                <li className={css.setupRow} data-step="models">
-                  <span className={css.stepNumber} aria-hidden="true">2</span>
-                  <div className={css.stepBody}>
-                    <strong className={css.stepTitle}>{t('settings.stepModels')}</strong>
-                    <p className={css.stepHint}>{t('settings.stepModelsHint')}</p>
-                    <div className={css.modeGrid}>
-                      <ModeSetupCard
-                        mode="image"
-                        title={t('settings.imageMode')}
-                        hint={t('settings.imageModeHint')}
-                        status={imageStatus}
-                        ready={imageReady}
-                        groups={modelGroups}
-                        value={state.channels.defaultModel}
-                        defaultLabel={t('settings.imageDefault')}
-                        emptyLabel={t('settings.modeNoModels')}
-                        configureLabel={t('settings.imageModeConfigure')}
-                        disabled={disabled}
-                        onChange={value => { props.channels.setDefaultModel(value) }}
-                        onConfigure={() => { configureMode('image') }}
-                      />
-                      <ModeSetupCard
-                        mode="video"
-                        title={t('settings.videoMode')}
-                        hint={t('settings.videoModeHint')}
-                        status={videoStatus}
-                        ready={videoReady}
-                        groups={videoModelGroups}
-                        value={state.channels.defaultVideoModel}
-                        defaultLabel={t('settings.videoDefault')}
-                        emptyLabel={t('settings.modeNoModels')}
-                        configureLabel={t('settings.videoModeConfigure')}
-                        disabled={disabled}
-                        onChange={value => { props.channels.setDefaultVideoModel(value) }}
-                        onConfigure={() => { configureMode('video') }}
-                      />
-                    </div>
-                  </div>
-                </li>
-                <li className={css.setupRow}>
-                  <span className={css.stepNumber} aria-hidden="true">3</span>
-                  <div className={css.stepBody}>
-                    <strong className={css.stepTitle}>{t('settings.stepSave')}</strong>
-                    <p className={css.stepHint}>{t('settings.stepSaveHint')}</p>
-                  </div>
-                  <div className={css.stepAside}>
-                    <span className={css.stepStatus} data-ready={pluginEnabled && overallReady && !state.dirty ? '' : undefined}>
-                      {!pluginEnabled
-                        ? t('settings.pluginOff')
-                        : state.dirty
-                          ? t('settings.stepSaveDirty')
-                          : overallReady
-                            ? t('settings.stepSaveDone')
-                            : t('settings.stepSaveWaiting')}
-                    </span>
-                    {!pluginEnabled
-                      ? <button type="button" className={css.stepPrimary} onClick={() => { setAdvancedOpen(true); setActiveSection('general') }}>{t('settings.enablePlugin')}</button>
-                      : state.dirty
-                        ? <button type="button" className={css.stepPrimary} disabled={blocked} onClick={() => { void saveAll() }} data-quick-save="">{t('settings.save')}</button>
-                        : null}
-                  </div>
-                </li>
-              </ol>
-            </section>
-
             <SettingsSection
-              id="channels"
-              title={t('channels.title')}
-              hint={t('channels.hint')}
-              summary={channelSummary}
-              tone={readyChannels > 0 ? 'ready' : 'attention'}
-              expanded={activeSection === 'channels'}
-              onToggle={() => { setActiveSection(activeSection === 'channels' ? null : 'channels') }}
+              id="general"
+              title={t('settings.generalTitle')}
+              hint={t('settings.generalHint')}
+              summary={generalSummary}
+              tone={state.enabled.text === 'false' ? 'attention' : 'ready'}
+              expanded={activeSection === 'general'}
+              onToggle={() => { setActiveSection(activeSection === 'general' ? null : 'general') }}
             >
-              {channels.length === 0
-                ? <p className={css.channelEmpty}>{t('channels.empty')}</p>
-                : (
-                  <ul className={css.channelList}>
-                    {channels.map(channel => {
-                      const keyHeld = state.channels.keySet[channel.id] === true
-                      const subscriptionProvider = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
-                      const subscriptionState = subscriptionProvider === undefined ? undefined : subscriptionStatus[subscriptionProvider]
-                      const ready = channelAuthReady(channel) && channelModelCount(channel) > 0
-                      const isDefault = channel.id === state.channels.defaultChannelId
-                      const imageCount = channel.models.length
-                      const videoCount = (channel.videoModels ?? []).length
-                      if (confirmDeleteId === channel.id) {
-                        return (
-                          <li key={channel.id} className={css.channelRow} data-action>
-                            <span className={css.deleteConfirmText}>{t('channels.deleteConfirmTitle', { name: channel.name || t('channels.untitled') })}</span>
-                            <button type="button" className={css.channelDanger} disabled={disabled} onClick={() => { props.channels.setChannels(channels.filter(candidate => candidate.id !== channel.id)); if (isDefault && channels.length > 1) { const next = channels.find(candidate => candidate.id !== channel.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setConfirmDeleteId(null); if (editingId === channel.id) setEditingId(null) }}>{t('channels.confirm')}</button>
-                            <button type="button" className={css.channelAction} disabled={disabled} onClick={() => { setConfirmDeleteId(null) }}>{t('channels.cancel')}</button>
-                          </li>
-                        )
-                      }
-                      return (
-                        <li key={channel.id} className={css.channelRow}>
-                          <span className={ready ? css.channelDotReady : css.channelDotWarn} aria-hidden="true" title={t(ready ? 'channels.statusReady' : 'channels.statusIncomplete')} />
-                          <button type="button" className={css.channelMain} disabled={disabled} onClick={() => { openChannelEditor(channel.id, imageCount > 0 ? 'image' : 'video') }}>
-                            <span className={css.channelName}>{isDefault ? `★ ${channel.name || t('channels.untitled')}` : (channel.name || t('channels.untitled'))}</span>
-                            <span className={css.channelMeta}>
-                              {subscriptionProvider === undefined
-                                ? <span className={css.channelBadge} data-warn={keyHeld ? undefined : ''}>{keyHeld ? t('channels.keySet') : t('channels.keyMissing')}</span>
-                                : <span className={css.channelBadge} data-warn={subscriptionState?.state === 'logged-in' ? undefined : ''}>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[subscriptionProvider]} · {subscriptionState?.state === 'logged-in' ? t('settings.subscriptionLoggedIn') : t('settings.subscriptionLoggedOut')}</span>}
-                              <span className={css.channelBadge} data-kind="image">{t('settings.channelImageCount', { n: imageCount })}</span>
-                              <span className={css.channelBadge} data-kind="video">{t('settings.channelVideoCount', { n: videoCount })}</span>
-                            </span>
-                          </button>
-                          <button type="button" className={css.channelAction} onClick={() => { openChannelEditor(channel.id, imageCount > 0 ? 'image' : 'video') }}>{t('channels.edit')}</button>
-                          <button type="button" className={css.channelAction} data-danger onClick={() => { setConfirmDeleteId(channel.id) }}>{t('channels.delete')}</button>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                )}
-              <div className={css.channelControls}>
-              {open && presetPickerOpen ? (
-                <PresetPicker
-                  t={t}
-                  presets={presets}
-                  error={presetError}
-                  mode={presetPickerMode}
-                  disabled={state.writable === false}
-                  onLoad={() => {
-                    setPresetError(null)
-                    void fetch(PRESETS_API, { method: 'POST' })
-                      .then(async response => {
-                        const body = await response.json() as { ok?: boolean; presets?: PresetProviderView[]; message?: string }
-                        if (!response.ok || body.ok !== true || body.presets === undefined) throw new Error(body.message ?? `HTTP ${response.status}`)
-                        setPresets(body.presets)
-                      })
-                      .catch(error => { setPresetError(error instanceof Error ? error.message : String(error)) })
-                  }}
-                  onPick={(preset, preferredMode) => {
-                    const existing = preset.subscription === undefined
-                      ? undefined
-                      : channels.find(channel => channel.subscription === preset.subscription)
-                    const draft = existing ?? newChannelDraft(preset)
-                    if (existing === undefined) props.channels.setChannels([...channels, draft])
-                    setPresetPickerOpen(false)
-                    setEditorTab(preferredMode === 'video' || (preferredMode === 'all' && presetPickerMode === 'video')
-                      ? 'video'
-                      : preferredMode === 'image' || (preferredMode === 'all' && presetPickerMode === 'image')
-                        ? 'image'
-                        : preset.models.length > 0 ? 'image' : 'video')
-                    setEditingId(draft.id)
-                    if (preset.subscription !== undefined && subscriptionStatus[preset.subscription].state !== 'logged-in') {
-                      void subscriptionLogin(preset.subscription)
-                    }
-                  }}
-                  onCustom={(preferredMode) => {
-                    const draft = newChannelDraft(undefined)
-                    props.channels.setChannels([...channels, draft])
-                    setPresetPickerOpen(false)
-                    setEditorTab(preferredMode === 'video' || (preferredMode === 'all' && presetPickerMode === 'video') ? 'video' : 'image')
-                    setEditingId(draft.id)
-                  }}
-                  onClose={() => { setPresetPickerOpen(false) }}
-                />
-              ) : null}
-
-              <div className={css.channelAddRow}>
-                <button type="button" className={css.channelAdd} data-primary="" disabled={disabled} onClick={() => { openModelPicker('all') }}>+ {t('channels.addProvider')}</button>
-                <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => {
-                  const draft = newChannelDraft(undefined)
-                  props.channels.setChannels([...channels, draft])
-                  setEditorTab('image')
-                  setEditingId(draft.id)
-                }}>+ {t('channels.addCustom')}</button>
-              </div>
-              </div>
-            </SettingsSection>
-
-            <div className={css.advancedBlock}>
-              <button
-                type="button"
-                className={css.advancedToggle}
-                aria-expanded={advancedOpen}
-                aria-controls="dsh-imagegen-advanced-settings"
-                onClick={() => { setAdvancedOpen(value => !value) }}
-              >
-                <span className={css.advancedToggleText}>
-                  <strong>{t('settings.advancedTitle')}</strong>
-                  <span>{t('settings.advancedHint')}</span>
-                </span>
-                <span className={css.advancedToggleAction}>
-                  {advancedOpen ? t('settings.advancedClose') : t('settings.advancedOpen')}
-                  <span aria-hidden="true">{advancedOpen ? '⌃' : '⌄'}</span>
-                </span>
-              </button>
-              {advancedOpen ? <div id="dsh-imagegen-advanced-settings" className={css.advancedContent}>
-            <SettingsSection
-              id="prompt"
-              title={t('settings.promptEnhanceTitle')}
-              hint={t('settings.promptEnhanceHint')}
-              summary={promptSummary}
-              tone={state.promptModel.text.trim() === '' ? 'neutral' : 'ready'}
-              expanded={activeSection === 'prompt'}
-              onToggle={() => { setActiveSection(activeSection === 'prompt' ? null : 'prompt') }}
-            >
-            <div className={css.sectionHeader}>
-              <div>
-                <h3 className={css.sectionTitle}>{t('settings.promptModel')}</h3>
-                <p className={css.sectionHint}>{t('settings.promptModelDetectionHint')}</p>
-              </div>
-              <button
-                type="button"
-                className={css.modelFetch}
-                disabled={disabled || loadingPromptModels}
-                onClick={() => {
-                  setLoadingPromptModels(true)
-                  setPromptModelsError(null)
-                  void fetch(PROMPT_ENHANCE_API.models, { method: 'POST' })
-                    .then(async response => {
-                      const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
-                      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-                      setPromptModels(body.models ?? [])
-                    })
-                    .catch(error => { setPromptModelsError(error instanceof Error ? error.message : String(error)) })
-                    .finally(() => { setLoadingPromptModels(false) })
-                }}
-              >
-                {loadingPromptModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
-              </button>
-            </div>
-            <div className={css.modelSummary}>
-              {state.promptModel.text.trim() !== '' ? (
-                <span className={css.modelChip}>
-                  <span>{state.promptModel.text}</span>
-                  <button type="button" disabled={disabled} aria-label={`${t('settings.removeModel')}: ${state.promptModel.text}`} onClick={() => { props.edit('promptModel', '') }}>×</button>
-                </span>
-              ) : null}
-              <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open); setActiveSection('prompt') }}>
-                {manualPromptModelOpen ? t('settings.cancelAddModel') : t('settings.addModel')}
-              </button>
-            </div>
-            {manualPromptModelOpen ? (
-              <div className={css.manualModelRow}>
-                <input className={css.input} value={manualPromptModel} placeholder={t('settings.addPromptModelPlaceholder')} disabled={disabled} onChange={event => { setManualPromptModel(event.target.value) }} />
-                <button type="button" className={css.addModel} disabled={disabled || manualPromptModel.trim() === ''} onClick={() => { props.edit('promptModel', manualPromptModel); setManualPromptModel('') }}>{t('settings.addModelConfirm')}</button>
-              </div>
-            ) : null}
-            {promptModels.length > 0 ? (
-              <div className={css.modelCandidateList} role="radiogroup" aria-label={t('settings.promptModelsCandidates')}>
-                <span className={css.modelCandidateLabel}>{t('settings.promptModelsCandidates')}</span>
-                {promptModels.map(candidate => (
-                  <button
-                    key={candidate}
-                    type="button"
-                    role="radio"
-                    className={css.modelCandidate}
-                    aria-checked={state.promptModel.text === candidate}
-                    data-selected={state.promptModel.text === candidate ? '' : undefined}
-                    disabled={disabled}
-                    onClick={() => { props.edit('promptModel', candidate) }}
-                  >
-                    {candidate}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {promptModelsError !== null ? <p className={css.failed} role="status">{promptModelsError}</p> : null}
-            <button type="button" className={css.inlineDisclosure} aria-expanded={promptApiOpen} onClick={() => { setPromptApiOpen(open => !open) }}>
-              <span>{t('settings.promptApiAdvanced')}</span>
-              <span aria-hidden="true">{promptApiOpen ? '⌃' : '⌄'}</span>
-            </button>
-            {promptApiOpen ? <div className={css.optionalContent}>
-            <ValueField
-              id="dsh-imagegen-settings-prompt-apiurl"
-              label={t('settings.promptApiUrl')}
-              hint={t('settings.promptApiUrlHint')}
-              placeholder="https://api.openai.com/v1"
-              {...fieldProps}
-              {...state.promptApiUrl}
-              onEdit={(text) => { props.edit('promptApiUrl', text) }}
-              onReset={() => { props.resetField('promptApiUrl') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-prompt-apikey"
-              label={t('settings.promptApiKey')}
-              hint={t('settings.promptApiKeyHint')}
-              placeholder="sk-…"
-              secret
-              {...fieldProps}
-              {...state.promptApiKey}
-              overridden={false}
-              onEdit={(text) => { props.edit('promptApiKey', text) }}
-              onReset={() => { props.resetField('promptApiKey') }}
-            />
-            </div> : null}
+              <BooleanField
+                id="dsh-imagegen-settings-enabled"
+                label={t('settings.enabled')}
+                hint={t('settings.enabledHint')}
+                inheritLabel={t('settings.inherit')}
+                onLabel={t('settings.on')}
+                offLabel={t('settings.off')}
+                {...fieldProps}
+                {...state.enabled}
+                onEdit={(text) => { props.edit('enabled', text) }}
+                onReset={() => { props.resetField('enabled') }}
+              />
+              <BooleanField
+                id="dsh-imagegen-settings-announce"
+                label={t('settings.announceToAgent')}
+                hint={t('settings.announceToAgentHint')}
+                inheritLabel={t('settings.inherit')}
+                onLabel={t('settings.on')}
+                offLabel={t('settings.off')}
+                {...fieldProps}
+                {...state.announceToAgent}
+                onEdit={(text) => { props.edit('announceToAgent', text) }}
+                onReset={() => { props.resetField('announceToAgent') }}
+              />
+              <BooleanField
+                id="dsh-imagegen-settings-agent-generation"
+                label={t('settings.allowAgentImageGeneration')}
+                hint={t('settings.allowAgentImageGenerationHint')}
+                inheritLabel={t('settings.inherit')}
+                onLabel={t('settings.on')}
+                offLabel={t('settings.off')}
+                {...fieldProps}
+                {...state.allowAgentImageGeneration}
+                onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
+                onReset={() => { props.resetField('allowAgentImageGeneration') }}
+              />
+              <BooleanField
+                id="dsh-imagegen-settings-agent-video-generation"
+                label={t('settings.allowAgentVideoGeneration')}
+                hint={t('settings.allowAgentVideoGenerationHint')}
+                inheritLabel={t('settings.inherit')}
+                onLabel={t('settings.on')}
+                offLabel={t('settings.off')}
+                {...fieldProps}
+                {...state.allowAgentVideoGeneration}
+                onEdit={(text) => { props.edit('allowAgentVideoGeneration', text) }}
+                onReset={() => { props.resetField('allowAgentVideoGeneration') }}
+              />
             </SettingsSection>
 
             <SettingsSection
@@ -1115,128 +325,120 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               title={t('settings.storageTitle')}
               hint={t('settings.storageHint')}
               summary={storageSummary}
-              tone={state.storageEnabled.text === 'true' ? 'ready' : 'neutral'}
+              tone={localPath === '' ? 'neutral' : 'ready'}
               expanded={activeSection === 'storage'}
               onToggle={() => { setActiveSection(activeSection === 'storage' ? null : 'storage') }}
             >
-            <ValueField
-              id="dsh-imagegen-settings-local-storage-path"
-              label={t('settings.localStoragePath')}
-              hint={t('settings.localStoragePathHint')}
-              placeholder="E:\\dsh-imagegen-data"
-              {...fieldProps}
-              {...state.localStoragePath}
-              onEdit={(text) => { props.edit('localStoragePath', text) }}
-              onReset={() => { props.resetField('localStoragePath') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-enabled"
-              label={t('settings.storageEnabled')}
-              hint={t('settings.storageHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageEnabled}
-              onEdit={(text) => { props.edit('storageEnabled', text) }}
-              onReset={() => { props.resetField('storageEnabled') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-endpoint"
-              label={t('settings.storageEndpoint')}
-              hint={t('settings.storageEndpointHint')}
-              placeholder="https://bucket-appid.cos.ap-guangzhou.myqcloud.com"
-              {...fieldProps}
-              {...state.storageEndpoint}
-              onEdit={(text) => { props.edit('storageEndpoint', text) }}
-              onReset={() => { props.resetField('storageEndpoint') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-region"
-              label={t('settings.storageRegion')}
-              hint={t('settings.storageRegionHint')}
-              placeholder="ap-guangzhou"
-              {...fieldProps}
-              {...state.storageRegion}
-              onEdit={(text) => { props.edit('storageRegion', text) }}
-              onReset={() => { props.resetField('storageRegion') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-prefix"
-              label={t('settings.storagePrefix')}
-              hint={t('settings.storagePrefixHint')}
-              placeholder="dsh-imagegen"
-              {...fieldProps}
-              {...state.storagePrefix}
-              onEdit={(text) => { props.edit('storagePrefix', text) }}
-              onReset={() => { props.resetField('storagePrefix') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-accesskey"
-              label={t('settings.storageAccessKey')}
-              hint={t('settings.storageAccessKeyHint')}
-              placeholder="AKID…"
-              {...fieldProps}
-              {...state.storageAccessKey}
-              onEdit={(text) => { props.edit('storageAccessKey', text) }}
-              onReset={() => { props.resetField('storageAccessKey') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-secretkey"
-              label={t('settings.storageSecretKey')}
-              hint={t('settings.storageSecretKeyHint')}
-              placeholder="…"
-              secret
-              {...fieldProps}
-              {...state.storageSecretKey}
-              overridden={false}
-              onEdit={(text) => { props.edit('storageSecretKey', text) }}
-              onReset={() => { props.resetField('storageSecretKey') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-gallery"
-              label={t('settings.storageSyncGallery')}
-              hint={t('settings.storageSyncGalleryHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageSyncGallery}
-              onEdit={(text) => { props.edit('storageSyncGallery', text) }}
-              onReset={() => { props.resetField('storageSyncGallery') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-history"
-              label={t('settings.storageSyncHistory')}
-              hint={t('settings.storageSyncHistoryHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageSyncHistory}
-              onEdit={(text) => { props.edit('storageSyncHistory', text) }}
-              onReset={() => { props.resetField('storageSyncHistory') }}
-            />
-            <div className={css.modelSummary}>
-              <button
-                type="button"
-                className={css.addModel}
-                disabled={disabled || storageTesting}
-                onClick={() => {
-                  setStorageTesting(true)
-                  setStorageTestResult(null)
-                  void props.storageTest().then(outcome => {
-                    setStorageTestResult(outcome.ok
-                      ? t('settings.storageTestOk', { ms: outcome.ms ?? 0 })
-                      : t('settings.storageTestFailed', { error: outcome.message ?? 'error' }))
-                  }).finally(() => { setStorageTesting(false) })
-                }}
-              >
-                {storageTesting ? t('settings.storageTesting') : t('settings.storageTest')}
-              </button>
-              {storageTestResult !== null ? <p className={css.failed} role="status">{storageTestResult}</p> : null}
-            </div>
-            <p className={css.hint}>{t('settings.storageKeyHint')}</p>
+              <ValueField
+                id="dsh-imagegen-settings-local-storage-path"
+                label={t('settings.localStoragePath')}
+                hint={t('settings.localStoragePathHint')}
+                placeholder="E:\\dsh-imagegen-data"
+                {...fieldProps}
+                {...state.localStoragePath}
+                onEdit={(text) => { props.edit('localStoragePath', text) }}
+                onReset={() => { props.resetField('localStoragePath') }}
+              />
+            </SettingsSection>
+
+            <SettingsSection
+              id="skills"
+              title={t('settings.skillsTitle')}
+              hint={t('settings.skillsHint')}
+              summary={skillsSummary}
+              tone={state.skillsEnabled.text === 'false' ? 'neutral' : 'ready'}
+              expanded={activeSection === 'skills'}
+              onToggle={() => { setActiveSection(activeSection === 'skills' ? null : 'skills') }}
+            >
+              <BooleanField
+                id="dsh-imagegen-settings-skills-enabled"
+                label={t('settings.skillsEnabled')}
+                hint={t('settings.skillsEnabledHint')}
+                inheritLabel={t('settings.inherit')}
+                onLabel={t('settings.on')}
+                offLabel={t('settings.off')}
+                {...fieldProps}
+                {...state.skillsEnabled}
+                onEdit={(text) => { props.edit('skillsEnabled', text) }}
+                onReset={() => { props.resetField('skillsEnabled') }}
+              />
+              <BooleanField
+                id="dsh-imagegen-settings-skills-heavy"
+                label={t('settings.allowHeavySkills')}
+                hint={t('settings.allowHeavySkillsHint')}
+                inheritLabel={t('settings.inherit')}
+                onLabel={t('settings.on')}
+                offLabel={t('settings.off')}
+                {...fieldProps}
+                {...state.allowHeavySkills}
+                onEdit={(text) => { props.edit('allowHeavySkills', text) }}
+                onReset={() => { props.resetField('allowHeavySkills') }}
+              />
+              <ValueField
+                id="dsh-imagegen-settings-skills-allowlist"
+                label={t('settings.skillAllowlist')}
+                hint={t('settings.skillAllowlistHint')}
+                placeholder="extract-content, image-to-editable-ppt"
+                {...fieldProps}
+                {...state.skillAllowlist}
+                onEdit={(text) => { props.edit('skillAllowlist', text) }}
+                onReset={() => { props.resetField('skillAllowlist') }}
+              />
+              <ValueField
+                id="dsh-imagegen-settings-skills-output"
+                label={t('settings.skillOutputDir')}
+                hint={t('settings.skillOutputDirHint')}
+                placeholder=""
+                {...fieldProps}
+                {...state.skillOutputDir}
+                onEdit={(text) => { props.edit('skillOutputDir', text) }}
+                onReset={() => { props.resetField('skillOutputDir') }}
+              />
+              <ValueField
+                id="dsh-imagegen-settings-skills-timeout"
+                label={t('settings.skillHeavyTimeout')}
+                hint={t('settings.skillHeavyTimeoutHint')}
+                placeholder="20"
+                {...fieldProps}
+                {...state.skillHeavyTimeoutMinutes}
+                onEdit={(text) => { props.edit('skillHeavyTimeoutMinutes', text) }}
+                onReset={() => { props.resetField('skillHeavyTimeoutMinutes') }}
+              />
+              <ValueField
+                id="dsh-imagegen-settings-skills-preset"
+                label={t('settings.skillAgentPreset')}
+                hint={t('settings.skillAgentPresetHint')}
+                placeholder=""
+                {...fieldProps}
+                {...state.skillAgentPreset}
+                onEdit={(text) => { props.edit('skillAgentPreset', text) }}
+                onReset={() => { props.resetField('skillAgentPreset') }}
+              />
+              <div className={css.modelSummary}>
+                <button
+                  type="button"
+                  className={css.addModel}
+                  disabled={disabled || skillProbing}
+                  onClick={() => {
+                    setSkillProbing(true)
+                    setSkillProbeResult(null)
+                    void fetch(CANVAS_SKILL_API.list, { method: 'POST' })
+                      .then(async response => await response.json() as { ok?: boolean; skills?: unknown[]; agentAvailable?: boolean; registryAvailable?: boolean })
+                      .then(body => {
+                        const total = Array.isArray(body.skills) ? body.skills.length : 0
+                        setSkillProbeResult(t('settings.skillProbeOk', {
+                          count: total,
+                          agent: body.agentAvailable === true ? t('settings.skillProbeAgentOn') : t('settings.skillProbeAgentOff'),
+                        }))
+                      })
+                      .catch(caught => { setSkillProbeResult(t('settings.skillProbeFailed', { error: caught instanceof Error ? caught.message : String(caught) })) })
+                      .finally(() => { setSkillProbing(false) })
+                  }}
+                >
+                  {skillProbing ? t('settings.skillProbing') : t('settings.skillProbe')}
+                </button>
+                {skillProbeResult !== null ? <p className={css.hint} role="status">{skillProbeResult}</p> : null}
+              </div>
             </SettingsSection>
 
             <SettingsSection
@@ -1250,1014 +452,38 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               <PptSetup />
             </SettingsSection>
 
-            <SettingsSection
-              id="skills"
-              title={t('settings.skillsTitle')}
-              hint={t('settings.skillsHint')}
-              summary={skillsSummary}
-              tone={state.skillsEnabled.text === 'false' ? 'neutral' : 'ready'}
-              expanded={activeSection === 'skills'}
-              onToggle={() => { setActiveSection(activeSection === 'skills' ? null : 'skills') }}
-            >
-            <BooleanField
-              id="dsh-imagegen-settings-skills-enabled"
-              label={t('settings.skillsEnabled')}
-              hint={t('settings.skillsEnabledHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.skillsEnabled}
-              onEdit={(text) => { props.edit('skillsEnabled', text) }}
-              onReset={() => { props.resetField('skillsEnabled') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-skills-heavy"
-              label={t('settings.allowHeavySkills')}
-              hint={t('settings.allowHeavySkillsHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.allowHeavySkills}
-              onEdit={(text) => { props.edit('allowHeavySkills', text) }}
-              onReset={() => { props.resetField('allowHeavySkills') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-allowlist"
-              label={t('settings.skillAllowlist')}
-              hint={t('settings.skillAllowlistHint')}
-              placeholder="extract-content, image-to-editable-ppt"
-              {...fieldProps}
-              {...state.skillAllowlist}
-              onEdit={(text) => { props.edit('skillAllowlist', text) }}
-              onReset={() => { props.resetField('skillAllowlist') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-output"
-              label={t('settings.skillOutputDir')}
-              hint={t('settings.skillOutputDirHint')}
-              placeholder=""
-              {...fieldProps}
-              {...state.skillOutputDir}
-              onEdit={(text) => { props.edit('skillOutputDir', text) }}
-              onReset={() => { props.resetField('skillOutputDir') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-timeout"
-              label={t('settings.skillHeavyTimeout')}
-              hint={t('settings.skillHeavyTimeoutHint')}
-              placeholder="20"
-              {...fieldProps}
-              {...state.skillHeavyTimeoutMinutes}
-              onEdit={(text) => { props.edit('skillHeavyTimeoutMinutes', text) }}
-              onReset={() => { props.resetField('skillHeavyTimeoutMinutes') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-preset"
-              label={t('settings.skillAgentPreset')}
-              hint={t('settings.skillAgentPresetHint')}
-              placeholder=""
-              {...fieldProps}
-              {...state.skillAgentPreset}
-              onEdit={(text) => { props.edit('skillAgentPreset', text) }}
-              onReset={() => { props.resetField('skillAgentPreset') }}
-            />
-            <div className={css.modelSummary}>
-              <button
-                type="button"
-                className={css.addModel}
-                disabled={disabled || skillProbing}
-                onClick={() => {
-                  setSkillProbing(true)
-                  setSkillProbeResult(null)
-                  void fetch(CANVAS_SKILL_API.list, { method: 'POST' })
-                    .then(async response => await response.json() as { ok?: boolean; skills?: unknown[]; agentAvailable?: boolean; registryAvailable?: boolean })
-                    .then(body => {
-                      const total = Array.isArray(body.skills) ? body.skills.length : 0
-                      setSkillProbeResult(t('settings.skillProbeOk', {
-                        count: total,
-                        agent: body.agentAvailable === true ? t('settings.skillProbeAgentOn') : t('settings.skillProbeAgentOff'),
-                      }))
-                    })
-                    .catch(caught => { setSkillProbeResult(t('settings.storageTestFailed', { error: caught instanceof Error ? caught.message : String(caught) })) })
-                    .finally(() => { setSkillProbing(false) })
-                }}
-              >
-                {skillProbing ? t('settings.skillProbing') : t('settings.skillProbe')}
-              </button>
-              {skillProbeResult !== null ? <p className={css.hint} role="status">{skillProbeResult}</p> : null}
-            </div>
-            </SettingsSection>
-
-            <SettingsSection
-              id="general"
-              title={t('settings.generalTitle')}
-              hint={t('settings.generalHint')}
-              summary={generalSummary}
-              tone={state.enabled.text === 'false' ? 'attention' : 'ready'}
-              expanded={activeSection === 'general'}
-              onToggle={() => { setActiveSection(activeSection === 'general' ? null : 'general') }}
-            >
-            <BooleanField
-              id="dsh-imagegen-settings-enabled"
-              label={t('settings.enabled')}
-              hint={t('settings.enabledHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.enabled}
-              onEdit={(text) => { props.edit('enabled', text) }}
-              onReset={() => { props.resetField('enabled') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-announce"
-              label={t('settings.announceToAgent')}
-              hint={t('settings.announceToAgentHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.announceToAgent}
-              onEdit={(text) => { props.edit('announceToAgent', text) }}
-              onReset={() => { props.resetField('announceToAgent') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-agent-generation"
-              label={t('settings.allowAgentImageGeneration')}
-              hint={t('settings.allowAgentImageGenerationHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.allowAgentImageGeneration}
-              onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
-              onReset={() => { props.resetField('allowAgentImageGeneration') }}
-            />
-            </SettingsSection>
-              </div> : null}
-            </div>
             <div className={css.footer}>
-              {saveNote !== null ? (
-                <p className={saveNote.ok ? css.saved : css.failed} role="status">{saveNote.text}</p>
-              ) : (state.failed || state.channels.failed) ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p> : null}
+              {saveNote !== null
+                ? <p className={saveNote.ok ? css.saved : css.failed} role="status">{saveNote.text}</p>
+                : state.failed ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p> : null}
               <button
                 type="button"
                 className={css.discard}
-                disabled={!state.dirty || state.saving || state.channels.saving}
-                onClick={() => { props.discard(); props.channels.discard(); setSaveNote(null) }}
+                disabled={!state.dirty || state.saving}
+                onClick={() => { props.discard(); setSaveNote(null) }}
               >
                 {t('settings.discard')}
               </button>
               <button
                 type="button"
                 className={css.save}
-                disabled={blocked}
-                onClick={() => { void saveAll() }}
+                disabled={!state.dirty || state.invalid || state.saving}
+                onClick={() => {
+                  setSaveNote(null)
+                  void props.save().then(outcome => {
+                    setSaveNote(outcome.ok
+                      ? { ok: true, text: t('settings.saved') }
+                      : { ok: false, text: t('settings.saveFailedReason', { error: outcome.message ?? t('settings.saveFailed') }) })
+                  })
+                }}
               >
-                {t(!state.saving && !state.channels.saving ? 'settings.save' : 'settings.saving')}
+                {t(state.saving ? 'settings.saving' : 'settings.save')}
               </button>
             </div>
           </div>
         )
         : null}
-
-      {open && editing !== undefined ? (
-        <ChannelEditor
-          key={editing.id}
-          t={t}
-          channel={editing}
-          initialCatalog={editorTab}
-          keyHeld={state.channels.keySet[editing.id] === true}
-          usage={usage}
-          otherChannels={channels.filter(channel => channel.id !== editing.id)}
-          isDefault={editing.id === state.channels.defaultChannelId}
-          writable={state.writable}
-          dirty={state.dirty}
-          saving={state.saving || state.channels.saving}
-          onPatch={(patch) => { replaceChannel(channels, editing.id, patch, props.channels) }}
-          onSetModels={(models) => { props.channels.setChannels(channels.map(channel => channel.id === editing.id ? { ...channel, models } : channel)) }}
-          onSetVideoModels={(videoModels) => { props.channels.setChannels(channels.map(channel => channel.id === editing.id ? { ...channel, videoModels } : channel)) }}
-          onSetKey={(value) => { props.channels.setChannelKey(editing.id, value) }}
-          subscriptionStatus={editing.subscription === undefined ? undefined : subscriptionStatus[editing.subscription]}
-          issues={state.channels.issues[editing.id] ?? []}
-          subscriptionBusy={editing.subscription === undefined ? undefined : subscriptionBusy[editing.subscription]}
-          subscriptionMessage={editing.subscription === undefined ? undefined : subscriptionMessage[editing.subscription]}
-          onSubscriptionLogin={(provider) => { void subscriptionLogin(provider) }}
-          onSubscriptionComplete={(provider, input) => { void subscriptionComplete(provider, input) }}
-          onSubscriptionLogout={(provider) => { void subscriptionLogout(provider) }}
-          onSetDefault={() => { props.channels.setDefaultChannel(editing.id) }}
-          onRemove={() => { props.channels.setChannels(channels.filter(channel => channel.id !== editing.id)); if (editing.id === state.channels.defaultChannelId && channels.length > 1) { const next = channels.find(channel => channel.id !== editing.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setEditingId(null) }}
-          onSaveAndClose={async () => {
-            const ok = await saveAll()
-            if (ok) setEditingId(null)
-            return ok
-          }}
-          onClose={() => { setEditingId(null) }}
-        />
-      ) : null}
-
     </section>
-  )
-}
-
-/** Channel row + dialog helpers -------------------------------------------------- */
-
-/** Aliases a preset offers in either catalog, image first then video. */
-function presetCatalogAliases(preset: PresetProviderView): string[] {
-  return [
-    ...preset.models.map(model => model.alias),
-    ...(preset.videoModels ?? []).map(model => model.alias),
-  ].filter(alias => alias.trim() !== '')
-}
-
-function newChannelDraft(preset: PresetProviderView | undefined): ChannelDraft {
-  return {
-    id: clientId(),
-    preset: preset?.id ?? '',
-    name: preset?.name ?? '',
-    apiUrl: preset?.apiUrl ?? '',
-    apiUrlFull: false,
-    watermark: true,
-    autoReferenceLimit: true,
-    protocol: 'auto',
-    ...preset?.subscription === undefined ? {} : { auth: 'subscription' as const, subscription: preset.subscription },
-    models: (preset?.models ?? []).map(model => ({ ...model })),
-    ...preset?.videoModels === undefined ? {} : { videoModels: preset.videoModels.map(model => ({ ...model })) },
-  }
-}
-
-/** Models a channel offers in either catalog (image + video). */
-function channelModelCount(channel: ChannelDraft): number {
-  return channel.models.length + (channel.videoModels ?? []).length
-}
-
-/** Whether a channel's catalog targets Seedream, the only family whose platform
- *  watermark the panel can switch off (#56). */
-function catalogHasSeedream(models: ModelMapping[]): boolean {
-  return models.some(model => modelFamily(model.id.trim() === '' ? model.alias : model.id) === 'seedream')
-}
-
-/** Patch one field (or models) of one staged channel. */
-function replaceChannel(channels: ChannelDraft[], id: string, patch: Partial<ChannelDraft>, form: ChannelsFormActions): void {
-  form.setChannels(channels.map(channel => channel.id === id ? { ...channel, ...patch } : channel))
-}
-
-function clientId(): string {
-  const random = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined
-  return random ?? `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-/** Built-in provider picker, expanded inside the settings card. */
-function PresetPicker(props: {
-  t: (key: ImageGenKey, params?: Record<string, string | number>) => string
-  presets: PresetProviderView[]
-  error: string | null
-  mode: ModelCatalogTab | 'all'
-  disabled: boolean
-  onLoad: () => void
-  onPick: (preset: PresetProviderView, mode: ModelCatalogTab | 'all') => void
-  onCustom: (mode: ModelCatalogTab | 'all') => void
-  onClose: () => void
-}) {
-  const { t } = props
-  const loadedRef = useRef(false)
-  const [query, setQuery] = useState('')
-  const [tab, setTab] = useState<'api-key' | 'subscription'>('api-key')
-  const [capability, setCapability] = useState<ModelCatalogTab | 'all'>(props.mode)
-  useEffect(() => {
-    if (loadedRef.current) return
-    loadedRef.current = true
-    props.onLoad()
-  }, [])
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') props.onClose() }
-    window.addEventListener('keydown', onKeyDown)
-    return () => { window.removeEventListener('keydown', onKeyDown) }
-  }, [props.onClose])
-  const tabPresets = props.presets.filter(preset => tab === 'subscription' ? preset.subscription !== undefined : preset.subscription === undefined)
-  const capablePresets = tab === 'api-key' && capability !== 'all'
-    ? tabPresets.filter(preset => capability === 'image' ? preset.models.length > 0 : (preset.videoModels ?? []).length > 0)
-    : tabPresets
-  const needle = query.trim().toLowerCase()
-  const visiblePresets = needle === '' ? capablePresets : capablePresets.filter(preset =>
-    preset.name.toLowerCase().includes(needle) || presetCatalogAliases(preset).some(alias => alias.toLowerCase().includes(needle)),
-  )
-  const preferredMode = (preset: PresetProviderView): ModelCatalogTab | 'all' => {
-    if (tab === 'subscription') return 'image'
-    if (capability !== 'all') return capability
-    return preset.models.length > 0 && (preset.videoModels ?? []).length > 0 ? 'all' : preset.models.length > 0 ? 'image' : 'video'
-  }
-  return (
-    <div
-      className={css.pickerOverlay}
-      role="presentation"
-      onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}
-    >
-      <section className={css.pickerDialog} role="dialog" aria-modal="true" aria-label={t('channels.presetPickerTitle')}>
-        <header className={css.pickerHeader}>
-          <div>
-            <h3 className={css.pickerTitle}>{t('channels.presetPickerTitle')}</h3>
-            <p className={css.pickerHint}>{t(tab === 'subscription' ? 'channels.presetPickerSubscriptionHint' : 'channels.providerPickerHint')}</p>
-          </div>
-          <button type="button" className={css.editorClose} aria-label={t('preview.close')} onClick={props.onClose}>×</button>
-        </header>
-        <div className={css.pickerTabs} role="tablist" aria-label={t('channels.presetPickerTitle')}>
-          {([['api-key', 'channels.presetTabApiKey'], ['subscription', 'channels.presetTabSubscription']] as const).map(([value, labelKey], index) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={tab === value}
-              data-active={tab === value ? '' : undefined}
-              tabIndex={tabIndexFor(tab === value)}
-              onKeyDown={event => { onTablistKeyDown(event, { count: 2, index, select: next => { setTab(next === 0 ? 'api-key' : 'subscription'); setQuery('') } }) }}
-              onClick={() => { setTab(value); setQuery('') }}
-            >{t(labelKey)}</button>
-          ))}
-        </div>
-        <input
-          className={css.pickerSearch}
-          type="search"
-          value={query}
-          placeholder={t('channels.presetSearch')}
-          aria-label={t('channels.presetSearch')}
-          onChange={event => { setQuery(event.target.value) }}
-        />
-        {tab === 'api-key' ? <div className={css.capabilityFilter} role="group" aria-label={t('channels.providerCapability')}>
-          {([['all', 'channels.presetFilterAll'], ['image', 'channels.presetFilterImage'], ['video', 'channels.presetFilterVideo']] as const).map(([value, labelKey]) => (
-            <button
-              key={value}
-              type="button"
-              data-active={capability === value ? '' : undefined}
-              aria-pressed={capability === value}
-              onClick={() => { setCapability(value) }}
-            >{t(labelKey)}</button>
-          ))}
-        </div> : null}
-        <div className={css.pickerList}>
-          {visiblePresets.map(preset => {
-            const mode = preferredMode(preset)
-            return (
-              <div key={preset.id} className={css.presetCard} data-disabled={props.disabled ? 'true' : undefined}>
-                <button type="button" className={css.presetPick} disabled={props.disabled} onClick={() => { props.onPick(preset, mode) }}>
-                  <span className={css.presetName}>{preset.name}</span>
-                  <span className={css.presetBadges}>
-                    {preset.models.length > 0 ? <span data-mode="image">{t('settings.channelImageCount', { n: preset.models.length })}</span> : null}
-                    {(preset.videoModels ?? []).length > 0 ? <span data-mode="video">{t('settings.channelVideoCount', { n: (preset.videoModels ?? []).length })}</span> : null}
-                    {preset.models.length === 0 && (preset.videoModels ?? []).length === 0 ? <span>{t('settings.videoMode')}</span> : null}
-                  </span>
-                  <span className={css.presetHint}>{preset.hint}</span>
-                </button>
-                {preset.link === undefined && preset.subscription === undefined ? null : (
-                  <div className={css.presetFoot}>
-                    {preset.link === undefined ? <span /> : (
-                      <a className={css.presetLink} href={preset.link} target="_blank" rel="noreferrer noopener">
-                        {t('channels.presetSite')} ↗
-                      </a>
-                    )}
-                    {preset.subscription === undefined ? null : <span className={css.presetAction}>{t('channels.presetClickToLogin')}</span>}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-          {visiblePresets.length === 0 && tabPresets.length > 0 ? <p className={css.pickerEmpty}>{t('channels.presetEmpty')}</p> : null}
-          {tab === 'api-key' ? <button type="button" className={css.presetRow} data-custom disabled={props.disabled} onClick={() => { props.onCustom(capability) }}>
-            <span className={css.presetName}>+ {t('channels.addCustom')}</span>
-            <span className={css.presetHint}>{t('channels.presetCustomHint')}</span>
-          </button> : null}
-          {props.error !== null ? <p className={css.failed} role="status">{t('channels.presetLoadFailed', { error: props.error })}</p> : null}
-        </div>
-      </section>
-    </div>
-  )
-}
-
-/** Channel editor (modal): key, display name, API URL, model catalog. */
-function ChannelEditor(props: {
-  t: (key: ImageGenKey, params?: Record<string, string | number>) => string
-  channel: ChannelDraft
-  /** Catalog the caller asked to work on (image vs video). */
-  initialCatalog: ModelCatalogTab
-  keyHeld: boolean
-  usage: UsageCounters | null
-  otherChannels: ChannelDraft[]
-  isDefault: boolean
-  writable: boolean
-  dirty: boolean
-  saving: boolean
-  onPatch: (patch: Partial<ChannelDraft>) => void
-  onSetModels: (models: ModelMapping[]) => void
-  /** Per-channel blocking problems, so the field that blocks the save says so. */
-  issues: ChannelIssue[]
-  /** Replace this channel's video model catalog (alias → upstream id). */
-  onSetVideoModels: (models: ModelMapping[]) => void
-  onSetKey: (value: string | undefined) => void
-  subscriptionStatus?: SubscriptionStatus
-  subscriptionBusy?: 'login' | 'logout'
-  subscriptionMessage?: string
-  onSubscriptionLogin: (provider: SubscriptionProvider) => void
-  onSubscriptionComplete: (provider: SubscriptionProvider, input: string) => void
-  onSubscriptionLogout: (provider: SubscriptionProvider) => void
-  onSetDefault: () => void
-  onRemove: () => void
-  /** Commit staged edits and close only when the host accepted them. */
-  onSaveAndClose: () => Promise<boolean>
-  onClose: () => void
-}) {
-  const { t, channel } = props
-  const subscription = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
-  const subscriptionMode = channel.auth === 'subscription' && subscription !== undefined
-  const [catalogTab, setCatalogTab] = useState<ModelCatalogTab>(() => props.initialCatalog)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [keyDraft, setKeyDraft] = useState('')
-  const [candidates, setCandidates] = useState<string[] | null>(null)
-  const [detecting, setDetecting] = useState(false)
-  const [detectError, setDetectError] = useState<string | null>(null)
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null)
-  const [manualId, setManualId] = useState('')
-  const [removeOpen, setRemoveOpen] = useState(false)
-  const [copyFrom, setCopyFrom] = useState('')
-  const [manualAuthInput, setManualAuthInput] = useState('')
-  const [showKey, setShowKey] = useState(false)
-  const [editingModelIndex, setEditingModelIndex] = useState<number | null>(null)
-  const [editingVideoIndex, setEditingVideoIndex] = useState<number | null>(null)
-  const [manualVideoId, setManualVideoId] = useState('')
-
-  const generatedCount = (alias: string): number => {
-    if (props.usage === null) return 0
-    const channelBucket = props.usage.byChannel[channel.id] ?? props.usage.byChannel[`name:${channel.name}`] ?? {}
-    return channelBucket[alias] ?? props.usage.totals[alias] ?? 0
-  }
-
-  // Exact-URL channels can still derive a model list on Chat Completions and
-  // on Google's native protocol (its models list sits next to :generateContent).
-  const resolvedProtocol = resolveChannelProtocol(channel.apiUrl, channel.protocol)
-  const detectable = !channel.apiUrlFull || resolvedProtocol === 'chat-completions' || resolvedProtocol === 'google-native' || resolvedProtocol === 'qwen-draw'
-
-  const detect = (): void => {
-    if (!detectable) return
-    setDetecting(true)
-    setDetectError(null)
-    const payload: Record<string, unknown> = {
-      channelId: channel.id,
-      apiUrlFull: channel.apiUrlFull,
-      protocol: channel.protocol ?? 'auto',
-    }
-    if (channel.apiUrl.trim() !== '') payload.apiUrl = channel.apiUrl.trim()
-    if (keyDraft.trim() !== '') payload.apiKey = keyDraft.trim()
-    void fetch(IMAGE_MODEL_API.models, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
-      .then(async response => {
-        const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
-        if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-        setCandidates(body.models ?? [])
-      })
-      .catch(error => { setDetectError(error instanceof Error ? error.message : String(error)) })
-      .finally(() => { setDetecting(false) })
-  }
-
-  // Auto-detect once when the dialog opens with a complete endpoint.
-  const autoDetected = useRef(false)
-
-  /**
-   * Probe the endpoint the user just typed and report the round trip.
-   *
-   * `detect` fills the model catalog but says nothing about how long the host
-   * took; someone who just edited the URL wants one explicit "does this work
-   * now" answer before saving.
-   */
-  const testConnection = (): void => {
-    setTesting(true)
-    setTestResult(null)
-    const payload: Record<string, unknown> = {
-      channelId: channel.id,
-      apiUrlFull: channel.apiUrlFull,
-      protocol: channel.protocol ?? 'auto',
-    }
-    if (channel.apiUrl.trim() !== '') payload.apiUrl = channel.apiUrl.trim()
-    if (keyDraft.trim() !== '') payload.apiKey = keyDraft.trim()
-    const startedAt = performance.now()
-    void fetch(IMAGE_MODEL_API.models, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
-      .then(async response => {
-        const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
-        const elapsed = Math.round(performance.now() - startedAt)
-        if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-        const models = body.models ?? []
-        setTestResult({ ok: true, text: t('channels.testOk', { ms: elapsed, n: models.length }) })
-        if (models.length > 0) setCandidates(models)
-      })
-      .catch(error => {
-        setTestResult({ ok: false, text: t('channels.testFailed', { error: error instanceof Error ? error.message : String(error) }) })
-      })
-      .finally(() => { setTesting(false) })
-  }
-  useEffect(() => {
-    if (autoDetected.current) return
-    autoDetected.current = true
-    if (!subscriptionMode && detectable && channel.apiUrl.trim() !== '' && (props.keyHeld || keyDraft.trim() !== '')) detect()
-  }, [])
-
-  const addManual = (): void => {
-    const id = manualId.trim()
-    if (id === '') return
-    const next = [...channel.models]
-    const alias = id
-    if (!next.some(model => model.alias === alias)) next.push({ alias, id })
-    props.onSetModels(next)
-    setManualId('')
-  }
-
-  const addManualVideo = (): void => {
-    const id = manualVideoId.trim()
-    if (id === '') return
-    const next = [...(channel.videoModels ?? [])]
-    if (!next.some(model => model.alias === id)) next.push({ alias: id, id })
-    props.onSetVideoModels(next)
-    setManualVideoId('')
-  }
-
-  const copyFromChannel = (): void => {
-    const source = props.otherChannels.find(chance => chance.id === copyFrom)
-    if (source === undefined) return
-    const merged = [...channel.models]
-    for (const model of source.models) {
-      const alias = model.alias
-      // Copy with a collision suffix so both sources stay selectable.
-      let unique = alias
-      let suffix = 2
-      while (merged.some(entry => entry.alias === unique)) unique = `${alias} (${suffix++})`
-      merged.push({ alias: unique, id: model.id })
-    }
-    props.onSetModels(merged)
-    setCopyFrom('')
-  }
-
-  return (
-    <div className={css.editorBackdrop} role="dialog" aria-modal="true" aria-label={`${t('channels.editorTitle')} · ${channel.name || t('channels.untitled')}`} onClick={props.onClose}>
-      <div className={css.editorPanel} onClick={event => { event.stopPropagation() }}>
-        <header className={css.editorHeader}>
-          <div>
-            <h3 className={css.sectionTitle}>{t('channels.editorTitle')} · {channel.name || t('channels.untitled')}</h3>
-            <p className={css.sectionHint}>{t('channels.editorIntro')}</p>
-          </div>
-          <button type="button" className={css.editorClose} aria-label={t('preview.close')} onClick={props.onClose}>×</button>
-        </header>
-
-        {subscriptionMode ? (
-          <div className={css.subscriptionBox}>
-            <div className={css.subscriptionAccount}>
-              <span className={css.subscriptionDot} data-state={props.subscriptionStatus?.state ?? 'unknown'} aria-hidden="true" />
-              <div>
-                <strong>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[subscription]}</strong>
-                <small>{props.subscriptionStatus?.state === 'logged-in'
-                  ? props.subscriptionStatus.email ?? t('settings.subscriptionLoggedIn')
-                  : t('settings.subscriptionLoggedOut')}</small>
-              </div>
-            </div>
-            {EXPERIMENTAL_SUBSCRIPTION_PROVIDERS.has(subscription) ? <p className={css.subscriptionWarning}>{t('settings.subscriptionExperimental')}</p> : null}
-            <label className={css.editorField}>
-              <span className={css.label}>{t('channels.authMode')}</span>
-              <Select
-                className={css.select}
-                value="subscription"
-                disabled={!props.writable}
-                onChange={value => {
-                  if (value === 'api-key') props.onPatch({ auth: 'api-key', subscription: undefined })
-                }}
-              >
-                <option value="api-key">{t('channels.authModeApiKey')}</option>
-                <option value="subscription">{t('channels.authModeSubscription')}</option>
-              </Select>
-            </label>
-            <label className={css.editorField}>
-              <span className={css.label}>{t('channels.subscriptionProvider')}</span>
-              <Select
-                className={css.select}
-                value={subscription}
-                disabled={!props.writable || props.subscriptionStatus?.state === 'logged-in'}
-                onChange={value => {
-                  const provider = value as SubscriptionProvider
-                  const model = DEFAULT_SUBSCRIPTION_MODELS[provider]
-                  props.onPatch({ subscription: provider, models: [{ alias: model, id: model }] })
-                }}
-              >
-                {SUBSCRIPTION_PROVIDERS.map(provider => <option key={provider} value={provider}>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[provider]}{EXPERIMENTAL_SUBSCRIPTION_PROVIDERS.has(provider) ? ' · ' + t('settings.subscriptionExperimentalTag') : ''}</option>)}
-              </Select>
-            </label>
-            <label className={css.editorField}>
-              <span className={css.label}>{t('channels.modelCatalogTitle')}</span>
-              <input className={css.input} value={DEFAULT_SUBSCRIPTION_MODELS[subscription]} readOnly disabled />
-            </label>
-            <div className={css.modelSummary}>
-              {props.subscriptionStatus?.state === 'logged-in'
-                ? <button type="button" className={css.addModel} disabled={!props.writable || props.subscriptionBusy !== undefined} onClick={() => { props.onSubscriptionLogout(subscription) }}>{props.subscriptionBusy === 'logout' ? t('settings.subscriptionLoggingOut') : t('settings.subscriptionLogout')}</button>
-                : <button type="button" className={css.addModel} disabled={!props.writable || props.subscriptionBusy !== undefined} onClick={() => { props.onSubscriptionLogin(subscription) }}>{props.subscriptionBusy === 'login' ? t('settings.subscriptionLoggingIn') : t('settings.subscriptionLogin')}</button>}
-            </div>
-            {props.subscriptionMessage ? <p className={css.hint} role="status">{props.subscriptionMessage}</p> : null}
-            {props.subscriptionStatus?.state !== 'logged-in' ? <div className={css.subscriptionManual}>
-              <p className={css.fieldHint}>{t('settings.subscriptionManualHint')}</p>
-              <div className={css.manualModelRow}>
-                <input className={css.input} value={manualAuthInput} placeholder={t('settings.subscriptionManualPlaceholder')} disabled={!props.writable || props.subscriptionBusy !== undefined} onChange={event => { setManualAuthInput(event.target.value) }} />
-                <button type="button" className={css.addModel} disabled={!props.writable || manualAuthInput.trim() === '' || props.subscriptionBusy !== undefined} onClick={() => { props.onSubscriptionComplete(subscription, manualAuthInput.trim()) }}>{t('settings.subscriptionManualComplete')}</button>
-              </div>
-            </div> : null}
-            <p className={css.fieldHint}>{t('settings.subscriptionIsolationHint')}</p>
-          </div>
-        ) : <>
-        <div className={css.editorStageHead}>
-          <span className={css.editorStepNumber} aria-hidden="true">1</span>
-          <div>
-            <strong className={css.editorStageTitle}>{t('channels.connectionStep')}</strong>
-            <p className={css.editorStageHint}>{t('channels.connectionStepHint')}</p>
-          </div>
-        </div>
-        <div className={css.editorField}>
-          <label className={css.label} htmlFor="dsh-imagegen-channel-url">{t('channels.apiUrl')}</label>
-          <input id="dsh-imagegen-channel-url" data-channel-url={props.channel.id} aria-invalid={props.issues.some(issue => issue.field === 'apiUrl')} aria-describedby={props.issues.some(issue => issue.field === 'apiUrl') ? 'dsh-imagegen-channel-url-error' : undefined} className={css.input} value={channel.apiUrl} placeholder={channel.apiUrlFull ? 'https://api.example.com/v1/wand/si-image/generation' : 'https://api.example.com/v1'} disabled={!props.writable} onChange={event => {
-            const apiUrl = event.target.value
-            props.onPatch({ apiUrl, ...isChatCompletionsUrl(apiUrl) ? { apiUrlFull: true } : {} })
-          }} />
-          {props.issues.filter(issue => issue.field === 'apiUrl').map(issue => (
-            <p key={issue.code} id="dsh-imagegen-channel-url-error" className={css.fieldError} role="alert">{t(`channels.${issue.code}` as never)}</p>
-          ))}
-        </div>
-        <div className={css.editorField}>
-          <div className={css.head}>
-            <label className={css.label} htmlFor="dsh-imagegen-channel-key">{t('channels.apiKey')}</label>
-            <div className={css.keyActions}>
-              <span className={css.keyState} data-set={props.keyHeld || keyDraft !== '' ? '' : undefined}>
-                {props.keyHeld || keyDraft !== '' ? t('channels.keySet') : t('channels.keyMissing')}
-              </span>
-              {props.keyHeld || keyDraft !== '' ? (
-                <button type="button" className={css.reset} disabled={!props.writable} onClick={() => { setKeyDraft(''); props.onSetKey(undefined) }}>
-                  {t('channels.keyClear')}
-                </button>
-              ) : null}
-            </div>
-          </div>
-          <div className={css.keyInputRow}>
-            <input
-              id="dsh-imagegen-channel-key"
-              className={css.input}
-              type={showKey ? 'text' : 'password'}
-              autoComplete="off"
-              value={keyDraft}
-              placeholder={props.keyHeld ? t('channels.keyReplaceHint') : t('channels.keyMissingHint')}
-              disabled={!props.writable}
-              onChange={event => { const value = event.target.value; setKeyDraft(value); props.onSetKey(value === '' ? undefined : value) }}
-            />
-            <button type="button" className={css.keyVisibility} disabled={!props.writable} onClick={() => { setShowKey(value => !value) }}>
-              {showKey ? t('channels.hideKey') : t('channels.showKey')}
-            </button>
-          </div>
-        </div>
-        <button
-          type="button"
-          className={css.editorAdvancedToggle}
-          aria-expanded={advancedOpen}
-          onClick={() => { setAdvancedOpen(value => !value) }}
-        >
-          <span>{t('channels.advancedOptions')}</span>
-          <small>{t('channels.advancedOptionsHint')}</small>
-          <span aria-hidden="true">{advancedOpen ? '⌃' : '⌄'}</span>
-        </button>
-        {advancedOpen ? <div className={css.editorAdvancedFields}>
-          <div className={css.editorGrid}>
-            <div className={css.editorField}>
-              <label className={css.label} htmlFor="dsh-imagegen-channel-name">{t('channels.displayName')}</label>
-              <input id="dsh-imagegen-channel-name" className={css.input} value={channel.name} placeholder={t('channels.untitled')} disabled={!props.writable} onChange={event => { props.onPatch({ name: event.target.value }) }} />
-            </div>
-            <div className={css.editorField}>
-              <label className={css.label} htmlFor="dsh-imagegen-channel-auth">{t('channels.authMode')}</label>
-              <Select
-                id="dsh-imagegen-channel-auth"
-                className={css.select}
-                value={channel.auth ?? 'api-key'}
-                disabled={!props.writable}
-                onChange={value => {
-                  if (value === 'subscription') {
-                    const provider = subscription ?? 'grok-sub'
-                    const model = DEFAULT_SUBSCRIPTION_MODELS[provider]
-                    props.onPatch({ auth: 'subscription', subscription: provider, apiUrl: '', apiUrlFull: false, models: [{ alias: model, id: model }] })
-                  } else {
-                    props.onPatch({ auth: 'api-key', subscription: undefined })
-                  }
-                }}
-              >
-                <option value="api-key">{t('channels.authModeApiKey')}</option>
-                <option value="subscription">{t('channels.authModeSubscription')}</option>
-              </Select>
-            </div>
-          </div>
-          <div className={css.editorGrid}>
-            <div className={css.editorField}>
-              <label className={css.label} htmlFor="dsh-imagegen-channel-protocol">{t('channels.protocol')}</label>
-              <Select
-                id="dsh-imagegen-channel-protocol"
-                className={css.input}
-                value={channel.protocol ?? 'auto'}
-                disabled={!props.writable}
-                onChange={value => { props.onPatch({ protocol: value as ChannelDraft['protocol'] }) }}
-              >
-                <option value="auto">{t('channels.protocolAuto')}</option>
-                <option value="images">{t('channels.protocolImages')}</option>
-                <option value="chat-completions">{t('channels.protocolChat')}</option>
-                <option value="google-native">{t('channels.protocolGoogle')}</option>
-                <option value="qwen-draw">{t('channels.protocolQwenDraw')}</option>
-              </Select>
-            </div>
-          </div>
-          <p className={css.fieldHint}>{t('channels.protocolHint')}</p>
-          <label className={css.checkboxRow}>
-            <input type="checkbox" checked={channel.apiUrlFull} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrlFull: event.target.checked }) }} />
-            <span>{t('channels.apiUrlFull')}</span>
-          </label>
-          {channel.apiUrlFull ? <p className={css.fieldHint}>{t('channels.apiUrlFullHint')}</p> : null}
-          <label className={css.checkboxRow}>
-            <input type="checkbox" checked={channel.autoReferenceLimit !== false} disabled={!props.writable} onChange={event => { props.onPatch({ autoReferenceLimit: event.target.checked }) }} />
-            <span>{t('channels.autoReferenceLimit')}</span>
-          </label>
-          <p className={css.fieldHint}>{t('channels.autoReferenceLimitHint')}</p>
-          {catalogHasSeedream(channel.models) ? <>
-            <label className={css.checkboxRow}>
-              <input type="checkbox" checked={channel.watermark !== false} disabled={!props.writable} onChange={event => { props.onPatch({ watermark: event.target.checked }) }} />
-              <span>{t('channels.watermark')}</span>
-            </label>
-            <p className={css.fieldHint}>{t('channels.watermarkHint')}</p>
-          </> : null}
-        </div> : null}
-
-        <div className={css.editorDivider} />
-
-        <div className={css.editorStageHead}>
-          <span className={css.editorStepNumber} aria-hidden="true">2</span>
-          <div>
-            <strong className={css.editorStageTitle}>{t('channels.modelStep')}</strong>
-            <p className={css.editorStageHint}>{t('channels.modelStepHint')}</p>
-          </div>
-        </div>
-        <div className={css.catalogTabs} id={`dsh-imagegen-channel-models-${props.channel.id}`} role="tablist" aria-label={t('channels.modelStep')} tabIndex={-1}>
-          <button
-            type="button"
-            role="tab"
-            id={`dsh-imagegen-model-tab-image-${props.channel.id}`}
-            aria-controls={`dsh-imagegen-model-panel-image-${props.channel.id}`}
-            aria-selected={catalogTab === 'image'}
-            data-active={catalogTab === 'image' ? '' : undefined}
-            tabIndex={tabIndexFor(catalogTab === 'image')}
-            onKeyDown={event => { onTablistKeyDown(event, { count: 2, index: 0, select: next => { setCatalogTab(next === 0 ? 'image' : 'video') } }) }}
-            onClick={() => { setCatalogTab('image') }}
-          >
-            <ModeMark mode="image" />
-            {t('channels.modelTabImage', { n: channel.models.length })}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id={`dsh-imagegen-model-tab-video-${props.channel.id}`}
-            aria-controls={`dsh-imagegen-model-panel-video-${props.channel.id}`}
-            aria-selected={catalogTab === 'video'}
-            data-active={catalogTab === 'video' ? '' : undefined}
-            tabIndex={tabIndexFor(catalogTab === 'video')}
-            onKeyDown={event => { onTablistKeyDown(event, { count: 2, index: 1, select: next => { setCatalogTab(next === 0 ? 'image' : 'video') } }) }}
-            onClick={() => { setCatalogTab('video') }}
-          >
-            <ModeMark mode="video" />
-            {t('channels.modelTabVideo', { n: (channel.videoModels ?? []).length })}
-          </button>
-        </div>
-        {props.issues.filter(issue => issue.field === 'models').map(issue => (
-          <p key={issue.code} className={css.fieldError} role="alert">{t(`channels.${issue.code}` as never)}</p>
-        ))}
-
-        {catalogTab === 'image' ? (
-        <div
-          className={css.modelCatalog}
-          id={`dsh-imagegen-model-panel-image-${props.channel.id}`}
-          role="tabpanel"
-          aria-labelledby={`dsh-imagegen-model-tab-image-${props.channel.id}`}
-        >
-        <div className={css.editorSectionHeader}>
-          <div>
-            <h4 className={css.label}>{t('channels.imageCatalogTitle')}</h4>
-            <p className={css.sectionHint}>{t('channels.imageCatalogHint')}</p>
-          </div>
-          <button type="button" className={css.modelFetch} disabled={!props.writable || detecting || !detectable} onClick={detect}>
-            {detecting ? t('channels.detecting') : candidates === null && channel.models.length === 0 ? t('channels.detectFirst') : t('channels.detect')}
-          </button>
-          <button
-            type="button"
-            className={css.modelFetch}
-            data-test-connection=""
-            disabled={!props.writable || testing || channel.apiUrl.trim() === ''}
-            title={channel.apiUrl.trim() === '' ? t('channels.apiUrlRequired') : t('channels.testConnection')}
-            onClick={testConnection}
-          >
-            {testing ? t('channels.testing') : t('channels.testConnection')}
-          </button>
-        </div>
-        {detectError !== null ? <p className={css.failed} role="status">{t('channels.detectFailed', { error: detectError })}</p> : null}
-        {testResult !== null ? (
-          <p className={testResult.ok ? css.detectOk : css.failed} role="status" data-test-result="">{testResult.text}</p>
-        ) : null}
-        {candidates !== null && detectError === null ? <p className={css.detectOk} role="status">{t('channels.detectSuccess', { n: candidates.length })}</p> : null}
-
-        {channel.models.length === 0
-          ? <p className={css.sectionHint}>{t('channels.noModelsHint')}</p>
-          : (
-            <ul className={css.modelRows}>
-              {channel.models.map((model, index) => {
-                const entry = describeModel(model.id || model.alias)
-                const generated = generatedCount(model.alias)
-                return (
-                  <li key={`${model.alias}-${index}`} className={css.modelRow} data-editing={editingModelIndex === index ? '' : undefined}>
-                    {editingModelIndex === index ? (
-                      <div className={css.modelRowEditor}>
-                        <div className={css.modelRowInputs}>
-                          <input className={css.input} value={model.alias} aria-label={t('channels.modelAliasLabel')} disabled={!props.writable} onChange={event => {
-                            const next = [...channel.models]
-                            next[index] = { ...model, alias: event.target.value }
-                            props.onSetModels(next)
-                          }} />
-                          <span className={css.modelArrow}>→</span>
-                          <input className={css.input} value={model.id} aria-label={t('channels.modelIdLabel')} disabled={!props.writable} onChange={event => {
-                            const next = [...channel.models]
-                            next[index] = { ...model, id: event.target.value }
-                            props.onSetModels(next)
-                          }} />
-                        </div>
-                        <button type="button" className={css.modelRowDone} onClick={() => { setEditingModelIndex(null) }}>{t('channels.done')}</button>
-                      </div>
-                    ) : (
-                      <div className={css.modelRowSummary}>
-                        <div className={css.modelRowTitle}>
-                          <span className={css.modelRowName} title={model.alias}>{model.alias}</span>
-                          <span className={css.modelBadge}>{entry.known ? entry.labelZh : t('channels.unknownProtocol')}</span>
-                          {generated > 0 ? <span className={css.modelBadge} data-verified>{t('channels.generated', { n: generated })}</span> : null}
-                        </div>
-                        {model.id !== model.alias ? <span className={css.modelRowUpstream} title={model.id}>→ {model.id}</span> : null}
-                      </div>
-                    )}
-                    <div className={css.modelRowActions}>
-                      {editingModelIndex === index ? null : (
-                        <button type="button" className={css.modelRowEdit} disabled={!props.writable} onClick={() => { setEditingModelIndex(index) }}>{t('channels.edit')}</button>
-                      )}
-                      <button type="button" className={css.modelRowRemove} disabled={!props.writable} aria-label={`${t('channels.removeModel')}: ${model.alias}`} onClick={() => { setEditingModelIndex(null); props.onSetModels(channel.models.filter((_, i) => i !== index)) }}>×</button>
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-
-        {candidates !== null && candidates.length > 0 ? (
-          <div className={css.modelCandidateList}>
-            <span className={css.modelCandidateLabel}>
-              {t('channels.candidatesTitle')}
-            </span>
-            {candidates.map(candidate => {
-              const selected = channel.models.some(model => model.alias === candidate)
-              const entry = describeModel(candidate)
-              return (
-                <label key={candidate} className={css.modelCandidate} data-selected={selected ? '' : undefined}>
-                  <input type="checkbox" checked={selected} disabled={!props.writable} onChange={() => {
-                    const merged = selected
-                      ? channel.models.filter(model => model.alias !== candidate)
-                      : [...channel.models, { alias: candidate, id: candidate }]
-                    props.onSetModels(merged)
-                  }} />
-                  <span>{candidate}</span>
-                  {!entry.known ? <span className={css.modelBadge} data-warn>{t('channels.unknownProtocol')}</span> : <span className={css.modelBadge}>{entry.labelZh}</span>}
-                </label>
-              )
-            })}
-          </div>
-        ) : null}
-        <div className={css.editorTools}>
-          <div className={css.manualModelRow}>
-            <input className={css.input} value={manualId} placeholder={t('channels.manualAddPlaceholder')} disabled={!props.writable} onChange={event => { setManualId(event.target.value) }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addManual() } }} />
-            <button type="button" className={css.addModel} disabled={!props.writable || manualId.trim() === ''} onClick={addManual}>{t('channels.addModelConfirm')}</button>
-          </div>
-          {props.otherChannels.length > 0 ? (
-            <div className={css.manualModelRow}>
-              <Select className={css.modelChoices} value={copyFrom} disabled={!props.writable} onChange={value => { setCopyFrom(value) }} aria-label={t('channels.copyFrom')}>
-                <option value="">{t('channels.copyFrom')}</option>
-                {props.otherChannels.map(other => (
-                  <option key={other.id} value={other.id}>{other.name || t('channels.untitled')}</option>
-                ))}
-              </Select>
-              <button type="button" className={css.addModel} disabled={!props.writable || copyFrom === ''} onClick={copyFromChannel}>{t('channels.copyApply')}</button>
-            </div>
-          ) : null}
-        </div>
-        </div>
-        ) : (
-        <div
-          className={css.modelCatalog}
-          id={`dsh-imagegen-model-panel-video-${props.channel.id}`}
-          role="tabpanel"
-          aria-labelledby={`dsh-imagegen-model-tab-video-${props.channel.id}`}
-        >
-          <div className={css.editorSectionHeader}>
-            <div>
-              <h4 className={css.label}>{t('channels.videoCatalogTitle')}</h4>
-              <p className={css.sectionHint}>{t('channels.videoCatalogHint')}</p>
-            </div>
-          </div>
-          {(channel.videoModels ?? []).length === 0
-            ? <div className={css.catalogEmpty}>
-              <strong>{t('channels.videoEmptyTitle')}</strong>
-              <p>{t('channels.videoEmptyHint')}</p>
-            </div>
-            : (
-              <ul className={css.modelRows}>
-                {(channel.videoModels ?? []).map((model, index) => {
-                  const entry = describeVideoModel(model.id || model.alias)
-                  return (
-                    <li key={`v-${model.alias}-${index}`} className={css.modelRow} data-editing={editingVideoIndex === index ? '' : undefined}>
-                      {editingVideoIndex === index ? (
-                        <div className={css.modelRowEditor}>
-                          <div className={css.modelRowInputs}>
-                            <input className={css.input} value={model.alias} aria-label={t('channels.modelAliasLabel')} disabled={!props.writable} onChange={event => {
-                              const next = [...(channel.videoModels ?? [])]
-                              next[index] = { ...model, alias: event.target.value }
-                              props.onSetVideoModels(next)
-                            }} />
-                            <span className={css.modelArrow}>→</span>
-                            <input className={css.input} value={model.id} aria-label={t('channels.modelIdLabel')} disabled={!props.writable} onChange={event => {
-                              const next = [...(channel.videoModels ?? [])]
-                              next[index] = { ...model, id: event.target.value }
-                              props.onSetVideoModels(next)
-                            }} />
-                          </div>
-                          <button type="button" className={css.modelRowDone} onClick={() => { setEditingVideoIndex(null) }}>{t('channels.done')}</button>
-                        </div>
-                      ) : (
-                        <div className={css.modelRowSummary}>
-                          <div className={css.modelRowTitle}>
-                            <span className={css.modelRowName} title={model.alias}>{model.alias}</span>
-                            <span className={css.modelBadge}>{entry.known ? entry.labelZh : t('channels.unknownProtocol')}</span>
-                          </div>
-                          {model.id !== model.alias ? <span className={css.modelRowUpstream} title={model.id}>→ {model.id}</span> : null}
-                        </div>
-                      )}
-                      <div className={css.modelRowActions}>
-                        {editingVideoIndex === index ? null : (
-                          <button type="button" className={css.modelRowEdit} disabled={!props.writable} onClick={() => { setEditingVideoIndex(index) }}>{t('channels.edit')}</button>
-                        )}
-                        <button type="button" className={css.modelRowRemove} disabled={!props.writable} aria-label={`${t('channels.removeModel')}: ${model.alias}`} onClick={() => { setEditingVideoIndex(null); props.onSetVideoModels((channel.videoModels ?? []).filter((_, i) => i !== index)) }}>×</button>
-                      </div>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          <div className={css.manualModelRow}>
-            <input className={css.input} value={manualVideoId} placeholder={t('channels.videoAddPlaceholder')} disabled={!props.writable} onChange={event => { setManualVideoId(event.target.value) }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addManualVideo() } }} />
-            <button type="button" className={css.addModel} disabled={!props.writable || manualVideoId.trim() === ''} onClick={addManualVideo}>{t('channels.addModelConfirm')}</button>
-          </div>
-          {channel.apiUrl.toLowerCase().includes('agnes') ? <button type="button" className={css.addModel} disabled={!props.writable} onClick={() => {
-            const existing = new Set((channel.videoModels ?? []).map(model => model.alias))
-            const additions = DEFAULT_VIDEO_MODELS.filter(model => !existing.has(model)).map(model => ({ alias: model, id: model }))
-            if (additions.length > 0) props.onSetVideoModels([...(channel.videoModels ?? []), ...additions])
-          }}>{t('channels.videoAddPresets')}</button> : null}
-        </div>
-        )}
-        </>}
-
-        <div className={css.editorDivider} />
-
-        <div className={css.editorFooter}>
-          {props.isDefault ? <span className={css.channelBadge} data-default>{t('channels.defaultLabel')}</span> : (
-            <button type="button" className={css.inlineDisclosure} disabled={!props.writable} onClick={props.onSetDefault}>{t('channels.setDefault')}</button>
-          )}
-          {removeOpen
-            ? (
-              <>
-                <button type="button" className={css.channelDanger} disabled={!props.writable} onClick={props.onRemove}>{t('channels.confirm')}</button>
-                <button type="button" className={css.channelAction} onClick={() => { setRemoveOpen(false) }}>{t('channels.cancel')}</button>
-              </>
-            )
-            : (
-              <button type="button" className={css.channelAction} data-danger onClick={() => { setRemoveOpen(true) }}>{t('channels.deleteThisChannel')}</button>
-            )}
-          <span className={css.spacer} />
-          <button type="button" className={css.discard} onClick={props.onClose}>{t('preview.close')}</button>
-          <button
-            type="button"
-            className={css.save}
-            data-editor-save=""
-            disabled={!props.dirty || props.saving || !props.writable}
-            onClick={() => { void props.onSaveAndClose() }}
-          >
-            {props.saving ? t('settings.saving') : t('channels.saveAndClose')}
-          </button>
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -2289,18 +515,10 @@ interface FieldProps {
   onReset: () => void
 }
 
-/** A staged value field; `secret` renders a password control. */
+/** A staged value field. */
 function ValueField(props: FieldProps & {
-  /** Render a password control. */
-  secret?: boolean
   /** Placeholder shown while the draft is empty. */
   placeholder?: string
-  /** Label of the dedicated clear control (secret fields). */
-  clearLabel?: string
-  /** Stage a clear of the stored secret. */
-  onClear?: () => void
-  /** Whether a stored secret exists (enables the clear control). */
-  canClear?: boolean
 }) {
   return (
     <div className={css.field}>
@@ -2321,24 +539,11 @@ function ValueField(props: FieldProps & {
             </span>
           )
           : null}
-        {props.secret === true && props.canClear === true
-          ? (
-            <button
-              type="button"
-              className={css.reset}
-              disabled={props.disabled}
-              onClick={props.onClear}
-            >
-              {props.clearLabel ?? props.resetLabel}
-            </button>
-          )
-          : null}
       </div>
       <input
         id={props.id}
         className={props.invalid ? css.inputInvalid : css.input}
-        type={props.secret === true ? 'password' : 'text'}
-        autoComplete={props.secret === true ? 'off' : undefined}
+        type="text"
         {...props.invalid ? { 'aria-invalid': true } : {}}
         value={props.text}
         placeholder={props.placeholder ?? ''}

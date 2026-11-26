@@ -5,10 +5,10 @@
  * Registers the dsh-imagegen locale dictionaries, binds the plugin's own
  * settings scope (its bridge routes serve the namespace the official rc.6
  * allowlist would refuse), registers the configuration page in the Settings
- * dialog's left navigation, and mounts the two DOM surfaces: the studio entry
- * row and the generation studio in the center column. Failure policy: DOM mounting problems are
- * logged, never thrown — the web shell fails the whole boot when a plugin
- * apply throws, and an external plugin must not take the GUI down.
+ * dialog's left navigation, and mounts the two shell slots: the sidebar panel
+ * row and the keyed `main` panel. Failure policy: mount problems are logged,
+ * never thrown — the web shell fails the whole boot when a plugin apply
+ * throws, and an external plugin must not take the GUI down.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -20,7 +20,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the LocaleNamespaceMap merge table.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { ImageGenApi } from './api.ts'
-import { ImageGenController } from './controller.ts'
 import { tt, applyHostLocale } from './helpers.ts'
 import { en, ru, zh, type ImageGenKey } from './locales.ts'
 import { registerImageGenSlotSurface } from './slot-surface.tsx'
@@ -61,7 +60,6 @@ export const inject = ['slots', 'locale', 'connection', 'sessions', 'conversatio
 // the only place these are reachable from Node); not part of the contract.
 export { autoRemoveBackground, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, rectBetween, rectToPixels, removeBackground, transparencyRatio } from './image-ops.ts'
 export { addConversationAttachments, conversationInput, createConversationDrafts, releaseConversationDrafts, removeConversationAttachment } from './conversation-sync.ts'
-export { sidebarEntryTestHooks } from './sidebar-entry.ts'
 // #49 regression: the all-or-nothing history-group fold is invisible from the
 // outside (a rejected batch and an empty group both leave the board blank), so
 // the smoke test drives this function directly.

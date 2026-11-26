@@ -23,14 +23,14 @@
  *
  * The plan is a *proposal checked for validity*, not free text: every field is
  * clamped to what the resolved video family accepts, so a model cannot make the
- * request unsendable (a 20s clip on a 10s family, a 4:3 frame on comemoe).
+ * request unsendable (a 20s clip on a family that stops at 10s).
  *
  * The prompt skeleton follows Wan 2.2's own `--use_prompt_extend` guide
  * (Wan-Video/Wan2.2, Apache-2.0, `wan/utils/system_prompt.py`): subject and
  * action first, then shot size, camera angle/movement, lighting, colour tone
  * and style, and — for image-to-video — emphasis on motion over static scene
  * description. That model is the reference implementation of the licence-clean
- * open video family this plugin actually routes (`wan2.2-*` through comemoe),
+ * open video family this plugin actually routes,
  * so its vocabulary is the one the provider was trained against.
  */
 
@@ -41,7 +41,7 @@ import {
   resolutionRank,
   type VideoCatalogEntry,
 } from './video-model-catalog.ts'
-import type { PromptModelConfig } from './prompt-enhancer.ts'
+import type { ChatTarget } from './prompt-enhancer.ts'
 import type { VideoDirectorPlan, VideoMode, VideoResolution } from './protocol.ts'
 
 /** Who produced a plan. */
@@ -283,7 +283,7 @@ function clampToFamilySeconds(seconds: number, entry: VideoCatalogEntry): number
   const clamped = clampVideoSeconds(seconds)
   // The offered set is the family's own: the panel renders the same list, so a
   // planner asking for 7 snaps to a duration the user could have picked rather
-  // than to a stale constant (snapgen speaks 6/10/15, muse only 10).
+  // than to a stale constant (the gateway's H3 family speaks 5/10/15).
   const offered = durationsOf(entry)
   if (offered.includes(clamped)) return clamped
   const nearest = offered.reduce((best, candidate) =>
@@ -494,20 +494,20 @@ export type ChatCompleter = (options: { system: string; content: string; tempera
  * offline planner still produces a usable shot list from the same sentence.
  *
  * @param input - the request as collected, before the engine sees it.
- * @param config - resolved chat endpoint (same one prompt enhancement uses).
+ * @param config - the host conversation model this plan is recorded against.
  * @param complete - chat call, or undefined when no chat model is configured.
  * @param signal - caller cancellation; a cancelled plan is reported as cancelled.
  * @returns a validated plan whose params never exceed the request's own.
  */
 export async function planVideo(
   input: VideoPlanInput,
-  config: PromptModelConfig | undefined,
+  config: ChatTarget | undefined,
   complete: ChatCompleter | undefined,
   signal?: AbortSignal,
 ): Promise<VideoPlan> {
   const prompt = requirePrompt(input.prompt)
   const chinese = looksChinese(prompt)
-  const configured = config !== undefined && config.model.trim() !== '' && config.apiUrl.trim() !== ''
+  const configured = config !== undefined && config.model.trim() !== ''
   if (!configured || complete === undefined) {
     // No chat model is a legitimate setup (the studio works without one), so
     // this is the offline path rather than an error: the plan still happens.

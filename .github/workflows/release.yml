@@ -323,6 +323,8 @@ jobs:
   publish-npm:
     name: Publish to npm
     needs: release
+    # 本 fork 通过 dist 分支的 tgz 发行（见 suanli.yml），不向 npm 发布。
+    # 这个 job 因此只在仓库变量 NPM_PUBLISH=true 时运行；未设置即跳过（跳过不是失败）。
     # ---------------------------------------------------------------------
     # THE PUBLISH SWITCH.
     #

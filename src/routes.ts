@@ -16,12 +16,9 @@ import path from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
-import type { SubscriptionManager } from './subscription/manager.ts'
-import type { UpstreamConfig } from './engine.ts'
-import { enhancePrompt, listImageModels, listPromptModels, polishPrompt, type PromptModelConfig } from './prompt-enhancer.ts'
+import { enhancePrompt, polishPrompt, type HostChatClient } from './prompt-enhancer.ts'
 import { generateListingCopy } from './listing-copy.ts'
 import { analyzeLayers, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
-import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
 import { clearVideoHistory, drainVideoPosters, listVideoHistory, readVideoFile, removeVideoHistory } from './video-store.ts'
@@ -33,15 +30,12 @@ import { buildFilePreview } from './file-preview.ts'
 import { imageDataRoot } from './image-storage-path.ts'
 import { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates } from './templates-store.ts'
 import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
-import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
-import { checkForUpdate, CURRENT_VERSION, installUpdate, ManualUpdateRequiredError, updateInstallTarget, type UpdateHostContext } from './updater.ts'
-import { IMAGE_PRESETS } from './presets.ts'
 import { parseVideoResolution } from './video-model-catalog.ts'
 import { clearDiagnostics, listDiagnostics } from './diagnostics-store.ts'
 import { allSignals, clearSignals, listSignals, promptBucketOf, recordSignal } from './signal-store.ts'
 import { buildReport, DEFAULT_WINDOW_DAYS } from './signal-report.ts'
 import { extractProductLink } from './link-extract.ts'
-import { MODEL_API, AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, LISTING_COPY_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, SIGNALS_API, STAGE_ASSETS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, VIDEO_API, isChannelProtocolPreference, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type VideoDirectorPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type ListingCopyRequest, type PptRunRequest, type PptRuntimeStatus, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type CanvasVideoTaskMeta, type VideoGenerateRequest, type VideoHistoryEntry } from './protocol.ts'
+import { GATEWAY_API, type GatewayCatalogSnapshot, MODEL_API, AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CODE_RENDER_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, LISTING_COPY_API, PROMPT_ENHANCE_API, SETTINGS_API, SIGNALS_API, STAGE_ASSETS_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, USAGE_API, VIDEO_API, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type VideoDirectorPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type ListingCopyRequest, type PptRunRequest, type PptRuntimeStatus, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type CanvasVideoTaskMeta, type VideoGenerateRequest, type VideoHistoryEntry } from './protocol.ts'
 import { buildCanvasBundle, CANVAS_BUNDLE_API, MAX_CANVAS_BUNDLE_BYTES, parseCanvasBundle } from './canvas-bundle.ts'
 import { probeCodeRender } from './code-render-runtime.ts'
 import { makeOutfitRoutes } from './outfit-reference-routes.ts'
@@ -178,14 +172,13 @@ export interface ImageGenRoutesDeps {
   bindHost?: string
   /** Internal namespace when the host entry differs from the bridge alias. */
   settingsNamespace?: string
-  /** Resolve the current upstream config (legacy single-endpoint path). */
-  resolve: () => UpstreamConfig
-  /** Resolve the current channel view (the channel-aware path). */
+  /** The live channel view: the deployment's single gateway channel. */
   resolveChannels?: () => ChannelsView
-  /** Resolve the optional chat-model configuration for prompt enhancement. */
-  resolvePrompt?: () => PromptModelConfig
-  /** Models explicitly selected for this image API endpoint (legacy path). */
-  resolveImageModels?: () => string[]
+  /**
+   * 宿主自己的对话模型：提示词增强、文案生成、图层拆分与画布文字动作都走它。
+   * 宿主没挂载对话模型时这些路由回一句可读的「没有可用模型」。
+   */
+  chat?: HostChatClient
   /** Host attachment storage used by Agent tool-result previews. */
   attachments?: {
     readImage: (ref: ImageAttachmentRef) => Promise<{ ref: ImageAttachmentRef; data: Uint8Array }>
@@ -239,14 +232,6 @@ export interface ImageGenRoutesDeps {
     add: (sourceId: string, item: TemplateFavorite['case']) => Promise<TemplateFavorite[]>
     remove: (key: string) => Promise<TemplateFavorite[]>
   }
-  /** Resolve the object-storage sync settings (with the real secret). */
-  resolveStorage?: () => StorageSyncConfig
-  /**
-   * Launcher facts for the update routes: whether this host can install a bundle
-   * itself, and the profile it booted. Hosts that predate the install hook omit
-   * it, and the updater then falls back to argv/env probing and its CLI path.
-   */
-  resolveUpdateContext?: () => UpdateHostContext
   /** Shared host queue, used by Agent tools and browser task endpoints. */
   runtime?: ImageGenerationRuntime
   /**
@@ -260,8 +245,16 @@ export interface ImageGenRoutesDeps {
     clear: () => Promise<VideoHistoryEntry[]>
     readFile: (file: string) => Promise<{ path: string; size: number; mime: string } | undefined>
   }
-  /** Subscription login/status manager; absent on hosts without Credentials. */
-  subscriptions?: SubscriptionManager
+  /**
+   * 网关媒体目录（插件视角的快照与刷新）。
+   *
+   * 宿主没有挂载目录服务时缺省：两条路由仍然存在，返回 `not-configured`，工作台据此
+   * 显示「当前版本未配置模型网关」而不是报错。
+   */
+  gateway?: {
+    snapshot: () => GatewayCatalogSnapshot
+    refresh: () => Promise<GatewayCatalogSnapshot>
+  }
   /**
    * Canvas skill runner. Absent when the host skill registry or agent runtime
    * never mounted (deployments without them): the canvas then offers its
@@ -895,14 +888,6 @@ function toView(descriptor: SettingsDescriptor, namespace = String(descriptor.ns
   }
 }
 
-/** Map a subscription provider to its manager vendor id. */
-function vendorOfSubscription(provider: typeof SUBSCRIPTION_PROVIDERS[number]): 'codex' | 'grok' | 'antigravity' | 'openrouter' {
-  if (provider === 'chatgpt-sub') return 'codex'
-  if (provider === 'google-sub') return 'antigravity'
-  if (provider === 'openrouter-sub') return 'openrouter'
-  return 'grok'
-}
-
 /** Map a seam failure onto the bridge refusal envelope. */
 function failureOf(error: unknown): { ok: false; code: string; message: string } {
   if (error instanceof SettingsConflictError) {
@@ -922,6 +907,29 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     { kind: 'exact', path: MODEL_API.list, handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, models: await listModels() }) } },
     { kind: 'exact', path: MODEL_API.save, handler: async (req, res) => { if (!guard(req, res, 'POST')) return; try { const body = await readJsonBody(req, MAX_JSON_BODY_BYTES); const model = await saveModel({ name: String(body?.name ?? ''), data: String(body?.data ?? ''), mime: String(body?.mime ?? 'image/png') }); writeJson(res, 200, { ok: true, model }) } catch (error) { writeJson(res, 400, { ok: false, code: 'model-save-failed', message: messageOf(error) }) } } },
     { kind: 'prefix', path: MODEL_API.image, handler: async (req, res) => { if (!guard(req, res, 'GET')) return; const file = imageFileFrom(req.url, MODEL_API.image); const found = file === undefined ? undefined : await readModel(file); if (!found) { writeJson(res, 404, { error: 'not found' }); return } res.writeHead(200, { 'content-type': found.mime }); res.end(found.data) } },
+  ]
+  /** 宿主未挂载目录服务时两条网关路由仍应答，工作台据此渲染 not-configured。 */
+  const noGateway: GatewayCatalogSnapshot = { status: 'not-configured', version: null, fetchedAt: null, image: [], video: [] }
+  const gatewayRoutes: WebRoute[] = [
+    {
+      kind: 'exact',
+      path: GATEWAY_API.catalog,
+      handler: (req, res) => {
+        if (!guard(req, res, 'GET')) return
+        writeJson(res, 200, { ok: true, snapshot: deps.gateway?.snapshot() ?? noGateway })
+      },
+    },
+    {
+      kind: 'exact',
+      path: GATEWAY_API.refresh,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        // 刷新失败也返回 200：失败原因写在快照的 status 里，前端按状态渲染，
+        // 不是把一次网关抖动变成一个 HTTP 错误。
+        const snapshot = deps.gateway === undefined ? noGateway : await deps.gateway.refresh()
+        writeJson(res, 200, { ok: true, snapshot })
+      },
+    },
   ]
   const stageAssetRoutes: WebRoute[] = [{
     kind: 'prefix',
@@ -987,7 +995,12 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     clear: clearVideoHistory,
     readFile: readVideoFile,
   }
-  const resolvePrompt = deps.resolvePrompt ?? (() => ({ apiUrl: '', apiKey: '', model: '' }))
+  /** The host conversation model; a host without one answers every ask with copy. */
+  const hostChat: HostChatClient = deps.chat ?? {
+    available: () => false,
+    label: () => '',
+    complete: async () => { throw new Error('当前部署没有可用的对话模型：请先在对话面板里选择一个模型') },
+  }
   /**
    * Record a `delete` signal for one removed generation.
    *
@@ -1067,22 +1080,10 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     if (req.method === 'HEAD') { res.end(); return }
     pipeClip(createReadStream(found.path), res)
   }
-  const resolveImageModels = deps.resolveImageModels ?? (() => normalizeImageModels(undefined))
   const settingsNamespace = deps.settingsNamespace ?? IMAGEGEN_SETTINGS_NAMESPACE
 
-  /** The current channel view: the channel-aware resolver, or a synthesized
-   *  single default channel from the legacy flat upstream config (tests and
-   *  older hosts). */
-  const channelViewOf = (): ChannelsView => {
-    if (deps.resolveChannels !== undefined) return deps.resolveChannels()
-    const upstream = deps.resolve()
-    const models: ModelMapping[] = normalizeImageModels(resolveImageModels()).map(id => ({ alias: id, id }))
-    if (upstream.apiUrl.trim() === '' && models.length === 0) return { channels: [], defaultChannelId: '' }
-    return {
-      channels: [{ id: 'default', preset: '', name: '默认渠道', apiUrl: upstream.apiUrl, apiUrlFull: false, apiKey: upstream.apiKey, models }],
-      defaultChannelId: 'default',
-    }
-  }
+  /** The current channel view: the deployment's gateway channel, or none. */
+  const channelViewOf = (): ChannelsView => deps.resolveChannels?.() ?? { channels: [], defaultChannelId: '' }
   const runtime = deps.runtime ?? new ImageGenerationRuntime(channelViewOf, history)
 
   /** Resolve an alias (or the channel fallback) into a concrete generation
@@ -1091,7 +1092,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   const resolveChannelRequest = (request: GenerateRequest): { ok: true; request: GenerateRequest } | { ok: false; code: string; message: string } => {
     const view = channelViewOf()
     if (view.channels.length === 0) {
-      return { ok: false, code: 'no-channels', message: '尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥' }
+      return { ok: false, code: 'no-channels', message: '当前账号没有可用的生图模型：请确认已登录，且账号有图像模型权限' }
     }
     const explicit = view.channels.find(candidate => candidate.id === request.channelId)
     const defaults = view.channels.find(candidate => candidate.id === view.defaultChannelId) ?? view.channels[0]
@@ -1100,7 +1101,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     if (asked === '') {
       const alias = target?.models[0]?.alias ?? ''
       if (alias === '') {
-        return { ok: false, code: 'no-models', message: `渠道「${target?.name ?? ''}」尚未配置模型，请先在设置中添加` }
+        return { ok: false, code: 'no-models', message: '当前账号没有可用的生图模型：请确认已登录，且账号有图像模型权限' }
       }
       const mapping = target!.models.find(model => model.alias === alias)!
       return { ok: true, request: { ...request, model: alias, upstream: mapping.id, channelId: target!.id, channel: target!.name } }
@@ -1108,7 +1109,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     const hosting = view.channels.filter(channel => channel.models.some(model => model.alias === asked))
     if (hosting.length === 0) {
       const available = [...new Set(view.channels.flatMap(channel => channel.models.map(model => model.alias)))]
-      return { ok: false, code: 'image-model-not-configured', message: `模型「${asked}」未在任一渠道配置；可用模型：${available.join('、') || '（无）'}` }
+      return { ok: false, code: 'image-model-not-configured', message: `模型「${asked}」不在当前账号的可用模型里；可用模型：${available.join('、') || '（无）'}` }
     }
     const picked = target !== undefined && target.models.some(model => model.alias === asked) ? target : hosting[0]!
     const mapping = picked.models.find(model => model.alias === asked)!
@@ -1128,6 +1129,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
 
   return [
     ...modelRoutes,
+    ...gatewayRoutes,
     ...makeOutfitRoutes({ guard, readJsonBody, writeJson }),
     // ---------------------------- composer image for /edit_image (exact)
     ...(deps.attachments?.saveImage === undefined || deps.pendingConversationImages === undefined ? [] : [{
@@ -1187,59 +1189,8 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         }
       },
     } satisfies WebRoute]),
-    // -------------------------------------------- image model discovery
-    // Accepts optional temporary per-channel credentials so the settings card
-    // can probe the endpoint the user is *typing* without saving first:
-    //   { channelId?, apiUrl?, apiKey? } — the channel's stored values are the
-    //   fallback, and the body's apiUrl/apiKey override them for this call.
-    {
-      kind: 'exact',
-      path: IMAGE_MODEL_API.models,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        const view = channelViewOf()
-        const stored = view.channels.find(candidate => candidate.id === (typeof body?.channelId === 'string' ? body.channelId : undefined))
-          ?? view.channels.find(candidate => candidate.id === view.defaultChannelId)
-          ?? view.channels[0]
-        const protocol = isChannelProtocolPreference(body?.protocol)
-          ? body.protocol
-          : stored?.protocol
-        const upstream: UpstreamConfig = {
-          apiUrl: typeof body?.apiUrl === 'string' && body.apiUrl.trim() !== '' ? body.apiUrl.trim() : (stored?.apiUrl ?? ''),
-          apiKey: typeof body?.apiKey === 'string' && body.apiKey.trim() !== '' ? body.apiKey.trim() : (stored?.apiKey ?? ''),
-          apiUrlFull: typeof body?.apiUrlFull === 'boolean' ? body.apiUrlFull : stored?.apiUrlFull === true,
-          ...protocol === undefined ? {} : { protocol },
-        }
-        try {
-          writeJson(res, 200, { ok: true, models: await listImageModels(upstream) })
-        } catch (error) {
-          writeJson(res, 200, { ok: false, code: 'image-models-failed', message: messageOf(error) })
-        }
-      },
-    },
     // --------------------------------------------------- stage GLB assets
     ...stageAssetRoutes,
-    // ---------------------------------------------------------- presets
-    {
-      kind: 'exact',
-      path: PRESETS_API,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const presets: PresetProviderView[] = IMAGE_PRESETS.map(preset => ({
-          id: preset.id,
-          name: preset.name,
-          apiUrl: preset.apiUrl,
-          ...preset.link === undefined ? {} : { link: preset.link },
-          hint: preset.hint,
-          models: preset.models,
-          ...preset.videoModels === undefined ? {} : { videoModels: preset.videoModels },
-          ...preset.subscription === undefined ? {} : { subscription: preset.subscription },
-          ...preset.experimental === undefined ? {} : { experimental: preset.experimental },
-        }))
-        writeJson(res, 200, { ok: true, presets })
-      },
-    },
     // ----------------------------------------------------------- usage
     {
       kind: 'exact',
@@ -1267,18 +1218,6 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     // ----------------------------------------------- prompt enhancement
     {
       kind: 'exact',
-      path: PROMPT_ENHANCE_API.models,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        try {
-          writeJson(res, 200, { ok: true, models: await listPromptModels(resolvePrompt()) })
-        } catch (error) {
-          writeJson(res, 200, { ok: false, code: 'prompt-models-failed', message: messageOf(error) })
-        }
-      },
-    },
-    {
-      kind: 'exact',
       path: PROMPT_ENHANCE_API.enhance,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
@@ -1290,7 +1229,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         }
         try {
           const polished = body?.mode === 'polish'
-          writeJson(res, 200, { ok: true, prompt: polished ? await polishPrompt(resolvePrompt(), prompt) : await enhancePrompt(resolvePrompt(), prompt) })
+          writeJson(res, 200, { ok: true, prompt: polished ? await polishPrompt(hostChat, prompt) : await enhancePrompt(hostChat, prompt) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'prompt-enhance-failed', message: messageOf(error) })
         }
@@ -1315,7 +1254,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         try {
-          writeJson(res, 200, await generateListingCopy(resolvePrompt(), request))
+          writeJson(res, 200, await generateListingCopy(hostChat, request))
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'listing-copy-failed', message: messageOf(error) })
         }
@@ -1536,7 +1475,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           const report = buildReport(entries, { language: body?.language === 'en' ? 'en' : 'zh' })
           // Markdown, not a file: the browser decides whether to copy or save,
           // and the host never writes outside its own data directory.
-          writeJson(res, 200, { ok: true, markdown: report.issue.body, title: report.issue.title, url: report.issue.url })
+          writeJson(res, 200, { ok: true, markdown: report.issue.body, title: report.issue.title })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'signal-failed', message: messageOf(error) })
         }
@@ -1597,106 +1536,6 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         writeJson(res, 200, { ok: true, task })
       },
     },
-    // ----------------------------------------------- update check
-    {
-      kind: 'exact',
-      path: UPDATE_API.check,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        try {
-          writeJson(res, 200, { ok: true, update: { ...await checkForUpdate(), ...updateInstallTarget(undefined, undefined, deps.resolveUpdateContext?.()) } })
-        } catch (error) {
-          writeJson(res, 200, { ok: false, code: 'update-check-failed', message: messageOf(error) })
-        }
-      },
-    },
-    // ----------------------------------------------- update apply
-    {
-      kind: 'exact',
-      path: UPDATE_API.apply,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        const version = body !== undefined && typeof body.version === 'string' ? body.version.trim() : ''
-        if (version === '') {
-          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'update version is required' })
-          return
-        }
-        try {
-          const latest = await checkForUpdate()
-          if (!latest.updateAvailable || latest.latestVersion !== version) {
-            writeJson(res, 200, { ok: false, code: 'update-not-available', message: `version ${version} is not the latest available release` })
-            return
-          }
-          await installUpdate(version, undefined, undefined, undefined, undefined, deps.resolveUpdateContext?.())
-          writeJson(res, 200, { ok: true, currentVersion: CURRENT_VERSION, updatedVersion: version, restartRequired: true })
-        } catch (error) {
-          // DSH Desktop locks its profile away from the CLI, so "update online"
-          // cannot work there. That is not a failure to retry — it is a
-          // different route to the same file, and the response has to carry the
-          // archive URL so the panel can offer it instead of "update failed".
-          if (error instanceof ManualUpdateRequiredError) {
-            writeJson(res, 200, {
-              ok: false,
-              code: error.code,
-              message: error.message,
-              profile: error.profile,
-              tarballUrl: error.tarballUrl,
-              updatedVersion: version,
-            })
-            return
-          }
-          writeJson(res, 200, { ok: false, code: 'update-failed', message: messageOf(error) })
-        }
-      },
-    },
-    // ------------------------------------------------ subscription status
-    ...(deps.subscriptions === undefined ? [] : [{
-      kind: 'exact' as const,
-      path: SUBSCRIPTION_API.status,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (!guard(req, res, 'POST')) return
-        const statuses: Record<string, { state: string; email?: string }> = {}
-        for (const provider of SUBSCRIPTION_PROVIDERS) {
-          const vendor = vendorOfSubscription(provider)
-          const status = await deps.subscriptions!.loginStatus(vendor)
-          const error = deps.subscriptions!.lastLoginError(vendor)
-          statuses[provider] = status.state === 'logged-in'
-            ? { state: status.state, email: status.email }
-            : { state: status.state, ...error === undefined ? {} : { error } }
-        }
-        writeJson(res, 200, { ok: true, statuses })
-      },
-    }, {
-      kind: 'exact' as const,
-      path: SUBSCRIPTION_API.login,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        const provider = typeof body?.provider === 'string' ? body.provider : ''
-        if (!(SUBSCRIPTION_PROVIDERS as readonly string[]).includes(provider)) {
-          writeJson(res, 200, { ok: false, code: 'invalid-provider', message: 'unknown subscription provider' })
-          return
-        }
-        const vendor = vendorOfSubscription(provider as typeof SUBSCRIPTION_PROVIDERS[number])
-        try {
-          if (body?.action === 'logout') {
-            await deps.subscriptions!.logout(vendor)
-            writeJson(res, 200, { ok: true })
-            return
-          }
-          if (body?.action === 'complete') {
-            const input = typeof body.input === 'string' ? body.input : ''
-            await deps.subscriptions!.completeLogin(vendor, input)
-            writeJson(res, 200, { ok: true })
-            return
-          }
-          writeJson(res, 200, { ok: true, ...await deps.subscriptions!.beginLogin(vendor) })
-        } catch (error) {
-          writeJson(res, 200, { ok: false, code: 'subscription-login-failed', message: messageOf(error) })
-        }
-      },
-    }] ),
     // ----------------------------------------------------- history list
     {
       kind: 'exact',
@@ -2319,8 +2158,8 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       },
     },
     // ------------------------------------- canvas layer decomposition
-    // The browser sends one image data URL; the host asks the configured chat
-    // model (the prompt-enhancement endpoint) for a strict JSON layer plan.
+    // The browser sends one image data URL; the host asks the deployment's own
+    // conversation model for a strict JSON layer plan.
     {
       kind: 'exact',
       path: CANVAS_API.layers,
@@ -2338,7 +2177,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         try {
-          writeJson(res, 200, { ok: true, plan: await analyzeLayers(resolvePrompt(), raw) })
+          writeJson(res, 200, { ok: true, plan: await analyzeLayers(hostChat, raw) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'layer-analysis-failed', message: messageOf(error) })
         }
@@ -3309,25 +3148,6 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
             : { ok: false, code: `drama-write-${outcome.reason}`, message: outcome.message, reason: outcome.reason })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'drama-write-failed', message: messageOf(error) })
-        }
-      },
-    },
-    // ------------------------------------------------- storage: probe upload
-    {
-      kind: 'exact',
-      path: STORAGE_API.test,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const storage = deps.resolveStorage?.()
-        if (storage === undefined) {
-          writeJson(res, 200, { ok: false, code: 'storage-unavailable', message: '存储配置不可用' })
-          return
-        }
-        try {
-          const result = await testStorage(storage)
-          writeJson(res, 200, { ok: true, ms: result.ms, key: result.key })
-        } catch (error) {
-          writeJson(res, 200, { ok: false, code: 'storage-test-failed', message: messageOf(error) })
         }
       },
     },

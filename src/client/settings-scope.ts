@@ -27,31 +27,36 @@ export interface ImageModelGroup {
   models: string[]
 }
 
-/** The fields this plugin's settings card edits. */
+/**
+ * The settings this browser half reads.
+ *
+ * The channel fields are the deployment's gateway channel as the panel projects
+ * it from the host media catalog (see `gateway-models.ts`), not a user-edited
+ * channel table: the stored document's `channels` is a deprecated leftover the
+ * host no longer reads.
+ */
 export interface ImageGenConfig {
   enabled?: boolean
   announceToAgent?: boolean
   allowAgentImageGeneration?: boolean
-  /** Configured channels (each: name, endpoint, model catalog). */
+  allowAgentVideoGeneration?: boolean
+  /** The gateway channel, projected from the catalog. */
   channels?: ChannelConfig[]
-  /** Per-channel API keys, keyed by channel id. The redacted wire view returns
-   *  this as an empty object; key presence comes from the secrets sidecar. */
-  channelSecrets?: Record<string, string>
   /** Channel used when a request does not name one. */
   defaultChannelId?: string
-  /** Model alias selected by default in the GUI. Empty uses the first option. */
+  /** Model alias selected by default in the GUI. Empty uses the catalog default. */
   defaultModel?: string
   /** Video model alias selected by default in the video tab. */
   defaultVideoModel?: string
-  /** Allow Agents to submit and retrieve video-generation tasks. */
-  allowAgentVideoGeneration?: boolean
-  promptApiUrl?: string
-  promptApiKey?: string
-  promptModel?: string
-  /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
-  apiUrl?: string
-  apiKey?: string
-  imageModels?: string[]
+  /** Local root for generated and stored images. Empty keeps the host default. */
+  localStoragePath?: string
+  /* ---------------------------- canvas skills ---------------------------- */
+  skillsEnabled?: boolean
+  allowHeavySkills?: boolean
+  skillAllowlist?: string
+  skillOutputDir?: string
+  skillHeavyTimeoutMinutes?: number
+  skillAgentPreset?: string
 }
 
 /** One settings path-op as the bridge consumes it. */
@@ -296,10 +301,10 @@ export function bindImageGenScope(fetchFn: typeof fetch = fetch): ImageGenScope 
 }
 
 /**
- * Project the configured channels into cascading model-picker groups. The
- * flat `models` list remains for history filters and compatibility, while
- * `groups` preserves which channel owns each alias (aliases may repeat across
- * channels). Falls back to the legacy flat allow-list while no channels exist.
+ * Project the gateway channel into cascading model-picker groups. The flat
+ * `models` list remains for history filters, while `groups` carries the owning
+ * channel so a selection can name it in the request. An absent channel list is
+ * an empty picker: the only model source is the host catalog.
  * Pure projection — no host calls.
  */
 export function imageModelOptions(config: ImageGenConfig | undefined): {
@@ -309,20 +314,7 @@ export function imageModelOptions(config: ImageGenConfig | undefined): {
   defaultModel?: string
 } {
   const channels = config?.channels ?? []
-  if (channels.length === 0) {
-    const legacy = Array.isArray(config?.imageModels)
-      ? config.imageModels.filter((model): model is string => typeof model === 'string' && model.trim() !== '')
-      : []
-    const defaultModel = typeof config?.defaultModel === 'string' && legacy.includes(config.defaultModel)
-      ? config.defaultModel
-      : undefined
-    const ordered = defaultModel === undefined ? legacy : [defaultModel, ...legacy.filter(model => model !== defaultModel)]
-    return {
-      models: ordered,
-      groups: ordered.length === 0 ? [] : [{ id: '', name: '', models: ordered }],
-      ...defaultModel === undefined ? {} : { defaultModel },
-    }
-  }
+  if (channels.length === 0) return { models: [], groups: [] }
 
   const defaultId = config?.defaultChannelId !== undefined && channels.some(channel => channel.id === config.defaultChannelId)
     ? config.defaultChannelId

@@ -26,7 +26,7 @@
  *    or drop a module.
  */
 import { useEffect, useRef, useState } from 'react'
-import type { ChannelConfig, GeneratedImage } from '../protocol.ts'
+import type { GeneratedImage } from '../protocol.ts'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -138,14 +138,12 @@ export interface AplusWorkspaceProps {
   modelGroups: ImageModelGroup[]
   /** Undefined until a channel exists; `resolveModelChoice` handles that. */
   defaultChannelId: string | undefined
-  /** Configured channels, kept for the same reason the replica form keeps them. */
-  channels: ChannelConfig[]
   /** False when no channel is configured; the form still renders, submit is blocked. */
   connected: boolean
 }
 
 export function AplusWorkspace(props: AplusWorkspaceProps): React.JSX.Element {
-  const { api, active, modelGroups, defaultChannelId, channels, connected } = props
+  const { api, active, modelGroups, defaultChannelId, connected } = props
   // Live language switching, same as every other workspace surface.
   useImageGenLanguageTick()
 

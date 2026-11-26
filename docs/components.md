@@ -4,7 +4,7 @@ The bundle declares 13 Cordis loader entries: a shared core and twelve independe
 
 | Entry | Responsibility |
 | --- | --- |
-| imagegen | Shared settings, channels, queues, subscriptions, updates and browser workspace |
+| imagegen | Shared settings, gateway catalog, queues, agent tools and the browser workspace |
 | imagegen-image | Image generation, tasks/history, image tools and edit command |
 | imagegen-video | Video generation, planning, tasks/history, code probe and video tools |
 | imagegen-canvas | Canvas documents, assets, files, layers and canvas tools |
@@ -14,8 +14,8 @@ The bundle declares 13 Cordis loader entries: a shared core and twelve independe
 | imagegen-ppt | Editable PPT conversion |
 | imagegen-ecommerce | Product-link extraction and listing copy |
 | imagegen-outfit | Outfit references |
-| imagegen-prompt | Prompt enhancement |
-| imagegen-storage | Object storage and automatic upload hook |
+| imagegen-prompt | Prompt enhancement and video planning over the host conversation model |
+| imagegen-storage | Local image storage root and its size accounting |
 | imagegen-diagnostics | Diagnostics and feedback signals |
 
 ## Package entry points

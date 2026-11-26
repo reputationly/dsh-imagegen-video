@@ -176,7 +176,7 @@ await check('D2 the plan decides the prompt and params the provider receives', a
   const upstream = await startUpstream()
   const chat = chatStub(GOOD_PLAN)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const result = await runtime.runVideo({ ...baseRequest, plan: true })
     const sent = upstream.state.submits[0]
 
@@ -209,7 +209,7 @@ await check('D3 empty and oversized prompts are refused before any submit', asyn
   const upstream = await startUpstream()
   const chat = chatStub(GOOD_PLAN)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
 
     await assert.rejects(
       () => runtime.runVideo({ ...baseRequest, prompt: '   ', plan: true }),
@@ -237,7 +237,7 @@ await check('D4 an off-contract chat answer degrades to the offline plan, and st
   // is wired in): the plan must still exist, and must say it was repaired.
   const chat = chatStub('当然可以！这是一段很美的视频，讲的是两个人在咖啡馆门口相遇的故事。')
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const result = await runtime.runVideo({ ...baseRequest, plan: true })
     const plan = result.plan
     assert.ok(plan !== undefined, 'a plan is still produced')
@@ -255,7 +255,7 @@ await check('D4b a chat outage degrades instead of blocking the render', async (
   const upstream = await startUpstream()
   const chat = chatStub('', { throwError: 'chat endpoint unreachable' })
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const result = await runtime.runVideo({ ...baseRequest, plan: true })
     assert.equal(result.plan?.degraded, true, 'the outage is recorded on the plan')
     assert.match(result.plan?.degradedReason ?? '', /unreachable/, 'the chat error is kept in the reason')
@@ -305,7 +305,7 @@ await check('D6 a plan never widens the user-facing parameters', async () => {
   })
   const chat = chatStub(greedy)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const result = await runtime.runVideo({ ...baseRequest, seconds: 5, resolution: '720P', plan: true })
     assert.equal(result.plan?.params.seconds, 5, 'seconds are not widened past the user value')
     assert.equal(result.plan?.params.resolution, '720P', 'resolution is not raised past the user value')
@@ -327,7 +327,7 @@ await check('D6 a plan never widens the user-facing parameters', async () => {
   const upstream2 = await startUpstream()
   const draft = chatStub(JSON.stringify({ ...JSON.parse(greedy), resolution: '480P', seconds: 2 }))
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream2.base), undefined, undefined, draft.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream2.base), undefined, draft.seam)
     const result = await runtime.runVideo({ ...baseRequest, model: 'agnes-video-2.5', seconds: 5, resolution: '1080P', plan: true })
     assert.equal(result.plan?.params.resolution, '480P', 'a narrower resolution is accepted')
     assert.equal(result.plan?.params.seconds, 2, 'a shorter duration is accepted')
@@ -342,25 +342,30 @@ await check('D6b a plan is clamped to what the model family actually accepts', a
   // comemoe only takes 16:9 / 9:16 / 1:1 and never 4:3: a planner proposing a
   // frame the provider rejects must be overruled, not forwarded.
   const upstream = await startUpstream()
+  // h3-v2 是仅存的一个收窄了参数表的族：分辨率只有 768P 一档，画幅只认文档列的六个值。
+  // 规划提出的档位/画幅若不在族里，必须被驳回，而不是原样发给网关换一个 400。
   const chat = chatStub(JSON.stringify({
     ...JSON.parse(GOOD_PLAN),
-    aspectRatio: '4:3',
+    aspectRatio: '2:1',
     resolution: '480P',
   }))
   try {
     const runtime = new host.ImageGenerationRuntime(
-      viewFor(upstream.base, 'zhimeng-h3-local'),
-      undefined, undefined, chat.seam,
+      viewFor(upstream.base, 'minimax-h3-2k'),
+      undefined, chat.seam,
     )
     const result = await runtime.runVideo({
       ...baseRequest,
-      model: 'zhimeng-h3-local',
+      model: 'minimax-h3-2k',
       aspectRatio: '16:9',
-      resolution: '720P',
+      resolution: '768P',
       plan: true,
     })
-    assert.equal(result.plan?.params.aspectRatio, '16:9', 'an unsupported aspect ratio is refused')
-    assert.equal(upstream.state.submits[0].aspect_ratio, '16:9')
+    assert.equal(result.plan?.params.aspectRatio, '16:9', 'an aspect ratio the family does not list is refused')
+    assert.equal(result.plan?.params.resolution, '768P', 'a resolution tier the family does not list is refused')
+    const sent = upstream.state.submits[0]
+    assert.equal(sent.metadata?.ratio, '16:9', 'the gateway receives the frame the family accepts')
+    assert.equal(sent.metadata?.resolution, '768P', 'the gateway receives the only tier the family has')
   } finally {
     await upstream.close()
   }
@@ -371,7 +376,7 @@ await check('D7 the preview route returns a plan the submit path can adopt verba
   const upstream = await startUpstream()
   const chat = chatStub(GOOD_PLAN)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const previewed = await runtime.planVideoRequest({ ...baseRequest })
     assert.equal(upstream.state.submits.length, 0, 'previewing renders nothing')
 
@@ -391,7 +396,7 @@ await check('D7b a previewed plan that arrives over the wire cannot widen the re
   const upstream = await startUpstream()
   const chat = chatStub(GOOD_PLAN)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const previewed = await runtime.planVideoRequest({ ...baseRequest })
     // A tampered preview: 30s, 1080P and a huge prompt. The host must clamp it.
     const tampered = {
@@ -414,7 +419,7 @@ await check('D7c the preview route answers over real HTTP and agrees with submit
   const upstream = await startUpstream()
   const chat = chatStub(GOOD_PLAN)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const routes = host.makeRoutes({
       settings: { describe: () => [], mutate: async () => ({}) },
       resolve: () => ({ apiUrl: '', apiKey: '' }),
@@ -462,7 +467,7 @@ await check('D8 the plan reaches the task summary and the history entry', async 
   const upstream = await startUpstream()
   const chat = chatStub(GOOD_PLAN)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     const task = runtime.videoQueue.submit({ ...baseRequest, plan: true })
     const settled = await (async () => {
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -495,7 +500,7 @@ await check('D9 a failed render keeps the plan, so the failure is explainable', 
   const upstream = await startUpstream()
   const chat = chatStub(GOOD_PLAN)
   try {
-    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, undefined, chat.seam)
+    const runtime = new host.ImageGenerationRuntime(viewFor(upstream.base), undefined, chat.seam)
     // The failure is injected at the engine boundary: the plan has already run,
     // and the plan is what the user needs to see when the render dies.
     const engine = runtime.runVideo.bind(runtime)

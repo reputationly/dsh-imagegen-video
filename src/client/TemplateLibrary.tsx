@@ -53,6 +53,21 @@ function imageUrlOf(sourceId: string, item: TemplateCase): string {
   return `${TEMPLATES_API.image}/${encodeURIComponent(sourceId)}/${encodeURIComponent(item.image)}`
 }
 
+/**
+ * `owner/repo` credit for a case's upstream source, taken from its URL path.
+ *
+ * The detail view prints this instead of linking to the repository: a case may
+ * credit its author, but the workbench carries no external marketing link.
+ *
+ * @param githubUrl Absolute source URL of the case.
+ * @returns The `owner/repo` segment, or the URL itself when it has none.
+ */
+function repoCredit(githubUrl: string): string {
+  const path = githubUrl.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//i, '')
+  const credit = path.split(/[/#?]/).slice(0, 2).filter(segment => segment !== '').join('/')
+  return credit === '' ? githubUrl : credit
+}
+
 /** A card thumbnail that falls back to a placeholder when the proxy 404s. */
 function TemplateThumb(props: { sourceId: string; item: TemplateCase }) {
   const [failed, setFailed] = useState(false)
@@ -813,7 +828,9 @@ export function TemplateLibrary(props: {
                   <a className={css.detailLink} href={selected.item.sourceUrl} target="_blank" rel="noreferrer">{selected.item.sourceLabel || selected.item.sourceUrl}</a>
                 ) : null}
                 {selected.item.githubUrl !== '' ? (
-                  <a className={css.detailLink} href={selected.item.githubUrl} target="_blank" rel="noreferrer">GitHub</a>
+                  // Plain attribution, not a link: the workbench ships no
+                  // external marketing or repository links.
+                  <span>{tt('templates.source', { label: repoCredit(selected.item.githubUrl) })}</span>
                 ) : null}
               </div>
               <pre className={css.detailPrompt}>{selected.item.prompt}</pre>

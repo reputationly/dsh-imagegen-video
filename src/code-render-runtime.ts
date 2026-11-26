@@ -17,7 +17,7 @@ import { appendHistory } from './history-store.ts'
 import { appendVideoHistory } from './video-store.ts'
 import { CodeRenderError, dimensionsFor, locateFfmpeg, renderCode, type CodeRenderResult } from './code-render.ts'
 import { codeRenderSystemPrompt, codeRenderUserPrompt, fallbackRendererSource, readGeneratedCode, type CodeBrief, type CodeTarget } from './code-prompt.ts'
-import type { PromptModelConfig } from './prompt-enhancer.ts'
+import type { ChatTarget } from './prompt-enhancer.ts'
 import type { CodeRenderRequest, CodeRenderResponse, HistoryEntry, VideoHistoryEntry, VideoResolution } from './protocol.ts'
 
 /** The chat call, injected so this module holds no endpoint policy. */
@@ -111,7 +111,7 @@ export function validateCodeInput(input: CodeRenderInput): void {
  */
 export async function runCodeRender(
   input: CodeRenderInput,
-  config: PromptModelConfig,
+  config: ChatTarget,
   complete: CodeChatCompleter,
   options: { signal?: AbortSignal; ffmpeg?: string; persist?: boolean } = {},
 ): Promise<CodeRenderOutcome> {
@@ -135,9 +135,9 @@ export async function runCodeRender(
   if (typeof input.source === 'string' && input.source.trim() !== '') {
     source = input.source
   } else {
-    if (config.apiUrl.trim() === '' || config.model.trim() === '') {
+    if (config.model.trim() === '') {
       throw new CodeRenderError(
-        '尚未配置对话模型：代码生成需要「设置 → 提示词增强模型」里的对话模型来写绘图代码。请配置后重试，或切回模型生成。',
+        '尚未选择对话模型：代码生成需要 DSH 对话面板里已接入的模型来写绘图代码。请选择模型后重试，或切回模型生成。',
         'code-no-chat-model',
       )
     }

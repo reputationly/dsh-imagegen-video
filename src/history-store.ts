@@ -11,7 +11,6 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { HISTORY_MAX, type HistoryEntry, type HistoryEntryInput, type StoredEntryMode } from './protocol.ts'
-import { notifyImageSaved } from './storage-sync.ts'
 import { imageDataRoot } from './image-storage-path.ts'
 
 function historyDir(): string { return imageDataRoot() }
@@ -212,7 +211,6 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
         const image = input.images[index]!
         const file = `${prefix}-${index}.${extensionOf(image.mime)}`
         await fs.writeFile(path.join(imagesDir(), file), Buffer.from(image.b64, 'base64'))
-        notifyImageSaved('history', path.join(imagesDir(), file))
         storedImages.push({
           file,
           mime: image.mime,

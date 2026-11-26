@@ -252,8 +252,9 @@ try {
     const report = buildReport([...synth(30, 'retry'), ...synth(5, 'rating', { reason: 'unlike' })], { now })
     assert.ok(!report.issue.body.includes('柴犬'))
     assert.ok(!report.issue.body.includes('https://api.'))
-    assert.ok(report.issue.url.startsWith('https://github.com/'))
-    assert.ok(report.issue.url.includes('issues/new'))
+    // 草稿是用户自己复制、自己提交的 markdown：不得带上游仓库链接。
+    assert.ok(!report.issue.body.includes('https://github.com/'))
+    assert.deepEqual(Object.keys(report.issue).sort(), ['body', 'title'])
     assert.ok(report.issue.title.length > 0)
   })
 

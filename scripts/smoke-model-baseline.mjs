@@ -60,12 +60,13 @@ check('前缀后面为空或前缀为空时不动', () => {
   assert.equal(normalizeModelId('/gpt-image-2'), '/gpt-image-2')
 })
 
-check('前缀 id 也能精确命中基线表', () => {
-  // 这条是本轮修的真实缺陷：OpenRouter 预设用 google/gemini-3-pro-image，
-  // 旧实现落到 unknown，面板因此误报「只保留 1 张参考图」。
-  const entry = baselineEntry('google/gemini-3-pro-image')
-  assert.ok(entry !== undefined, '带前缀的 id 没命中基线表')
-  assert.equal(entry.family, 'nanobanana')
+check('带厂商前缀的 id 与裸 id 归入同一族', () => {
+  // 网关与上游常把同一个模型写成 vendor/model。剥离一层前缀之后必须落到同一族，
+  // 否则面板会按错误的族给出参考图上限。
+  const prefixed = describeModel('vendor/minimax-h3-image')
+  const bare = describeModel('minimax-h3-image')
+  assert.equal(prefixed.family, bare.family)
+  assert.equal(prefixed.family, 'h3-image')
 })
 
 check('大小写不敏感', () => {
@@ -73,10 +74,10 @@ check('大小写不敏感', () => {
 })
 
 // ---------------------------------------------------------------- describeModel
-check('带厂商前缀的图像模型不再落到 unknown', () => {
-  const described = describeModel('google/gemini-3-pro-image')
-  assert.equal(described.family, 'nanobanana')
-  assert.equal(described.known, true, '带前缀的官方预设仍被判成未知协议')
+check('带厂商前缀的 id 仍按命名约定归族', () => {
+  // 厂商前缀剥一层再判族：这里的族是「协议族」，与渠道无关。
+  const described = describeModel('vendor/gpt-image-2.6')
+  assert.equal(described.family, 'gpt-image')
 })
 
 check('基线表里每个 id 都能被 describeModel 反查到同一族', () => {
@@ -87,9 +88,10 @@ check('基线表里每个 id 都能被 describeModel 反查到同一族', () => 
 
 check('未列入表的新 id 靠命名约定归族，而不是 unknown', () => {
   // 上游出新的后缀比表更新快，这条是「表不需要每次追新」的保证。
+  // 只剩两个协议族参与判定：gpt-image/dall-e 的 OpenAI 兼容路径与 h3 聚合模型。
   assert.equal(modelFamily('gpt-image-2.7-sunburst'), 'gpt-image')
-  assert.equal(modelFamily('seedream-6.0'), 'seedream')
-  assert.equal(modelFamily('qwen-image-3.5'), 'qwen')
+  assert.equal(modelFamily('minimax-h3-image-enhanced'), 'h3-image')
+  assert.equal(modelFamily('dall-e-4-ultra'), 'dall-e')
 })
 
 check('真正认不出的 id 仍然落到 unknown（保留逃生口）', () => {

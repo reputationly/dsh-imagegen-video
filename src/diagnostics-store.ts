@@ -212,3 +212,105 @@ export async function readResponseExcerpt(response: Response, limit = DIAGNOSTIC
 }
 
 export { excerptOf }
+
+/** What a body we could not parse as JSON turned out to be. `html` is the one worth naming. */
+export type BodyShape = 'html' | 'text' | 'empty' | 'binary'
+
+/** Cap on the excerpt quoted back inside a non-JSON message, in characters. */
+const NON_JSON_EXCERPT_MAX = 120
+
+/**
+ * Classify a body we failed to parse as JSON.
+ *
+ * Only the leading bytes matter: an HTML error page carries its doctype or a
+ * `<html`/`<head`/`<body`/`<meta` tag within the first handful of characters,
+ * and a gateway's homepage does the same. Anything else is reported as plain
+ * text rather than guessed at.
+ * @param text - the raw response body.
+ * @param contentType - the response's `content-type` header, if any.
+ * @returns the body shape the message should describe.
+ */
+export function bodyShapeOf(text: string, contentType = ''): BodyShape {
+  const trimmed = text.trimStart()
+  if (trimmed === '') return 'empty'
+  if (/^\s*<(?:!doctype|html|head|body|meta)/i.test(trimmed)) return 'html'
+  // A server that says text/html without a recognisable prologue (a bare
+  // `<div>` 404 page) still is not an API response; the header settles it.
+  if (/^text\/html\b/i.test(contentType.trim())) return 'html'
+  // NUL or a high share of non-printable bytes: a truncated image or a binary
+  // error payload, not prose.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000e-\u001f]/.test(trimmed.slice(0, 64))) return 'binary'
+  return 'text'
+}
+
+/** Whitespace-collapsed, length-capped excerpt for the message body. */
+function shortExcerpt(text: string): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  if (collapsed === '') return ''
+  return collapsed.length > NON_JSON_EXCERPT_MAX ? `${collapsed.slice(0, NON_JSON_EXCERPT_MAX)}…` : collapsed
+}
+
+/**
+ * The media type alone: `text/html; charset=utf-8` → `text/html`.
+ *
+ * WHY not the whole header: the parameters are noise to a user reading one
+ * sentence. `charset=` in particular made the video suite's "no markup is
+ * pasted into the message" assertion fail on a message that contained no
+ * markup at all — a guard tripping on the wrong thing is nearly as costly as
+ * the bug it guards, so the sentence keeps only what identifies the body.
+ */
+function mediaTypeOf(contentType: string): string {
+  return contentType.split(';')[0]?.trim() ?? ''
+}
+
+/** The address as the user can act on it: no query, no credentials. */
+export function requestAddress(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.origin}${parsed.pathname}`
+  } catch {
+    return url.split('?')[0] ?? url
+  }
+}
+
+/** What a caller knows about a response whose body would not parse as JSON. */
+export interface NonJsonDiagnosisInput {
+  /** The exact URL handed to fetch. Query strings are dropped in the output. */
+  url: string
+  status: number
+  contentType: string
+  /** The raw body, already read (never already redacted). */
+  text: string
+  /** What this call was doing, e.g. 「上游接口」/「任务接口」. Chinese, like the rest. */
+  label: string
+}
+
+/**
+ * Build the user-facing sentence for a response that could not be parsed.
+ *
+ * The order is deliberate: what happened → which address → why it is usually
+ * wrong. A user reads the first clause and stops; a user who pastes this into
+ * an issue gets the address for free.
+ * @param input - what the caller knows about the failed response.
+ * @returns one actionable sentence, safe to show and to copy into a report.
+ */
+export function diagnoseNonJsonBody(input: NonJsonDiagnosisInput): string {
+  const shape = bodyShapeOf(input.text, input.contentType)
+  const mediaType = mediaTypeOf(input.contentType)
+  const type = mediaType === '' ? '未声明 Content-Type' : mediaType
+  const address = requestAddress(input.url)
+  const head = `${input.label}返回了非 JSON 响应（HTTP ${input.status}, ${type}）：${address}`
+
+  if (shape === 'html') {
+    return `${head} —— 返回的是网页而不是接口响应，通常说明网关地址少了路径（例如末尾缺 /v1）或填成了站点首页`
+  }
+  if (shape === 'empty') {
+    return `${head} —— 响应体是空的，上游可能只写了状态码；请确认该地址是否为 API 端点`
+  }
+  if (shape === 'binary') {
+    return `${head} —— 响应体是二进制内容而不是 JSON，可能是出图流被当成了接口响应`
+  }
+  const excerpt = shortExcerpt(input.text)
+  return excerpt === '' ? head : `${head} —— 响应内容：${excerpt}`
+}

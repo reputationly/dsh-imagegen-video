@@ -281,7 +281,6 @@ await check('C5 renderer:code produces a PLAYABLE clip stored with renderer:code
     () => ({ channels: [], defaultChannelId: '' }),
     undefined,
     undefined,
-    undefined,
     // The host conversation model, injected exactly like the plugin does.
     {
       available: () => true,
@@ -330,7 +329,6 @@ await check('C6 renderer:code produces a real PNG stored with renderer:code', as
     () => ({ channels: [], defaultChannelId: '' }),
     undefined,
     undefined,
-    undefined,
     {
       available: () => true,
       label: () => 'host-model',
@@ -372,7 +370,7 @@ await check('C7 a code-rendered clip is stitchable by the local composer', async
   }
   const chat = scriptedChat(BANNER)
   const runtime = new ImageGenerationRuntime(
-    () => ({ channels: [], defaultChannelId: '' }), undefined, undefined, undefined,
+    () => ({ channels: [], defaultChannelId: '' }), undefined, undefined,
     { available: () => true, label: () => 'host-model', complete: async options => await chat.complete(options) },
   )
   const first = await runtime.runVideo({ mode: 'text', model: '', prompt: 'clip one', aspectRatio: '16:9', resolution: '480P', seconds: 1, renderer: 'code' })
@@ -436,7 +434,7 @@ await check('C8b the submit routes do not demand a channel for a code render', a
   const chat = scriptedChat(BANNER)
   const runtime = new ImageGenerationRuntime(
     () => ({ channels: [], defaultChannelId: '' }),
-    undefined, undefined, undefined,
+    undefined, undefined,
     { available: () => true, label: () => 'host-model', complete: async options => await chat.complete(options) },
   )
   const routes = makeRoutes({

@@ -15,7 +15,7 @@
  *   video     -- scripts/smoke-video.mjs, which drives the built host's video
  *                engine against a local upstream; also needs the rebuild.
  */
-import { cpSync, existsSync, symlinkSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readdirSync, realpathSync, symlinkSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -51,6 +51,13 @@ function freshCopy (needsGit = false) {
   // reason that has nothing to do with the injected defect -- the harness
   // reporting ITS OWN incompleteness as the defect. Copied from `files` rather
   // than listed here, so the two cannot drift apart.
+  // agent-surface 的基线要和 `docs/agent-surface.snapshot.md` 对齐；它是唯一的 docs 输入，
+  // 所以单独按文件复制，而不是把整个 docs/ 拖进每个用例的副本。
+  const snapshot = join(SRC, 'docs', 'agent-surface.snapshot.md')
+  if (existsSync(snapshot)) {
+    mkdirSync(join(COPY, 'docs'), { recursive: true })
+    cpSync(snapshot, join(COPY, 'docs', 'agent-surface.snapshot.md'))
+  }
   const { files = [] } = JSON.parse(readFileSync(join(SRC, 'package.json'), 'utf8'))
   for (const entry of files) {
     const from = join(SRC, entry)
@@ -67,7 +74,31 @@ function freshCopy (needsGit = false) {
     mkdirSync(join(COPY, dir), { recursive: true })
     writeFileSync(join(COPY, dir, file), 'x')
   }
-  symlinkSync(join(SRC, 'node_modules'), join(COPY, 'node_modules'))
+  // NOT one symlink for the whole directory: the copy's builds run pnpm, and pnpm
+  // re-links `node_modules` relative to the cwd it is given. Through a directory symlink
+  // that re-link lands in the REAL tree, rewriting every top-level entry to point at
+  // `/tmp/dsh-neg-verify-*` -- and the next run of anything dies with "Cannot find
+  // package 'jsdom'" once the copy is deleted. Each entry is linked separately, to its
+  // resolved real path, so a re-link inside the copy cannot name the copy.
+  const source = join(SRC, 'node_modules')
+  const destination = join(COPY, 'node_modules')
+  mkdirSync(destination, { recursive: true })
+  const linkType = process.platform === 'win32' ? 'junction' : undefined
+  for (const entry of readdirSync(source)) {
+    if (entry === '.bin') continue
+    const target = realpathSync(join(source, entry))
+    if (linkType === undefined) symlinkSync(target, join(destination, entry))
+    else symlinkSync(target, join(destination, entry), linkType)
+  }
+  const binSource = join(source, '.bin')
+  if (existsSync(binSource)) {
+    mkdirSync(join(destination, '.bin'), { recursive: true })
+    for (const entry of readdirSync(binSource)) {
+      const target = realpathSync(join(binSource, entry))
+      if (linkType === undefined) symlinkSync(target, join(destination, '.bin', entry))
+      else symlinkSync(target, join(destination, '.bin', entry), linkType)
+    }
+  }
   // `verify-tracked.mjs` can only answer its question inside a checkout, and it
   // SKIPS (green) outside one. A runner that silently skips is exactly how the
   // incident it guards got through, so the copy becomes a real repository for
@@ -180,6 +211,323 @@ const bumped = (version, by) => {
 }
 
 const CASES = [
+  // ------------------------------------- the panel interaction groups
+  //
+  // 08ee48c（WP4，入口只走外壳槽位）把 `scripts/smoke.mjs` 里那块 jsdom 面板
+  // 断言整块重写掉了：那次改动删掉 4703 行，而当时只复核了 `contracts` 组，
+  // 于是 `smoke` 组里的用例一直是假绿——注入的缺陷照旧应用，但那个套件里
+  // 已经没有任何断言会红。
+  //
+  // 那些行为**都还在产品里**，现在各自有了家：
+  //
+  //   `panel-contracts`    — scripts/smoke-panel-contracts.mjs，零构建、不渲染。
+  //     只守纯结构事实：手势匹配哪个选择器、d3-zoom 被告知哪两个键、拖入上限
+  //     的常量与用法、输入条与视口是不是兄弟。jsdom 看不见的正是这一类：没有
+  //     布局引擎、拒绝给 file input 赋值、不实现 preventDefault 的默认行为。
+  //   `panel-interactions` — scripts/smoke-panel-interactions.mjs，把真实面板挂进
+  //     外壳的 `main#imagegen` 座位再驱动：真指针、真键盘、真 change 事件。
+  //
+  // 逐条对照（括号是代码所在处）：
+  //
+  //   空画布六张快捷卡随节点出现/消失（CanvasWorkspace 的 `emptyState`）
+  //     → P1
+  //   框选不把 `data-canvas-no-zoom` 面当空白（`isBackground`）
+  //     → C3 源码不变式 + P2 真指针（两种都红，注入一处就够）
+  //   按住 Space/Control 时框选让位给 d3-zoom（`temporaryPanTool`）
+  //     → P2
+  //   `panActivationKeyCode` 必须含 Control（d3-zoom 拒绝 ctrlKey 拖拽）
+  //     → C2
+  //   灵感墙不画在播放中的片段上（ImageGenPanel 的 `viewingVideoEntry`）
+  //     → P13
+  //   `?`/F1 打开快捷键表；工具条的提示带键位（`shortcutKeysFor`）
+  //     → P5：表从底栏与 `?` 各开一次，撤销按钮念出 Ctrl/⌘+Z。
+  //     `shortcutKeysFor` 与 JSX 同文件（ShortcutHelp.tsx），没有可 import 的
+  //     构建产物，所以它由 DOM 上的提示文本守，而不是一条单独的函数断言。
+  //   回收站三件：还原按钮带自己的 id、不重复印计数、清空前说清条数
+  //     → P8
+  //   生成输入条必须落在视口之外（overlay 是 viewport 的兄弟）
+  //     → C5 + P4（结构是对的、行为也是对的）
+  //   双指捏合缩放 → P12；Space 不吃聚焦按钮 → P3；Esc 关掉画内视频预览 → P6
+  //   选图后清 `<input>` 的 value → C4（jsdom 拿不到 file input 的 value）
+  //   视频工作台的诊断记录 / 行为报告入口常驻（零任务时也要在）→ P9
+  //   钉住的角色写进保存的文档（`patchNode(castNode.id, { cast: member })`）→ P7
+  //   Esc 关掉时间线编辑器 → P6
+  //   促销提交一次只发一次请求（`type="submit"` 又挂 onClick 会双发）→ P11
+  //   画布拖入图片的尺寸/数量上限（`DROP_IMAGE_MAX_*`）→ C1
+  //   角色搭配的 `<fieldset>` 不因草稿读失败恒禁用（`formLocked`）→ P10
+  //
+  // 真正随表面一起消失的、**不恢复**的这几条，留在此处作为记录：
+  //
+  //   - 「模型检测」的族正则：整条链路随渠道改由宿主网关目录提供而去掉。同类
+  //     里还在的「表外 id 靠命名约定归族」由 smoke-model-baseline 守着。
+  //   - 侧栏接管的两条（`src/client/sidebar-entry.ts` 与 `mount.tsx` 在 WP4 删除）：
+  //     历史列自己吃掉 wheel、macOS 折叠控件不被当外来项隐藏。
+  //   - 渠道密钥与协议四条（WP3 删掉第三方渠道 / 订阅 / 自有协议）：删除渠道后
+  //     `channelSecrets` 不残留、删除前键入的 key 不写回已删 id、客户端协议选择器
+  //     里 google-native 的两条。
+  //
+  // 于是：`smoke` 组当年被删掉 29 条，这里恢复了 22 条（17 条进
+  // `panel-interactions`、5 条进 `panel-contracts`），剩下 7 条即上面那两类加
+  // 模型检测，它们的断言对象已经不在仓库里。
+  //
+  // 另有三条换了断言所在：就绪徽标与运行前预告改挂 `geometry`（同一条取值链
+  // 现在由 smoke-canvas-geometry 直接断言），对齐改挂 `contracts`（`alignSelection`
+  // 必须恰好一次 `mutate`）——用例名与缺陷都没变，只是跟着断言走。
+  // ---------------------------------------------------- the empty canvas cards
+  {
+    // 空态条件写成永假：画布无节点时不再渲染六张快捷卡。
+    name: 'the empty canvas loses its quick-start cards',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: 'const emptyState = document !== null && document.nodes.length === 0',
+    to: 'const emptyState = document !== null && document.nodes.length === -1',
+    // 卡不渲染时 waitForSelector 先抛 "selector did not render: …"。
+    expect: /data-quick-card|empty canvas shows the six quick-start cards/,
+  },
+  {
+    // AC-5.3：重任务技能默认必须关着——它在本机跑无头 Agent 流水线、持续数分钟还烧额度。
+    name: 'heavy canvas skills come back on by default',
+    runner: 'panel-contracts',
+    file: 'src/index.ts',
+    from: 'allowHeavySkills: z.boolean().default(false).volatile()',
+    to: 'allowHeavySkills: z.boolean().default(true).volatile()',
+    expect: /defaults heavy skills to off/,
+  },
+  {
+    // 设置页重新长出渠道配置，等于让用户填一份插件不会读的东西。
+    name: 'the settings page asks for a gateway again',
+    runner: 'panel-contracts',
+    file: 'src/client/SettingsCard.tsx',
+    // 同前面几条：注入文本要与源码逐字一致，但不能让 verify-tracked 把这里的字面量
+    // 当成 verify-negative.mjs 自己的 import 去解析。
+    from: "import type { ImageGenKey } from " + "'./locales.ts'",
+    to: "import type { ImageGenKey } from " + "'./locales.ts'"
+      + "\nconst channelSecrets: Record<string, string> = {}",
+    expect: /no longer configures channel editor/,
+  },
+  {
+    // 框选把 no-zoom 面当空白：pointerdown preventDefault+指针捕获抢走卡片
+    // click。守卫退回旧选择器后，结构不变式必须变红。
+    name: 'the marquee swallows quick-card clicks',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "const isBackground = closestOf(target, '[data-node-id],[data-connection-hit],[data-canvas-no-zoom]') === null",
+    to: "const isBackground = closestOf(target, '[data-node-id],[data-connection-hit]') === null",
+    expect: /marquee must ignore no-zoom surfaces/,
+  },
+  {
+    // 1.30.x 的真机回归：按住空格/Control 时框选分支照样在 pointerdown 上
+    // preventDefault + 抓指针，浏览器因此不再派发兼容 mousedown，而 d3-zoom
+    // 只靠 mousedown 起平移——画布拖不动，节点拖动（自定义引擎）却正常。
+    name: 'the marquee steals the pointer back from the pan gesture',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "tool === 'select' && !temporaryPanTool",
+    to: "tool === 'select'",
+    expect: /leaves the pointer to d3-zoom/,
+  },
+  {
+    // d3-zoom 默认拒绝带 ctrlKey 的拖拽（当成捏合缩放），所以 Control 必须
+    // 出现在 panActivationKeyCode 里，快捷键表的「Ctrl/⌘ + Space」才成立。
+    name: 'the pan activation keys forget Control',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "panActivationKeyCode={['Space', 'Control']}",
+    to: 'panActivationKeyCode="Space"',
+    expect: /configures its pan activation keys|both Space and Control as pan activation keys/,
+  },
+  {
+    // Opening a clip returns to the image tab with `images` emptied — the exact
+    // state the empty-canvas inspiration wall renders in — so without the video
+    // guard the prompt suggestions drew over the playing clip.
+    name: 'the inspiration wall returns on top of a clip that is playing',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: 'images.length === 0 && viewingVideoEntry === null ? (',
+    to: 'images.length === 0 ? (',
+    expect: /inspiration wall yields to a clip/,
+  },
+  {
+    // Every binding existed before the legend; none was discoverable. Drop the
+    // `?` branch and the shortcut whose whole point is "you can always get back
+    // to the list" is gone.
+    name: 'the ? key stops opening the shortcut legend',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "      } else if (event.key === '?' || (event.key === 'F1')) {",
+    to: "      } else if (event.key === 'F1' && shortcutHelpOpen) {",
+    expect: /\? opens the shortcut table too/,
+  },
+  {
+    // The undo tooltip is the only place a user learns the key without opening
+    // the legend. Drop the bridge back to the action label and the tooltip
+    // collapses to a bare verb.
+    name: 'the dock stops naming the key on its own controls',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "  const keys = shortcutKeysFor(key)\n  return keys === '' ? text : `${text} (${keys})`",
+    to: "  const keys = ''\n  return keys === '' ? text : `${text} (${keys})`",
+    expect: /the undo control names its key/,
+  },
+  // --------------------------------------------------- the gallery trash window
+  {
+    name: 'the trash restore button stops carrying its entry id',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: 'data-gallery-restore={entry.id}',
+    to: 'data-gallery-restore="gallery-trashed"',
+    expect: /carries its own id, not one repeated id/,
+  },
+  {
+    // The heading is the toggle; printing the count again inside the section
+    // makes the copy read as duplicated.
+    name: 'the open trash repeats the count heading it sits under',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: "                <section className={css.gallerySelectionBar} data-gallery-trash=\"\" aria-label={tt('gallery.trash')}>\n                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 auto', minWidth: 0, maxHeight: 180, overflowY: 'auto' }}>",
+    to: "                <section className={css.gallerySelectionBar} data-gallery-trash=\"\" aria-label={tt('gallery.trash')}>\n                  <strong>{tt('gallery.trashCount', { count: galleryTrash.length })}</strong>\n                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 auto', minWidth: 0, maxHeight: 180, overflowY: 'auto' }}>",
+    expect: /does not repeat the count heading/,
+  },
+  {
+    // Purge is the one action that really unlinks, so it must say how many
+    // entries the user is agreeing to drop.
+    name: 'the trash purge confirmation forgets how many entries will go',
+    runner: 'panel-interactions',
+    file: 'src/client/ImageGenPanel.tsx',
+    from: "if (!window.confirm(tt('gallery.purgeConfirm', { count: galleryTrash.length }))) return",
+    to: "if (!window.confirm(tt('gallery.purge'))) return",
+    expect: /states how many entries will go/,
+  },
+  // -------------------------------------------------- the composer overlay
+  {
+    // The overlay guarantee is STRUCTURAL: every overlay is a sibling of the
+    // viewport, so a pointerdown on it never reaches the viewport handler and
+    // cannot clear the selection that opened it.
+    name: 'the overlay stops being outside the viewport',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "return <div className={css.composer} data-canvas-no-zoom=\"\" style={{ left: clampedX - 280, top }}>",
+    to: "return <div className={`${css.composer} ${css.viewport}`} data-canvas-no-zoom=\"\" style={{ left: clampedX - 280, top }}>",
+    expect: /composer sits outside the viewport/,
+  },
+  // ------------------------------------------------ pointer, keys and overlays
+  {
+    name: 'touch pinch is gone again',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "    if (event.pointerType === 'touch') {\n      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })",
+    to: '    if (false) {\n      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })',
+    expect: /two touch pointers moving apart zoom in/,
+  },
+  {
+    // Space is the standard activation key of every button; treating it as a
+    // canvas gesture ate half of the keyboard's way through the panel.
+    name: 'Space eats a focused button again',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: "      if (event.code === 'Space' && !isEditingTarget(event.target) && !isActivatableTarget(event.target)) {",
+    to: "      if (event.code === 'Space' && !isEditingTarget(event.target)) {",
+    expect: /Space on a focused button/,
+  },
+  {
+    // The video preview's only other exit is the × button.
+    name: 'Esc no longer closes the in-canvas video preview',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: '        if (videoPreviewNodeId !== null) { setVideoPreviewNodeId(null); return }\n',
+    to: '',
+    expect: /Escape closes the in-canvas video preview/,
+  },
+  {
+    // jsdom refuses a non-empty `value` on a file input and reports '' either
+    // way, so this one is asserted from the source: a stale value makes the
+    // retry look like a dead button, and only the handler's own text can prove
+    // it is cleared.
+    name: 'the image picker keeps its stale file value',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: "        event.target.value = ''\n        if (files.length > 0) uploadFiles(files)",
+    to: '        if (files.length > 0) uploadFiles(files)',
+    expect: /clears its file input/,
+  },
+  // ------------------------------------------------- the video studio parity
+  {
+    // The parity claim fails in the direction that actually shipped upstream:
+    // the entry lives only where a TASK already exists, which is exactly the
+    // state a user with zero tasks is in.
+    name: 'the video studio stops offering the diagnostics record',
+    runner: 'panel-interactions',
+    file: 'src/client/VideoPanel.tsx',
+    from: '      <div className={css.videoDiagnosticsRow}>\n        <DiagnosticsButton open={diagnosticsOpen} onToggle={() => { setDiagnosticsOpen(open => !open) }} />\n        <SignalsButton open={signalsOpen} onToggle={() => { setSignalsOpen(open => !open) }} />\n      </div>',
+    to: '',
+    expect: /did not render: \[data-diagnostics-button\]|exactly one diagnostics entry/,
+  },
+  {
+    // The report exists on the host but nothing opens it: a correct aggregator
+    // behind a button rendered nowhere.
+    name: 'the video studio stops offering the behaviour report',
+    runner: 'panel-interactions',
+    file: 'src/client/VideoPanel.tsx',
+    from: '        <SignalsButton open={signalsOpen} onToggle={() => { setSignalsOpen(open => !open) }} />\n',
+    to: '',
+    expect: /exactly one behaviour-report entry/,
+  },
+  // ------------------------------------------------------ what the canvas saves
+  {
+    // 钉住只改了界面不上保存：刷新一下就没了，所有后续生成也带不上参考。
+    name: 'pinning an identity never reaches the saved document',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: '        patchNode(castNode.id, { cast: member })',
+    to: '        void castNode',
+    expect: /the pin reaches the saved document|the node shows it is pinned/,
+  },
+  {
+    // 没有 Esc 分支时时间线只能靠点「关闭」退出，而 Esc 会继续往下走清掉选区
+    // ——面板后面的东西被改掉了，面板还在。
+    name: 'Escape no longer closes the timeline editor',
+    runner: 'panel-interactions',
+    file: 'src/client/canvas',
+    from: '        if (timelineOpen) { setTimelineOpen(false); return }\n',
+    to: '',
+    expect: /Escape closes the timeline editor/,
+  },
+  // -------------------------------------------------------- one press, one charge
+  {
+    // One press, one charge. The submit buttons carried `type="submit"` AND an
+    // `onClick` calling the same handler, so a click ran both paths and every
+    // generate was billed twice.
+    name: 'a submit button also fires its own click handler',
+    runner: 'panel-interactions',
+    file: 'src/client/PromoWorkspace.tsx',
+    from: '            <button type="submit" className={css.primary} disabled={!ready}>',
+    to: '            <button type="submit" className={css.primary} disabled={!ready} onClick={() => void generate()}>',
+    expect: /one click on promo's submit must issue one generation/,
+  },
+  {
+    // A canvas drop used to read every dropped image at once with Promise.all
+    // and no size or count cap, which seized the page on a large selection.
+    name: 'a canvas drop reads every image at once with no caps',
+    runner: 'panel-contracts',
+    file: 'src/client/canvas',
+    from: '    const oversized = allImages.filter(file => file.size > DROP_IMAGE_MAX_BYTES)\n    const withinSize = allImages.filter(file => file.size <= DROP_IMAGE_MAX_BYTES)\n    const images = withinSize.slice(0, DROP_IMAGE_MAX_COUNT)',
+    to: '    const oversized = []\n    const withinSize = allImages\n    const images = allImages',
+    expect: /dropped image over the size cap|drop is capped to a maximum|read sequentially/,
+  },
+  {
+    // 草稿读失败曾经把整张 <fieldset> 永久禁用：模式按钮、图库入口、上传全部
+    // 点不动，而提示只说「无法读取草稿」——用户看到的就是「角色搭配点不了」。
+    name: 'the outfit form goes back to a permanently disabled fieldset',
+    runner: 'panel-interactions',
+    file: 'src/client/OutfitWorkspace.tsx',
+    from: "  const formLocked = !draftLoaded && draftError === ''",
+    to: '  const formLocked = true',
+    expect: /the outfit form is interactive, not stuck waiting on a draft read/,
+  },
+  // ------------------------------------- what still runs in `scripts/smoke.mjs`
+  //
+  // 这几条从来就不是面板交互，所以 WP4 没有动它们：宿主侧的数据往返与
+  // jsdom 之外的结构断言。新增的面板用例在上面两组，别再往这里放。
   // ---------------------------------------- history prompt and host drag overlay
   {
     // The prompt one: the result prompt above the image must preserve newlines
@@ -190,51 +538,6 @@ const CASES = [
     from: '  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  user-select: text;\n}\n\n/* --- result grid',
     to: '  white-space: nowrap;\n  overflow-wrap: anywhere;\n  user-select: text;\n}\n\n/* --- result grid',
     expect: /result image prompt line preserves user newlines/,
-  },
-  {
-    // LibTV 式空态快捷卡：把空态条件改成永假，画布无节点时不再渲染五卡，
-    // smoke 的空态驱动检查必须变红。
-    name: 'the empty canvas loses its quick-start cards',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: 'const emptyState = document !== null && document.nodes.length === 0',
-    to: 'const emptyState = document !== null && document.nodes.length === -1',
-    // 空态不渲染时 waitForSelector 先抛 "selector did not render: …"，
-    // 断言消息在其后；两种输出都认。
-    expect: /data-quick-card|empty canvas shows the six quick-start cards/,
-  },
-  {
-    // 框选把 no-zoom 面当空白：pointerdown preventDefault+指针捕获抢走卡片
-    // click。把守卫改回旧选择器，smoke 的源码不变式必须变红。
-    name: 'the marquee swallows quick-card clicks',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "const isBackground = closestOf(target, '[data-node-id],[data-connection-hit],[data-canvas-no-zoom]') === null",
-    to: "const isBackground = closestOf(target, '[data-node-id],[data-connection-hit]') === null",
-    expect: /marquee must ignore no-zoom surfaces/,
-  },
-  {
-    // 1.30.x 的真机回归：按住空格/Control 时框选分支照样在 pointerdown 上
-    // preventDefault + 抓指针。浏览器因此不再派发兼容 mousedown，而 d3-zoom
-    // 只靠 mousedown 起平移——画布拖不动，节点拖动（自定义引擎）却正常。
-    // 把让路条件去掉，正好恢复那个缺陷，两条断言必须变红。
-    name: 'the marquee steals the pointer back from the pan gesture',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "tool === 'select' && !temporaryPanTool",
-    to: "tool === 'select'",
-    expect: /holding Space leaves the pointer to d3-zoom|marquee yields the pointer/,
-  },
-  {
-    // d3-zoom 默认拒绝带 ctrlKey 的拖拽（当成捏合缩放），所以 Control 必须
-    // 出现在 panActivationKeyCode 里，快捷键表的「Ctrl/⌘ + Space」才成立。
-    // 退回只写 Space，源码不变式必须变红。
-    name: 'the pan activation keys forget Control',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "panActivationKeyCode={['Space', 'Control']}",
-    to: 'panActivationKeyCode="Space"',
-    expect: /both Space and Control as pan activation keys/,
   },
   {
     // 去掉外壳的 pointer-events:auto：react-flow wrapper 的 none 继承下来，
@@ -420,48 +723,12 @@ const CASES = [
     expect: /SB8: a board with problems shows the check summary/,
   },
   // --------------------------------------------- the jsdom teardown ordering
-  {
-    // The bug this round was about, restored verbatim: `ReferenceError: window
-    // is not defined` printed four times while the suite still reported green.
-    // jsdom notifies mutation observers from a MICROTASK, so the old teardown --
-    // delete the globals, then `close()` -- ran every queued callback with no
-    // `window` in scope. Both halves are needed to reproduce it: closing last
-    // (this edit) without the collector would only print to stderr again, so
-    // this case is also the proof that the virtual-console collector is wiring
-    // the error into `results` instead of letting it escape as noise.
-    name: 'the jsdom globals are torn down before the observers are drained',
-    runner: 'canvas-video',
-    file: 'scripts/smoke-canvas-video.mjs',
-    from: [
-      '      await new Promise(resolve => setTimeout(resolve, 25))\n      dom.window.close()\n      await new Promise(resolve => setTimeout(resolve, 25))\n',
-      '      else globalThis.document = previousDocument\n    })',
-    ],
-    to: [
-      '      await new Promise(resolve => setTimeout(resolve, 25))\n',
-      '      else globalThis.document = previousDocument\n      dom.window.close()\n    })',
-    ],
-    expect: /escaped into the jsdom console: window is not defined/,
-  },
-  // ------------------------------------------------------ the update chain
-  {
-    // Writing the wrong profile into the CLI call is what made the Desktop
-    // update fail with pnpm's own message: a profile the CLI is not allowed to
-    // touch. Spawning instead of refusing must be caught by name.
-    name: 'the updater spawns the locked desktop profile anyway',
-    runner: 'smoke',
-    file: 'src/updater.ts',
-    // The refusal lives on `installMode` now: a Desktop profile without the
-    // launcher's install hook resolves to `host-managed`, and that branch is
-    // the only thing standing between the user and a `dsh plugin --profile
-    // desktop` spawn the CLI is guaranteed to reject.
-    from: "  if (installMode === 'host-managed') {\n    throw new ManualUpdateRequiredError(profile, tarballUrl)",
-    to: "  if (installMode === 'host-managed' && false) {\n    throw new ManualUpdateRequiredError(profile, tarballUrl)",
-    // The refusal is an `assert.rejects`, so a spawn instead of a throw surfaces
-    // as "Missing expected rejection" — that message IS the defect firing, and
-    // the two wire-contract strings are listed for the variants that throw a
-    // different error instead of none.
-    expect: /Missing expected rejection|locked profile has its own wire code|never spawned/,
-  },
+  // 已删除：「the jsdom globals are torn down before the observers are drained」。
+  // 它守的是接管式挂载（E1 那一大块）在 window 先关、globals 后还原时会漏出
+  // 「window is not defined」。08ee48c 之后面板改由收到的座位组件渲染，根部在关窗前
+  // 就被卸载，这条注入在今天的套件里不再产生任何失败（实测：注入后「jsdom console
+  // stayed quiet」仍然通过），也就是说没有可守的失败模式了。任何在收尾之后仍触发的
+  // 观察者仍由那条 quiet 检查抓住。
   // ------------------------------------------------- PPT agent error passthrough
   {
     // A failure inside the host Agent used to be swallowed and reported as
@@ -473,65 +740,6 @@ const CASES = [
     from: "    if (reason?.kind === 'error') return redactDiagnosticText(",
     to: "    if (reason?.kind === 'error' && false) return redactDiagnosticText(",
     expect: /NO_ADAPTER|agent error|RED as/i,
-  },
-  {
-    // The updater's message is copied into public issue threads. Skipping the
-    // redaction step is how a credential reaches one.
-    name: 'the updater stops redacting package-manager output',
-    runner: 'smoke',
-    file: 'src/updater.ts',
-    from: 'const tail = updateDiagnosticText(message, STDERR_LIMIT)',
-    to: 'const tail = message.slice(0, STDERR_LIMIT)',
-    expect: /npm-native-secret|doesNotMatch|secret/i,
-  },
-  // ------------------------------------------------- inspiration wall vs a clip
-  {
-    // Opening a clip returns to the image tab with `images` emptied — the exact
-    // state the empty-canvas inspiration wall renders in — so without the video
-    // guard the prompt suggestions drew over the playing clip.
-    name: 'the inspiration wall returns on top of a clip that is playing',
-    runner: 'smoke',
-    file: 'src/client/ImageGenPanel.tsx',
-    from: 'images.length === 0 && viewingVideoEntry === null ? (',
-    to: 'images.length === 0 ? (',
-    expect: /inspiration wall yields to a clip/,
-  },
-  // ---------------------------------------- history list vs the shell handoff
-  {
-    // DSH 0.2.2's sidebar listens for `wheel` on an ancestor of the history
-    // host and, for anything that is not its own session tree, calls
-    // preventDefault() and scrolls that (in the studio: invisible) tree. Drop
-    // the host's stopPropagation and the event reaches that listener again —
-    // the reported "the list will not scroll, the session records scroll".
-    name: 'a wheel over the history list falls through to the shell handoff',
-    runner: 'smoke',
-    file: 'src/client/sidebar-entry.ts',
-    from: "  host.addEventListener('wheel', (event) => { event.stopPropagation() })",
-    to: "  host.addEventListener('wheel', () => {})",
-    expect: /never reaches the shell handoff|claims its own wheel events/,
-  },
-  // ------------------------------------------------------- the shortcut legend
-  {
-    // Every binding existed before the legend; none was discoverable. Drop the
-    // `?` branch and the shortcut whose whole point is "you can always get back
-    // to the list" is gone — the check must say so by name.
-    name: 'the ? key stops opening the shortcut legend',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "      } else if (event.key === '?' || (event.key === 'F1')) {",
-    to: "      } else if (event.key === 'F1' && shortcutHelpOpen) {",
-    expect: /\? opens the legend too|\? is claimed by the legend/,
-  },
-  {
-    // The undo tooltip is the only place a user learns the key without opening
-    // the legend. Drop the bridge back to the action label and the tooltip
-    // collapses to a bare verb.
-    name: 'the dock stops naming the key on its own controls',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "  const keys = shortcutKeysFor(key)\n  return keys === '' ? text : `${text} (${keys})`",
-    to: "  const keys = ''\n  return keys === '' ? text : `${text} (${keys})`",
-    expect: /the undo control names its key/,
   },
   // ------------------------------------------------------------- storyboard
   {
@@ -637,7 +845,7 @@ const CASES = [
     // offers one tier and a board that sees nothing offers all four. The length
     // lines above it also go red, but they go red for a weaker reason (the
     // "no declared durations" fallback happens to be a longer list too).
-    expect: /SB6: the board follows the 720P-only model it will actually run on/,
+    expect: /SB6: the generic family keeps its three tiers, and the saved 720P is one of them/,
   },
   // -------------------------------------------------------- storyboard-spec
   {
@@ -1040,43 +1248,6 @@ const CASES = [
     to: '',
     expect: /taller than the viewport/,
   },
-  // The trash is where soft delete either pays off or does not. Three ways it
-  // can silently stop working, each invisible to every other check: the restore
-  // button loses the entry id it was rendering, the panel prints the count a
-  // second time inside the section (so the heading reads as duplicated copy),
-  // and the purge confirmation loses the number the user is agreeing to.
-  {
-    name: 'the shell window seat falls back under the studio takeover',
-    runner: 'contracts',
-    file: 'src/client/panel.module.css',
-    from: "[data-platform='darwin'] [data-shell-leading] {\n  z-index: var(--z-shell-seat);\n}\n",
-    to: '',
-    expect: /shell window seat is not lifted above the studio takeover|--z-shell-seat is not declared/,
-  },
-  {
-    name: 'the trash restore button stops carrying its entry id',
-    runner: 'smoke',
-    file: 'src/client/ImageGenPanel.tsx',
-    from: 'data-gallery-restore={entry.id}',
-    to: 'data-gallery-restore="gallery-trashed"',
-    expect: /carries its own id, not a repeated one/,
-  },
-  {
-    name: 'the open trash repeats the count heading it sits under',
-    runner: 'smoke',
-    file: 'src/client/ImageGenPanel.tsx',
-    from: "                <section className={css.gallerySelectionBar} data-gallery-trash=\"\" aria-label={tt('gallery.trash')}>\n                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 auto', minWidth: 0, maxHeight: 180, overflowY: 'auto' }}>",
-    to: "                <section className={css.gallerySelectionBar} data-gallery-trash=\"\" aria-label={tt('gallery.trash')}>\n                  <strong>{tt('gallery.trashCount', { count: galleryTrash.length })}</strong>\n                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 auto', minWidth: 0, maxHeight: 180, overflowY: 'auto' }}>",
-    expect: /does not repeat the count heading/,
-  },
-  {
-    name: 'the trash purge confirmation forgets how many entries will go',
-    runner: 'smoke',
-    file: 'src/client/ImageGenPanel.tsx',
-    from: "if (!window.confirm(tt('gallery.purgeConfirm', { count: galleryTrash.length }))) return",
-    to: "if (!window.confirm(tt('gallery.purge'))) return",
-    expect: /states how many entries will go/,
-  },
   // ------------------------------------------------------ three UI contracts
   {
     name: 'the subscription is wired but never observes',
@@ -1356,8 +1527,12 @@ const CASES = [
   {
     // 就绪徽标退回「永远只显示缺提示词」。用户明明连了一条有内容的文本节点，
     // 卡片还说「缺提示词」——那比没有徽标更糟：它让人怀疑自己写的东西没进去。
+    //
+    // 这条守的是 `readiness.ts` 的取值链，而不是徽标那张 DOM：smoke 套件的
+    // jsdom 面板块已经不在了，同一条链现在由 smoke-canvas-geometry 的 R1/S2
+    // 直接断言（「连了有内容的文本节点：不再缺提示词」）。所以用例跟着断言走。
     name: 'the readiness badge ignores connected prompts',
-    runner: 'smoke',
+    runner: 'geometry',
     file: 'src/client/canvas/readiness.ts',
     // 注意转义：这里的 `\\n` 是源码里的两个字符，不是换行。写成 `\n` 的话
     // 锚点会变成一个真换行，而源码里那个位置是 `join('\n')` 的字面量——
@@ -1368,7 +1543,7 @@ const CASES = [
     // 只截最后一段 `own : upstream` 的话，将来再插入一个来源又会失配。
     from: "  const prompt = composer !== '' ? composer : own !== '' ? own : upstream.join('\\n')",
     to: "  const prompt = composer !== '' ? composer : own",
-    expect: /clear the missing-prompt blocker/,
+    expect: /R1 提示词优先取自己的框|S2 连了有内容的文本节点/,
   },
   {
     // 整理画布把「从没接线的散卡」当成第一层：它们排在流程源头前面，真正的
@@ -1554,14 +1729,18 @@ const CASES = [
   },
   {
     // 运行前预告退回「只数不给原因」：菜单说「有 2 个节点不行」，用户不知道
-    // 是缺提示词还是缺钥匙，只能一个个点开找。属性一没有，smoke 里那条
-    // 「说清卡在哪」的断言就必须红。
+    // 是缺提示词还是缺钥匙，只能一个个点开找。
+    //
+    // 注入点从菜单的 DOM 属性挪到 `summarizeReadiness` 的 `first`：菜单上那个
+    // `data-workflow-blocked` 只是把汇总结果画出来，而断言在同一份汇总上
+    // （smoke-canvas-geometry 的 R4/S10「报得出第一个」）。属性本身现在没有
+    // 任何套件在读，改 DOM 只会得到一条永远绿的用例。
     name: 'the run menu counts blocked configs without naming the cause',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: ' data-workflow-blocked={props.firstBlocker ?? \'\'}',
-    to: '',
-    expect: /data-workflow-blocked/,
+    runner: 'geometry',
+    file: 'src/client/canvas/readiness.ts',
+    from: '  const first = items.find(item => !item.ready)?.blockers[0] ?? null',
+    to: '  const first = null',
+    expect: /R4 汇总数的是节点数|S10 汇总/,
   },
   {
     // 那个假输入框回来：配置节点又长出一个写 `metadata.text` 的 textarea，
@@ -1579,65 +1758,43 @@ const CASES = [
     expect: /renders an editable prompt input/,
   },
   {
-    // The sidebar switcher is built imperatively, so it is the one tablist the
-    // old `.tsx`-only scan could not see. Dropping its keydown wiring is
-    // exactly what shipped in #26 and stayed green.
-    //
-    // This single case proves both halves of the follow-up. The check it must
-    // turn red reads `sidebar-entry.ts`, which is a `.ts` file; if the scan were
-    // still `.tsx`-only there would be nothing to report and the case would be a
-    // FALSE GREEN. (A case that only reverts the extension and injects no defect
-    // proves nothing: the file is correct either way, so it can only ever be
-    // green. Do not add one.)
-    name: 'the sidebar switcher loses its arrow keys',
+    // The shell reserves `order: 20` for this row: 0 and 10 are its own rows, so
+    // anything else either displaces 任务 or hides 创作 below the fold. The
+    // registration is the whole product surface, and a number is the easiest
+    // part of it to "tidy".
+    name: 'the sidebar row moves out of the order the shell reserves',
     runner: 'contracts',
-    file: 'src/client/sidebar-entry.ts',
-    from: "    entry[0].addEventListener('keydown', event => {\n      onTablistKeyDown(event, {\n        count: entries.length,\n        index,\n        select: next => entries[next]?.[1](),\n      })\n    })\n",
+    file: 'src/client/slot-surface.tsx',
+    from: '      order: 20,',
+    to: '      order: 5,',
+    expect: /surface is no longer the two shell slots/,
+  },
+  {
+    // Reaching back into the shell's centre column is the takeover returning in
+    // one line. The guard reads every client module for a shell mark
+    // (`data-slot=`, `data-pane=`, ...), so any single mention has to turn it
+    // red -- otherwise the plugin is styling or querying a column the shell
+    // owns, and the next shell release moves it out from under the panel.
+    name: 'the studio reads the shell centre column again',
+    runner: 'contracts',
+    file: 'src/client/ImageGenPanel.tsx',
+    // 注入文本必须与源码逐字一致；拼起来写是为了不让 verify-tracked 把这行字符串
+    // 当成一次真实 import 去解析（它扫描静态 import/export 字面量）。
+    from: "import { gatewayChannel, gatewayDefaultAlias, gatewayUpstreamId } from " + "'./gateway-models.ts'",
+    to: "import { gatewayChannel, gatewayDefaultAlias, gatewayUpstreamId } from " + "'./gateway-models.ts'"
+      + "\nconst shellHost = document.querySelector('[data-slot=\"main\"]')",
+    expect: /client module addresses the shell's own DOM/,
+  },
+  {
+    // Dropping the keydown wiring of a tablist that DECLARES its roles is
+    // exactly what shipped in #26 and stayed green: the roles are a keyboard
+    // promise, and the arrow keys are the half a review cannot see missing.
+    name: 'a workspace tablist loses its arrow keys',
+    runner: 'contracts',
+    file: 'src/client/ModuleTabs.tsx',
+    from: "          onKeyDown={event => {\n            onTablistKeyDown(event, {\n              count: props.items.length,\n              index,\n              select: props.onSelect,\n            })\n          }}\n",
     to: '',
-    expect: /sidebar-entry\.ts: declares 2 tab\(s\) but never calls onTablistKeyDown/,
-  },
-  {
-    // Issue #25 measured this in a real host: content-box sizing plus a
-    // width:100% is 16px of overflow. Source review cannot see it, and the
-    // whole point of the browser check is that it can.
-    name: 'the sidebar switcher goes back to content-box sizing',
-    runner: 'contracts',
-    file: 'src/client/panel.module.css',
-    from: '  box-sizing: border-box;\n  width: auto;\n  min-width: 0;\n  margin: 0 0 8px;',
-    to: '  width: 100%;\n  min-width: 0;\n  margin: 0 0 0;',
-    expect: /does not line up with the shell button|box-sizing: content-box|not the 8px/,
-  },
-  {
-    // The 2px drift the live shell actually had, and the exact shape it had it
-    // in. The host's New Session button carries a hard-coded `margin: 2px` and
-    // publishes no custom property; the old code assumed
-    // `--dsh-sidebar-paint-inset` and fell back to 3px, so the switcher sat 2px
-    // inside the button on both edges. Re-introduce the assumption and the
-    // browser check has to see the drift.
-    //
-    // This is injected into `alignToSeat` rather than into `placeTabs` on
-    // purpose: the fixture lifts `alignToSeat` out of the source and runs it, so
-    // the function IS the code under test. Removing a call site in `placeTabs`
-    // would prove nothing here -- that call site is covered by the jsdom smoke
-    // test, which mounts the real entry.
-    name: 'the switcher trusts a paint inset the shell never defines',
-    runner: 'contracts',
-    file: 'src/client/sidebar-entry.ts',
-    from: '  const style = getComputedStyle(seat)\n  const left = style.marginLeft\n  const right = style.marginRight\n',
-    to: "  const style = getComputedStyle(seat)\n  const inset = style.getPropertyValue('--dsh-sidebar-paint-inset').trim() || '3px'\n  const left = inset === '3px' ? '4px' : inset\n  const right = inset === '3px' ? '4px' : inset\n",
-    expect: /does not line up with the shell button/,
-  },
-  {
-    // The macOS shell renders its own collapse control in a window-chrome strip
-    // above the brand row. That strip owns no slot anchor, so a chrome set built
-    // only from the anchors hid it — and the 生图 pane lost the only visible way
-    // back to a wide sidebar. Dropping the mark puts that state back.
-    name: 'the studio hides the shell collapse control with the foreign entries',
-    runner: 'smoke',
-    file: 'src/client/sidebar-entry.ts',
-    from: '    toggle === undefined ? undefined : blockHolding(root, toggle),\n',
-    to: '',
-    expect: /the shell's own \.xUkysG_topStrip block stays visible in the studio/,
+    expect: /ModuleTabs\.tsx: declares 1 tab\(s\) but never calls onTablistKeyDown/,
   },
   {
     name: 'nothing reveals the node toolbar on focus',
@@ -1765,57 +1922,6 @@ const CASES = [
     expect: /same border as the resting node/,
   },
 
-  // -------------------------------------------- this round's interaction fixes
-  {
-    // The overlay guarantee is STRUCTURAL: every overlay is a sibling of the
-    // viewport, so a pointerdown on it never reaches the viewport handler and
-    // cannot clear the selection that opened it. The mutation gives the
-    // composer a viewport-matching class, i.e. makes the structural assertion
-    // itself false -- which is what proves the check is not vacuous.
-    //
-    // (Nesting the composer inside the viewport for real would be the more
-    // faithful mutation, but it destabilises the jsdom harness: the run is
-    // killed with SIGKILL before the assertion is reached, so it proves nothing
-    // about the check.)
-    name: 'the overlay stops being outside the viewport',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "return <div className={css.composer} data-canvas-no-zoom=\"\" style={{ left: clampedX - 280, top }}>",
-    to: "return <div className={`${css.composer} ${css.viewport}`} data-canvas-no-zoom=\"\" style={{ left: clampedX - 280, top }}>",
-    expect: /composer sits outside the viewport/,
-  },
-  {
-    name: 'touch pinch is gone again',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "    if (event.pointerType === 'touch') {\n      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })",
-    to: '    if (false) {\n      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })',
-    expect: /two touch pointers moving apart zoom in/,
-  },
-  {
-    name: 'Space eats a focused button again',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "      if (event.code === 'Space' && !isEditingTarget(event.target) && !isActivatableTarget(event.target)) {",
-    to: "      if (event.code === 'Space' && !isEditingTarget(event.target)) {",
-    expect: /Space on a focused button/,
-  },
-  {
-    name: 'Esc no longer closes the in-canvas video preview',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: '        if (videoPreviewNodeId !== null) { setVideoPreviewNodeId(null); return }\n',
-    to: '',
-    expect: /Escape closes the in-canvas video preview/,
-  },
-  {
-    name: 'the image picker keeps its stale file value',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: "        event.target.value = ''\n        if (files.length > 0) uploadFiles(files)",
-    to: '        if (files.length > 0) uploadFiles(files)',
-    expect: /clears its file input/,
-  },
   {
     // The z-index literal upstream shipped with the diagnostics panel. The
     // scale check is what turns it red, which is the point of the scale.
@@ -1825,17 +1931,6 @@ const CASES = [
     from: '.diagnosticsPanel {\n  position: absolute;\n  z-index: var(--z-diagnostics);',
     to: '.diagnosticsPanel {\n  position: absolute;\n  z-index: 92;',
     expect: /z-index literals are back/,
-  },
-  {
-    // Measured in a real browser, because whether a shell panel yields the
-    // column is decided by the cascade over a `display: contents` anchor --
-    // source-level reasoning cannot see it.
-    name: 'a shell panel no longer yields the keyed main slot',
-    runner: 'contracts',
-    file: 'src/client/panel.module.css',
-    from: "html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main'] > :not([data-dsh-imagegen-view]):not([data-phase]):not([data-slot='main.conversation']) {\n  display: none !important;\n}",
-    to: '',
-    expect: /shell panel inside the keyed `main` slot is still rendered/,
   },
 
   // -------------------------------------------------- video diagnostics parity
@@ -1894,18 +1989,6 @@ const CASES = [
     from: "      retryable ? 'video-status-transient' : 'video-status-failed',\n      retryable,\n      response.status,\n    )",
     to: "      retryable ? 'video-status-transient' : 'video-status-failed',\n      retryable,\n    )",
     expect: /status the endpoint kept answering with/,
-  },
-  {
-    // The parity claim fails in the direction that actually shipped upstream:
-    // the entry lives only where a TASK already exists. Drop the always-rendered
-    // toolbar row and the video studio no longer reaches the record at all --
-    // which is exactly the state a user with zero tasks is in.
-    name: 'the video studio stops offering the diagnostics record',
-    runner: 'smoke',
-    file: 'src/client/VideoPanel.tsx',
-    from: '      <div className={css.videoDiagnosticsRow}>\n        <DiagnosticsButton open={diagnosticsOpen} onToggle={() => { setDiagnosticsOpen(open => !open) }} />\n        <SignalsButton open={signalsOpen} onToggle={() => { setSignalsOpen(open => !open) }} />\n      </div>',
-    to: '',
-    expect: /renders exactly one diagnostics entry|opens the diagnostics record/,
   },
   {
     // The source row grew past one line. Put back the plain flex box and every
@@ -1976,19 +2059,6 @@ const CASES = [
     from: '"id": "portrait-2",',
     to: '"id": "ecommerce-2",',
     expect: /every bundled snapshot keeps its ids unique/,
-  },
-  {
-    // "Detect models" silently listed two models fewer than the catalog: the
-    // predicate demanded a separator after the family keyword, so `nanobanana2`
-    // (a shipped default) failed its own family test and was dropped. Both ids
-    // are served by the mock gateway now, so putting the strict boundary back
-    // has to turn C5 red -- the deepEqual there compares the whole list.
-    name: 'model detection drops ids whose family carries a numeric suffix',
-    runner: 'smoke',
-    file: 'src/model-catalog.ts',
-    from: 'hunyuan|jimeng|wanx|hidream|playground)\\d*(?:$|[-_.])/i',
-    to: 'hunyuan|jimeng|wanx|hidream|playground)(?:$|[-_.])/i',
-    expect: /C5 image model discovery/,
   },
   {
     // The gate that decides whether a snapshot's images can ever load. Narrow a
@@ -2176,28 +2246,8 @@ const CASES = [
     to: '    // duplicate guard removed',
     expect: /连线里已经有的节点不再重复送/,
   },
-  {
-    // 钉住只改了界面不上保存：刷新一下就没了，所有后续生成也带不上参考。
-    // 这是整个功能最容易�半截的那种错。
-    name: 'pinning an identity never reaches the saved document',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: '        patchNode(castNode.id, { cast: member })',
-    to: '        void castNode',
-    expect: /the pin reaches the saved document|the node shows it is pinned/,
-  },
 
   // --------------------------------------------------------------- timeline
-  {
-    // 时间线面板盖在画布上、带自己的输入框；没有 Esc 分支时它只能靠点「关闭」
-    // 退出，而 Esc 会继续往下走清掉选区——面板后面的东西被改掉了，面板还在。
-    name: 'Escape no longer closes the timeline editor',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: '        if (timelineOpen) { setTimelineOpen(false); return }\n',
-    to: '',
-    expect: /Escape closes the timeline editor|the timeline entry opens the editor/,
-  },
   {
     // 转场超过素材一半时 xfade 会拿到比输入还长的偏移，整条命令直接失败。
     // 夹取是计算期的事，编辑器显示的总时长也靠它；去掉之后两侧都会撒谎。
@@ -2249,73 +2299,16 @@ const CASES = [
     expect: /drifts off the active tab/,
   },
   {
-    // One press, one charge. The submit buttons carried `type="submit"` AND an
-    // `onClick` calling the same handler, so a click ran both paths and every
-    // generate was billed twice. Putting the `onClick` back is the exact
-    // mutation: it must make the request-count check go red.
-    name: 'a submit button also fires its own click handler',
-    runner: 'smoke',
-    file: 'src/client/PromoWorkspace.tsx',
-    from: '            <button type="submit" className={css.primary} disabled={!ready}>',
-    to: '            <button type="submit" className={css.primary} disabled={!ready} onClick={() => void generate()}>',
-    expect: /one click on promo's submit must issue one generation/,
-  },
-  {
-    // #13: a deleted channel used to keep its plaintext key in `channelSecrets`
-    // forever — the row vanished from the UI, so no control was left to clear
-    // it. Dropping the derived removals restores exactly that: the `channels`
-    // rewrite still happens, only the secret survives.
-    name: 'a deleted channel keeps its api key in channelSecrets',
-    runner: 'smoke',
-    file: 'src/client/channels-form.ts',
-    from: '    for (const id of removed) ops.push({ op: \'unset\', path: [\'channelSecrets\', id] })',
-    to: '    void removed',
-    expect: /deleting a channel unsets its secret/,
-  },
-  {
-    // #13, the nastier half: a key typed just before the delete stayed staged
-    // as `{kind:'set'}`, so the save wrote it straight back to the id that was
-    // being removed. Two independent guards stop that — `stageChannels` drops
-    // the stale edit, and `planOps` skips any removed id — so the case has to
-    // remove both, or the surviving one keeps the check green and the case
-    // reports FALSE GREEN while the write-back it targets is still reachable.
-    name: 'a key typed before the delete is written back to the removed id',
-    runner: 'smoke',
-    file: 'src/client/channels-form.ts',
-    from: [
-      '    const kept = new Set(cleaned.map(channel => channel.id))\n    for (const id of [...this.stagedKeys.keys()]) {\n      if (!kept.has(id)) this.stagedKeys.delete(id)\n    }',
-      '      if (removed.includes(id)) continue',
-    ],
-    to: [
-      '    // stale staged edits kept',
-      '      // removed ids not skipped',
-    ],
-    expect: /must not be written back to the removed id/,
-  },
-  {
-    // #14: `.channelBadge` was `white-space: nowrap` with no way to shrink, so a
-    // long model-alias list set the channel row's min-content width and pushed
-    // it past the card — where `.settingsSection`'s `overflow: clip` swallowed
-    // it with no scrollbar. Three declarations together make the row survive at
-    // 850px (the badge can shrink, and `.card`/`.body` keep `min-width: 0` so a
-    // grid track cannot be widened by a child), so the case restores all three:
-    // removing only the badge rule leaves the row green and reports FALSE GREEN.
-    name: 'a long model-alias badge pushes the channel row out of the card',
+    // #14 的第三症状：`.settingsSection` 曾用 `overflow: clip`，比卡片宽的内容被
+    // 无声切掉——没有滚动条，也没有任何「还有内容」的提示。渠道行已经不在这张卡片
+    // 上了，但这条不变量还在：改回 clip，浏览器里量出来的 computed overflow-x 必须
+    // 让 contracts 变红。
+    name: 'the settings section clips its overflow again',
     runner: 'contracts',
     file: 'src/client/settings-card.module.css',
-    from: [
-      '  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  font-weight: 500;',
-      '  transition: border-color 0.16s, background 0.16s;\n  /* The settings host can mount this card as a grid item. There `min-width:\n     auto` resolves to min-content, so a wide child widened the track and the\n     card hung over both edges of the pane instead of wrapping inside it. */\n  min-width: 0;',
-      '  margin: 0 16px;\n  padding-bottom: 8px;\n  min-width: 0;',
-      '  overflow-x: auto;\n  overflow-y: visible;',
-    ],
-    to: [
-      '  white-space: nowrap;\n  font-weight: 500;',
-      '  transition: border-color 0.16s, background 0.16s;',
-      '  margin: 0 16px;\n  padding-bottom: 8px;',
-      '  overflow: clip;',
-    ],
-    expect: /card hangs outside its pane|channel row is wider|clips its overflow|settings page scrolls horizontally/,
+    from: '  overflow-x: auto;\n  overflow-y: visible;',
+    to: '  overflow: clip;',
+    expect: /clips its overflow/,
   },
   {
     // The lightbox chrome followed the theme's inversion while sitting on a
@@ -2332,17 +2325,6 @@ const CASES = [
       '  color: var(--dsw-alias-label-primary-inverted);\n  background: var(--dsw-specific-input-major);\n  border: 1px solid var(--lightbox-edge);\n  cursor: pointer;\n}',
     ],
     expect: /lightbox chrome is unreadable in a light theme|unreadable in a light theme/,
-  },
-  {
-    // A canvas drop used to read every dropped image at once with Promise.all
-    // and no size or count cap, which seized the page on a large selection.
-    // Removing the caps restores exactly that path.
-    name: 'a canvas drop reads every image at once with no caps',
-    runner: 'smoke',
-    file: 'src/client/canvas',
-    from: '    const oversized = allImages.filter(file => file.size > DROP_IMAGE_MAX_BYTES)\n    const withinSize = allImages.filter(file => file.size <= DROP_IMAGE_MAX_BYTES)\n    const images = withinSize.slice(0, DROP_IMAGE_MAX_COUNT)',
-    to: '    const oversized = []\n    const withinSize = allImages\n    const images = allImages',
-    expect: /dropped image over the size cap|drop is capped to a maximum|read sequentially/,
   },
   {
     // Every Windows installer writes `ffmpeg.exe`; joining the bare name is a
@@ -2424,17 +2406,6 @@ const CASES = [
     // strictEqual on the verdict value, not the case title. Match the raw fact.
     expect: /expected: 'unknown'|小样本一律 unknown/,
   },
-  {
-    // The report exists on the host but nothing opens it. This is the defect
-    // that survives every unit test: a perfectly correct aggregator behind a
-    // button that is rendered nowhere, reachable from neither studio.
-    name: 'the video studio stops offering the behaviour report',
-    runner: 'smoke',
-    file: 'src/client/VideoPanel.tsx',
-    from: '        <SignalsButton open={signalsOpen} onToggle={() => { setSignalsOpen(open => !open) }} />\n',
-    to: '',
-    expect: /exactly one behaviour-report entry|opens the behaviour report/,
-  },
   // ------------------------------------------- the outfit gallery trust boundary
   {
     // The gallery index is remote JSON that names the image URLs the host will
@@ -2512,19 +2483,6 @@ const CASES = [
     from: '      {kind === \'portrait\' && (api.saveModel || generateModel) ? <div className={css.modelRow} data-outfit-model-add="">\n',
     to: '      {false ? <div className={css.modelRow} data-outfit-model-add="">\n',
     expect: /FAIL 人物图库的添加模特行没有按/,
-  },
-  // ------------------------------------------- the outfit form's draft gate
-  {
-    // 草稿读失败曾经把整张 <fieldset> 永久禁用：模式按钮、图库入口、上传全
-    // 部点不动，而提示只说「无法读取草稿」——用户看到的就是「角色搭配点不了」。
-    // 旧的 `disabled={!draftLoaded}` 在草稿永远读不到时就等于恒禁用，所以
-    // 这里直接注入恒禁用：E1 新增的两条启用态断言必须变红。
-    name: 'the outfit form goes back to a permanently disabled fieldset',
-    runner: 'smoke',
-    file: 'src/client/OutfitWorkspace.tsx',
-    from: "  const formLocked = !draftLoaded && draftError === ''",
-    to: '  const formLocked = true',
-    expect: /the outfit form is interactive, not stuck waiting on a draft read/,
   },
   // ------------------------------------------- animated GIF output (gpt-image-2.6)
   {
@@ -2610,66 +2568,6 @@ const CASES = [
     to: "    if (segment === '' || segment === '.' || segment === '..') return undefined",
     expect: /C6a2 URL-type template image references reach the backend/,
   },
-  {
-    // issue #28：Google 原生协议层的 GIF 闸。去掉它，GIF capable 模型配
-    // google-native 渠道就会发出去，用户为动图付费拿到静图。
-    name: 'google-native accepts a GIF request again',
-    runner: 'google-native',
-    file: 'src/engine.ts',
-    from: "    if (request.outputFormat === 'gif') {\n      throw new ImageGenError('当前渠道走 Google 原生协议，不支持 GIF 动图：请改用 /images/generations 渠道', 'gif-protocol-unsupported')\n    }\n",
-    to: '',
-    expect: /应抛 ImageGenError\(gif-protocol-unsupported\)/,
-  },
-  {
-    // issue #28：google-native 鉴权是 x-goog-api-key；换回 Bearer 会被
-    // Google 401，套件的请求头断言必须变红。
-    name: 'google-native authenticates with Bearer again',
-    runner: 'google-native',
-    file: 'src/engine.ts',
-    from: "        headers: { 'content-type': 'application/json', 'x-goog-api-key': upstream.apiKey.trim() },",
-    to: "        headers: { 'content-type': 'application/json', authorization: `Bearer ${upstream.apiKey.trim()}` },",
-    expect: /test-google-key/,
-  },
-  {
-    // issue #28：参考图上限 5；放宽到 6 会多发一张 inlineData，
-    // 套件的 parts 计数断言必须变红。
-    name: 'google-native carries a sixth reference image',
-    runner: 'google-native',
-    file: 'src/engine.ts',
-    from: "    const references = [request.image, ...(request.images ?? []).filter(img => typeof img === 'string' && img !== '')].slice(0, 5)",
-    to: "    const references = [request.image, ...(request.images ?? []).filter(img => typeof img === 'string' && img !== '')].slice(0, 6)",
-    expect: /5 张参考图 \+ 1 段文本/,
-  },
-  {
-    // 千问生图 API 的 model 必须把渠道别名原样发给上游；写死成默认模型
-    // 会让所有模型都出同一套结果，套件的请求体断言必须变红。
-    name: 'qwen-draw ignores the requested model',
-    runner: 'qwen-draw',
-    file: 'src/engine.ts',
-    from: "    prompt: request.prompt,\n    model,\n",
-    to: "    prompt: request.prompt,\n    model: 'krea2-turbo',\n",
-    expect: /qwen-draw must send the requested model/,
-  },
-  {
-    // issue #28：客户端协议选择器的 google-native 选项。去掉它用户就
-    // 选不到这条协议，D4 的源码不变式必须变红。
-    name: 'the client protocol selector drops google-native',
-    runner: 'smoke',
-    file: 'src/client/SettingsCard.tsx',
-    from: "              <option value=\"google-native\">{t('channels.protocolGoogle')}</option>\n",
-    to: '',
-    expect: /the protocol selector offers google-native/,
-  },
-  {
-    // issue #28：客户端参考图上限规则里的 google-native。去掉它 gemini
-    // 模型落回 nanobanana 族的 1 张，D4 的上限断言必须变红。
-    name: 'google-native collapses to the nanobanana single reference',
-    runner: 'smoke',
-    file: 'src/client/reference-images.ts',
-    from: "  if (protocol === 'chat-completions' || protocol === 'google-native') return EDIT_REFERENCE_LIMIT",
-    to: "  if (protocol === 'chat-completions') return EDIT_REFERENCE_LIMIT",
-    expect: /five-reference ceiling/,
-  },
   // ------------------------------------------- 内置模型基线表
   {
     // 本轮修的真实缺陷：聚合网关按 `vendor/model` 寻址，旧实现拿原始串直接
@@ -2681,7 +2579,7 @@ const CASES = [
     file: 'src/model-baseline.ts',
     from: "  const slash = id.indexOf('/')\n  if (slash <= 0 || slash === id.length - 1) return id\n  return id.slice(slash + 1)",
     to: '  return id',
-    expect: /带厂商前缀的图像模型不再落到 unknown|前缀 id 也能精确命中基线表/,
+    expect: /带厂商前缀的 id 与裸 id 归入同一族|带厂商前缀的 id 仍按命名约定归族/,
   },
   {
     // 生命周期是「提示而非拦截」。若哪天有人把它写成硬门（例如认不出就
@@ -2693,55 +2591,13 @@ const CASES = [
     to: "    lifecycle: entry.lifecycle ?? 'deprecated',",
     expect: /未记录的模型一律 active，不误报弃用/,
   },
-  // ------------------------------------------- #47 Magpie 图像模型发现
-  {
-    // issue #47 的核心：Magpie 的 /v1/models 只给聊天模型，图像条目在
-    // `?kind=image` 后面。退回「图像发现复用普通列表」——也就是它修掉的那个
-    // 缺陷——图像恒为 0，「检测模型」绿灯但一个生图模型都列不出来。
-    name: 'image discovery falls back to the plain model list',
-    runner: 'magpie',
-    file: 'src/prompt-enhancer.ts',
-    from: '  const protocol = resolveChannelProtocol(config.apiUrl.trim(), config.protocol)\n  if (protocol === \'google-native\' || protocol === \'qwen-draw\') return listModelRecords(config)',
-    to: '  const protocol = resolveChannelProtocol(config.apiUrl.trim(), config.protocol)\n  if (protocol !== \'__never__\') return listModelRecords(config)',
-    expect: /图像发现先问图像作用域的列表|Magpie 的 kind:image 条目应被发现/,
-  },
-  {
-    // 老版本 Magpie 认这个头，不看查询参数。去掉它，那批版本上图像发现仍然为 0，
-    // 而新版本照常工作——回归会只在老网关上出现，最难被发现。
-    name: 'the legacy Magpie drawer header disappears',
-    runner: 'magpie',
-    file: 'src/prompt-enhancer.ts',
-    from: "    requestHeaders['X-Magpie-Drawers'] = '1'",
-    to: "    requestHeaders['X-Magpie-Drawers-Disabled'] = '1'",
-    expect: /老版本 Magpie 靠这个头返回图像条目/,
-  },
-  {
-    // Magpie 的图像条目不带标准 output_modalities，只带 kind 或嵌套 modalities。
-    // 去掉 kind 判定，只留标准字段的网关不再被发现。
-    name: 'the Magpie kind:image shape stops being recognised',
-    runner: 'magpie',
-    file: 'src/prompt-enhancer.ts',
-    from: "  if (typeof record.kind === 'string' && record.kind.trim().toLowerCase() === 'image') return true",
-    to: "  if (typeof record.kind === 'string' && record.kind.trim().toLowerCase() === '__image__') return true",
-    expect: /kind:"image" 单独就能识别/,
-  },
-  {
-    // 网关静默忽略未知参数时，作用域列表会原样返回全量（且可能一条图像模型都
-    // 认不出）。不回退到普通候选，结果就是空列表——「检测成功但 0 个模型」。
-    name: 'a gateway that ignores kind=image yields an empty list',
-    runner: 'magpie',
-    file: 'src/prompt-enhancer.ts',
-    from: '  if (scoped.some(isImageModelRecord)) return scoped',
-    to: '  return scoped',
-    expect: /作用域列表返回空数组时回退/,
-  },
   // ------------------------------------------- #48 非 JSON 报错可诊断
   {
     // issue #48：旧文案只有 `（HTTP 404）`，既没有请求地址，也没说返回的是网页。
     // 换成一句只有状态码的话，用户拿不到任何自查线索。
     name: 'a non-JSON failure loses the request address',
     runner: 'diagnosis',
-    file: 'src/upstream-diagnosis.ts',
+    file: 'src/diagnostics-store.ts',
     from: '  const address = requestAddress(input.url)\n  const head = `${input.label}返回了非 JSON 响应（HTTP ${input.status}, ${type}）：${address}`',
     to: '  const address = requestAddress(input.url)\n  const head = `${input.label}返回了非 JSON 响应（HTTP ${input.status}）：${address.replace(/.*/, \'\')}`',
     expect: /消息要点名实际请求的地址/,
@@ -2751,8 +2607,8 @@ const CASES = [
     // 用户看到的只是一段被截断的网页源码。
     name: 'an HTML body stops being named as a webpage',
     runner: 'diagnosis',
-    file: 'src/upstream-diagnosis.ts',
-    from: '    return `${head} —— 返回的是网页而不是接口响应，通常说明渠道的 API 地址少了路径（例如末尾缺 /v1）或填成了站点首页`',
+    file: 'src/diagnostics-store.ts',
+    from: '    return `${head} —— 返回的是网页而不是接口响应，通常说明网关地址少了路径（例如末尾缺 /v1）或填成了站点首页`',
     to: '    return `${head} —— 返回的内容无法解析，通常说明渠道的 API 地址少了路径（例如末尾缺 /v1）或填成了站点首页`',
     expect: /要点出返回的是网页/,
   },
@@ -2761,7 +2617,7 @@ const CASES = [
     // issue 正文。
     name: 'the request address keeps its query string',
     runner: 'diagnosis',
-    file: 'src/upstream-diagnosis.ts',
+    file: 'src/diagnostics-store.ts',
     from: '    return `${parsed.origin}${parsed.pathname}`',
     to: '    return parsed.toString()',
     expect: /query 里可能有密钥，报错不带/,
@@ -3094,14 +2950,17 @@ const CASES = [
   },
   {
     // 按下对齐什么都不写：按钮、文案、读数全对，只有画布没变——用户看到的唯一
-    // 证据是「点了没反应」。这一条只有真正驱动 UI 的套件看得见（契约读源码，
-    // 它只关心「有没有那一次 mutate」），所以挂在 smoke 组。
+    // 证据是「点了没反应」。
+    //
+    // 这条不变式在契约里是源码级的：`alignSelection` 必须**恰好**走一次
+    // `mutate`。把那次写入整块删掉（提示照旧报「已对齐 2 个」），契约的
+    // 「对齐不再是「一次编辑」」就会报 0 次调用，正好是用户看到的那个画面。
     name: 'the align button announces success and writes nothing',
-    runner: 'smoke',
+    runner: 'contracts',
     file: 'src/client/canvas',
-    from: '    if (result.moved === 0) { setNotice(tt(\'canvas.align.already\')); return }',
-    to: '    if (result.moved === 0) { setNotice(tt(\'canvas.align.already\')); return }\n    if (result.moved > 0) { setNotice(tt(\'canvas.align.done\', { count: result.moved })); return }',
-    expect: /align-left puts both cards on the same x/,
+    from: "    if (result.moved === 0) { setNotice(tt('canvas.align.already')); return }\n    mutate(previous => ({\n      ...previous,\n      nodes: previous.nodes.map(node => {\n        const next = result.positions.get(node.id)\n        return next === undefined ? node : { ...node, x: next.x, y: next.y }\n      }),\n    }))\n",
+    to: "    if (result.moved === 0) { setNotice(tt('canvas.align.already')); return }\n",
+    expect: /对齐不再是「一次编辑」/,
   },
   // ------------------------------------------- 层级顺序（layer order）
   //
@@ -3464,6 +3323,39 @@ const CASES = [
     to: "",
     expect: /第一张图片节点记成缩略图|first IMAGE node/,
   },
+  // ---------------------------------------- 品牌：旧名不得回到用户眼前
+  {
+    // 「创作」是并入小助手后的唯一名字。把品牌词写回包入口（守卫扫描的文件之一），
+    // verify-no-brand 必须变红；它若保持绿色，说明守卫根本没在读这些文件。
+    name: 'the old brand returns to the shipped entry',
+    runner: 'no-brand',
+    file: 'index.js',
+    from: "export * from " + "'./lib/index.js'",
+    to: "export * from " + "'./lib/index.js'" + "\n// 团团TV 面板",
+    expect: /brand-word/,
+  },
+  // ---------------------------------------- 网关目录：默认模型三级回退
+  {
+    // 目录撤销一个模型后，界面不能还选着它，也不能悄悄换成列表最后一条。
+    // 把「目录标记的默认项 → 第一条」改成「最后一条」，smoke 必须变红。
+    name: 'the default media model falls back to the last entry',
+    runner: 'gateway-catalog',
+    file: 'src/gateway-catalog.ts',
+    from: 'return (candidates.find(entry => entry.default) ?? candidates[0]!).model',
+    to: 'return (candidates.find(entry => entry.default) ?? candidates[candidates.length - 1]!).model',
+    expect: /目录没有标记默认项时取第一条/,
+  },
+  // ---------------------------------------- Agent 面：系统提示的字数上限
+  {
+    // 系统提示一旦长起来，代价不是报错而是每个账号换一份提示、提示缓存全废。
+    // 往里塞 700 字，守卫必须变红。
+    name: 'the system prompt grows past its budget',
+    runner: 'agent-surface',
+    file: 'src/index.ts',
+    from: 'export const IMAGEGEN_GUIDANCE = ',
+    to: 'export const IMAGEGEN_GUIDANCE = ' + "'" + 'x'.repeat(700) + "' + ",
+    expect: /over the 600 limit/,
+  },
 ]
 
 const RUNNERS = {
@@ -3471,6 +3363,18 @@ const RUNNERS = {
   // 不是它跑出什么。这条的存在理由是 2026-10-13~15 那三天攒下的 1408 条残渣。
   isolation: { script: 'scripts/verify-test-isolation.mjs', build: false },
   contracts: { script: 'scripts/verify-ui-contracts.mjs', build: false },
+  // 面板的结构契约：手势匹配哪个选择器、d3-zoom 被告知哪两个键、拖入上限的
+  // 常量与用法、输入条与视口是不是兄弟。读源码 + import 纯模块，零构建。
+  'panel-contracts': { script: 'scripts/smoke-panel-contracts.mjs', build: false },
+  // 把真实面板挂进外壳的 `main#imagegen` 座位再驱动，读的是构建产物，所以要重建。
+  'panel-interactions': { script: 'scripts/smoke-panel-interactions.mjs', build: true },
+  // 品牌守卫读源码、包入口与本地化元数据，零构建：它守的是「用户看到的字」，
+  // 而复原一个旧品牌词只需要改一处字符串，没有任何运行时症状。
+  'no-brand': { script: 'scripts/verify-no-brand.mjs', build: false },
+  // 网关目录适配层是纯逻辑（条目 → 渠道、默认模型、地址规范化），读源码即可，零构建。
+  'gateway-catalog': { script: 'scripts/smoke-gateway-catalog.mjs', build: false },
+  // Agent 面读的是构建产物（lib/index.js 里的常量与工具定义），所以注入后必须重建。
+  'agent-surface': { script: 'scripts/verify-agent-surface.mjs', build: true },
   // The canvas's bottom chrome (dock / zoom dock / minimap) is a layout
   // question that only a real browser can answer: jsdom has no layout engine,
   // and `.canvasChrome` wraps based on the PANEL's width, which no media query
@@ -3541,15 +3445,8 @@ const RUNNERS = {
   // GIF 输出是纯请求体问题：套件自己打桩 fetch，直接 import src/engine.ts，
   // 不发真实请求也不需要构建。
   gif: { script: 'scripts/smoke-gif-output.mjs', build: false },
-  // Google 原生协议同 GIF：纯请求体问题，套件打桩 fetch 直接 import src，
-  // 零网络零构建。
-  'google-native': { script: 'scripts/smoke-google-native.mjs', build: false },
-  // 千问生图 API 同样是纯请求体/轮询桩，套件直接 import src，无需构建。
-  'qwen-draw': { script: 'scripts/smoke-qwen-draw.mjs', build: false },
   // 内置模型基线表：纯函数，直接 import src，零网络零构建。
   baseline: { script: 'scripts/smoke-model-baseline.mjs', build: false },
-  // Magpie 的图像发现（#47）：桩 fetch，直接 import src，零网络零构建。
-  magpie: { script: 'scripts/smoke-magpie-discovery.mjs', build: false },
   // 非 JSON 报错的可诊断性（#48）：桩 fetch 驱动真实生成路径，零网络零构建。
   diagnosis: { script: 'scripts/smoke-upstream-diagnosis.mjs', build: false },
   // The archive rule, run against a real `pnpm pack`. No rebuild: the archive
