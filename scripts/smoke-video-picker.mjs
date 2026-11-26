@@ -321,6 +321,7 @@ await check('C1 the dock menu offers 添加视频 and the picker opens with thre
   const registrations = []
   const ctx = {
     effect(fn) { return fn() },
+    provide() {},
     on() { return () => {} },
     get(name) {
       if (name === 'connection') return { isLoopback: true }

@@ -763,6 +763,7 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
   const registrations = []
   const ctx = {
     effect(fn) { return fn() },
+    provide() {},
     on() { return () => {} },
     get(name) {
       if (name === 'connection') return { isLoopback: true }

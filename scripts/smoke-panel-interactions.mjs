@@ -316,6 +316,7 @@ const conversationStub = {
 const registrations = []
 const ctx = {
   effect (fn) { return fn() },
+  provide () {},
   on () { return () => {} },
   get (name) {
     if (name === 'connection') return { isLoopback: true }
