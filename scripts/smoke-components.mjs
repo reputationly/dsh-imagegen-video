@@ -54,10 +54,10 @@ for (const feature of features) children.set(feature, host.plugin(await import('
 await new Promise(resolve => setImmediate(resolve))
 assert(registeredRoutes.has('/api/dsh-imagegen/generate'))
 assert(registeredRoutes.has('/api/dsh-imagegen/video/generate'))
-// Chat image generation belongs to the host; the plugin keeps video, catalog and canvas tools and /edit_image.
+// Chat generation belongs to the host; the plugin keeps the canvas tools and /edit_image.
 assert(!tools.has('generate_image'))
-assert(tools.has('generate_video'))
-assert(tools.has('list_media_models'))
+assert(!tools.has('generate_video'))
+assert(!tools.has('list_media_models'))
 assert(tools.has('list_canvases'))
 assert(commands.has('edit_image'))
 await children.get('video').dispose()

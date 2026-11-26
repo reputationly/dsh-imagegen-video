@@ -306,18 +306,6 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
                 onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
                 onReset={() => { props.resetField('allowAgentImageGeneration') }}
               />
-              <BooleanField
-                id="dsh-imagegen-settings-agent-video-generation"
-                label={t('settings.allowAgentVideoGeneration')}
-                hint={t('settings.allowAgentVideoGenerationHint')}
-                inheritLabel={t('settings.inherit')}
-                onLabel={t('settings.on')}
-                offLabel={t('settings.off')}
-                {...fieldProps}
-                {...state.allowAgentVideoGeneration}
-                onEdit={(text) => { props.edit('allowAgentVideoGeneration', text) }}
-                onReset={() => { props.resetField('allowAgentVideoGeneration') }}
-              />
             </SettingsSection>
 
             <SettingsSection
