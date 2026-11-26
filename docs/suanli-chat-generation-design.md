@@ -196,8 +196,8 @@ interface ModelRoleState {
 
 1. 删除与宿主重名或重叠的对话工具：`generate_image`、`edit_image`、`generate_video`、`generate_video_from_image`、四个 `get_/cancel_*_task`、`list_media_models`。画布工具保留；画布内生成继续用插件引擎。
 2. 删除后同步：系统提示、`docs/agent-surface.snapshot.md`、反向校验用例。
-3. 画廊收录会话 `generated/` 下的产物（只读索引，不复制文件）。
-4. 新增路由 `/open?path=<产物路径>`，供卡片「在创作中打开」跳转到工作台并载入该产物。
+3. 插件在 Client 端提供服务 `suanliCreative.openImages({ prompt, model, images })`：每张图各收一条画廊，再切到工作台的画廊。宿主图片卡片「在创作中打开」调用它；插件未装载或「创作」已关闭时返回 false，卡片提示「「创作」未启用」。
+4. 插件拿不到各会话的工作区，所以不自动扫描 `generated/`，也不加 `/open?path=` 路由；图片由卡片按会话权限读出后交给插件。视频和音频卡片暂无此按钮。
 5. 插件 `gateway-catalog.ts` 不需要改（`media()` 形状不变）；补一条测试：喂 WP1 映射出的条目，模型列表和参数控件正确。
 
 ## 4. 分期与顺序

@@ -22,6 +22,7 @@ import type { ImageGenScope } from './settings-scope.ts'
 
 /** 侧栏入口 id，同时是 `main` 的键：外壳按入口 id 分发中心列座位。 */
 const PANEL_ID = 'imagegen'
+export const IMAGE_GEN_PANEL_ID = PANEL_ID
 
 /** 一次挂载需要的全部依赖；与 `mountPanel` 的入参一致，只是改由槽位渲染。 */
 export interface ImageGenSurfaceInputs {

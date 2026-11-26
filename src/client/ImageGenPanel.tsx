@@ -16,7 +16,7 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
-import { openImageGenConfig } from './config-entry.tsx'
+import { openImageGenConfig, SHOW_GALLERY_EVENT, takeGalleryRequest } from './config-entry.tsx'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { ReferenceImages } from './ReferenceImages.tsx'
 import { useEditReferences, EDIT_REFERENCE_LIMIT } from './reference-images.ts'
@@ -1058,7 +1058,7 @@ export function ImageGenPanel(props: {
   useImageGenLanguageTick()
   const enabled = config?.enabled ?? true
 
-  const [tab, setTab] = useState<PanelTab>('text')
+  const [tab, setTab] = useState<PanelTab>(() => takeGalleryRequest() ? 'gallery' : 'text')
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
   const [canvasImportRequest, setCanvasImportRequest] = useState<CanvasImportRequest | undefined>()
   /** Switch to a normal-generation tab, leaving any task workspace. */
@@ -1066,6 +1066,18 @@ export function ImageGenPanel(props: {
     setWorkspace('normal')
     setTab(next)
   }
+  useEffect(() => {
+    const onShowGallery = (): void => {
+      if (!takeGalleryRequest()) return
+      setWorkspace('normal')
+      setTab('gallery')
+      api.galleryList()
+        .then(result => { setGallery(result.entries); setGalleryTrash(result.trash) })
+        .catch(caught => { setGalleryLoadError(errorMessage(caught)) })
+    }
+    window.addEventListener(SHOW_GALLERY_EVENT, onShowGallery)
+    return () => { window.removeEventListener(SHOW_GALLERY_EVENT, onShowGallery) }
+  }, [api])
   const addEntryToCanvas = (source: 'history' | 'gallery', entryId: string, imageIndex = 0): void => {
     setCanvasImportRequest({ source, entryId, imageIndex })
     setWorkspace('canvas')

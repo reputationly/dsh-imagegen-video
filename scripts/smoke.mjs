@@ -4197,6 +4197,7 @@ await check('D3 the client surface registers the sidebar row and the keyed main 
   const ctx = {
     effect: (fn) => fn(),
     on: () => () => {},
+    provide: () => {},
     get: () => undefined,
     locale: {
       register: () => () => {},
@@ -5398,6 +5399,7 @@ await check('E1 client apply registers the tool views and the settings section (
   const ctx = {
     effect(fn) { return fn() },
     on() { return () => {} },
+    provide() {},
     get(name) {
       // A page served through a loopback reverse proxy is NOT a loopback
       // authority in the browser (the address bar carries the LAN/public
