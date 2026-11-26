@@ -9,6 +9,7 @@ Attribution for third-party code is in [NOTICE](./NOTICE).
 
 - 浏览器端依赖（`@xyflow/react`、`lucide-react`、`three`）已经打进 `lib/client.js`，改为构建期依赖。发行包不再声明它们，宿主用 npm 安装时也就不会连带装上一份 React。
 - 退出登录后提交不再回落到旧密钥；Agent 生成工具按模型名或展示名都能选中模型；路由里的对话模型按调用现取。
+- 状态条在未实名、未授权时也给刷新按钮。
 
 ### 1.35.0-suanli.1 — 成为蒜狸小助手的「创作」
 
