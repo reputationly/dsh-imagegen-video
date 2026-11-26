@@ -8,6 +8,7 @@ Attribution for third-party code is in [NOTICE](./NOTICE).
 ### Unreleased — 对话生成全部交给宿主
 
 - 删除插件的对话视频工具（`generate_video`、`generate_video_from_image`、`get_video_generation_task`、`cancel_video_generation_task`）和模型清单工具 `list_media_models`。对话里生视频、生音乐改由小助手宿主的 `generate_video`、`generate_music` 负责，参数按 Hilo 目录弹问题卡。画布工具和 `/edit_image` 保留。
+- 设置里的「允许 Agent 调用生视频」开关已移除：插件不再有对话生视频工具，这个开关不再控制任何行为。
 - 系统提示不再提这些工具。
 
 ### 1.35.0-suanli.2 — 安装时不再带进 React
