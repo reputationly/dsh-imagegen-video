@@ -1226,7 +1226,12 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
           settingsNamespace,
           bindHost: typeof bindHost === 'string' && bindHost !== '' ? bindHost : undefined,
           resolveChannels: channelsView,
-          chat: hostChatService(),
+          // 按调用现取：`agents` 可能晚于这些路由挂载，用户也会随时切换对话模型。
+          chat: {
+            available: () => hostChatService().available(),
+            label: () => hostChatService().label(),
+            complete: async options => await hostChatService().complete(options),
+          },
           attachments: sctx.attachments,
           pendingConversationImages,
           runtime,
