@@ -70,15 +70,22 @@ jobs:
       - name: Negative checks
         run: pnpm test:negative
 
-      # 重跑旧的 run 时 main 已经往前走了；旧代码不能以更高的构建号盖过新包。
+      # 重跑旧的 run 时 main 已经往前走了；之后有代码改动就由更新的 run 发布，
+      # 旧代码不能以更高的构建号盖过新包。之后只改了文档则照常发布。
       - name: Pick the version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           head=$(git ls-remote origin refs/heads/main | cut -f1)
           if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "::notice::main is at $head, not $GITHUB_SHA; this run does not publish"
-            exit 0
+            files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head" --jq '.files[].filename')
+            newer=$(printf '%s\n' "$files" | grep -Ev '^docs/|\.md$' || true)
+            if [ -n "$newer" ]; then
+              echo "::notice::main is at $head with newer code; this run does not publish"
+              exit 0
+            fi
           fi
           releases=""
           if git fetch -q --depth 1 origin dist 2>/dev/null; then
