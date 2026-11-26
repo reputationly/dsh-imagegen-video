@@ -22,8 +22,13 @@ export interface GatewayStatusProps {
   readonly onRefresh: () => void
 }
 
-/** 哪些状态值得给一个「重试 / 刷新」按钮。 */
-const RETRYABLE: ReadonlySet<GatewayCatalogSnapshot['status']> = new Set(['rate-limited', 'unreachable', 'empty'])
+/**
+ * 哪些状态值得给一个「重试 / 刷新」按钮。
+ *
+ * 未实名与未授权也算：用户在网关完成实名或换了账号权限之后，密钥本身不变，宿主收不到凭据
+ * 事件，只有手动刷新才会重读目录。
+ */
+const RETRYABLE: ReadonlySet<GatewayCatalogSnapshot['status']> = new Set(['rate-limited', 'unreachable', 'empty', 'kyc-required', 'unauthorized'])
 
 /** 哪些状态需要告诉用户去哪里处理（宿主没有可调用的登录 / 实名入口）。 */
 const HINTED: ReadonlySet<GatewayCatalogSnapshot['status']> = new Set(['signed-out', 'unauthorized', 'kyc-required'])
