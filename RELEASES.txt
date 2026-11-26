@@ -1,3 +1,4 @@
 @q253595422/dsh-imagegen-video 1.35.0-suanli.1 q253595422-dsh-imagegen-video-1.35.0-suanli.1.tgz
 @q253595422/dsh-imagegen-video 1.35.0-suanli.2 q253595422-dsh-imagegen-video-1.35.0-suanli.2.tgz
 @q253595422/dsh-imagegen-video 1.35.0-suanli.2.1 q253595422-dsh-imagegen-video-1.35.0-suanli.2.1.tgz 728d5692802f87233725dc8f149958c019ce75f7
+@q253595422/dsh-imagegen-video 1.35.0-suanli.2.2 q253595422-dsh-imagegen-video-1.35.0-suanli.2.2.tgz 6c3c25bf678b5f15f4a61faf46a5d4f00da45d35
