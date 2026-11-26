@@ -1,14 +1,20 @@
-# 蒜狸发行：把插件打成 tgz 并发布到 dist 分支。
+# 蒜狸发行：把插件打成 tgz 发布到 dist 分支，再给宿主开升级 PR。
 #
 # 小助手安装的是发行包本身，不是 npm 上的版本：宿主把 tgz 作为依赖，打包安装包时再用
 # `stage-external-packages` 取下来放进安装包，用户侧不联网。所以这条工作流只做一件事——
-# 通过全部门禁之后，把 `pnpm pack` 的产物提交到 `dist` 分支，文件名固定为
-# `<包名>-<版本>.tgz`（宿主的打包脚本按 `^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$` 匹配）。
+# `main` 上有代码改动（只改文档不算）就跑全部门禁，通过后把 `pnpm pack` 的产物提交到 `dist`
+# 分支，文件名固定为 `<包名>-<版本>.tgz`（宿主的打包脚本按 `^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$`
+# 匹配）。版本号由 `scripts/suanli-version.mjs` 决定。最后用 `HOST_REPO_TOKEN` 给
+# reputationly/deepseek-harness 开或更新 `bot/dsh-imagegen-video` 升级 PR 并开启自动合并，
+# 宿主 CI 通过就合进 master；没配这个 secret 时只发布到 dist。
 name: Suanli release
 
 on:
   push:
-    branches: [release]
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
@@ -21,9 +27,10 @@ concurrency:
 jobs:
   publish:
     name: Pack and publish the tarball
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the release branch
+      - name: Check out main
         uses: actions/checkout@v4
 
       - name: Install pnpm
@@ -63,12 +70,27 @@ jobs:
       - name: Negative checks
         run: pnpm test:negative
 
+      - name: Pick the version
+        id: version
+        run: |
+          set -euo pipefail
+          releases=""
+          if git fetch -q --depth 1 origin dist 2>/dev/null; then
+            releases=$(git show FETCH_HEAD:RELEASES.txt 2>/dev/null || true)
+          fi
+          version=$(printf '%s\n' "$releases" | node scripts/suanli-version.mjs next)
+          node scripts/suanli-version.mjs stamp "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publishing $version"
+        shell: bash
+
       - name: Pack
         run: pnpm pack
 
       # dist 分支只追加：宿主按提交号固定 raw 地址，改写历史会让已发布的地址失效。
       # 同一个版本已经发过就停下，不覆盖；要重发请先改 package.json 的 version。
       - name: Publish to the dist branch
+        id: dist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -86,18 +108,70 @@ jobs:
             git -C "$work" checkout -q --orphan dist
           fi
           if [ -e "$work/$archive" ]; then
-            echo "::error::$archive is already on dist; bump the version in package.json to publish again"
+            echo "::error::$archive is already on dist; versions are never republished"
             exit 1
           fi
           cp "$archive" "$work/"
-          printf '%s %s %s\n' "$package" "$version" "$archive" >> "$work/RELEASES.txt"
+          printf '%s %s %s %s\n' "$package" "$version" "$archive" "$GITHUB_SHA" >> "$work/RELEASES.txt"
           git -C "$work" add .
           git -C "$work" -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
             commit -q -m "dist: $package@$version"
           git -C "$work" push "$remote" "HEAD:refs/heads/dist"
-          echo "dependency URL: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/$(git -C "$work" rev-parse HEAD)/$archive" >> "$GITHUB_STEP_SUMMARY"
+          url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/$(git -C "$work" rev-parse HEAD)/$archive"
+          echo "dependency URL: $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "package=$package" >> "$GITHUB_OUTPUT"
           rm -rf "$work"
         shell: bash
 
+      # 宿主 PR 由个人令牌推送，宿主的 PR CI 才会运行（GITHUB_TOKEN 推送的提交不触发工作流）。
+      # 同一个分支每次整份重建，PR 里始终只有最新一版的升级。
+      - name: Open the host upgrade pull request
+        env:
+          HOST_TOKEN: ${{ secrets.HOST_REPO_TOKEN }}
+          HOST_REPO: reputationly/deepseek-harness
+          BRANCH: bot/dsh-imagegen-video
+          PACKAGE: ${{ steps.dist.outputs.package }}
+          URL: ${{ steps.dist.outputs.url }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HOST_TOKEN" ]; then
+            echo "::warning::HOST_REPO_TOKEN is not set; $VERSION is on dist but the host was not upgraded"
+            exit 0
+          fi
+          host=$(mktemp -d)
+          git clone -q --depth 1 "https://x-access-token:${HOST_TOKEN}@github.com/${HOST_REPO}.git" "$host"
+          cd "$host"
+          git checkout -q -B "$BRANCH"
+          node -e '
+            const fs = require("fs")
+            const file = "apps/cli/package.json"
+            const manifest = JSON.parse(fs.readFileSync(file, "utf8"))
+            const [name, url] = process.argv.slice(1)
+            if (!(name in manifest.dependencies)) throw new Error(`${file} does not depend on ${name}`)
+            manifest.dependencies[name] = url
+            fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n")
+          ' "$PACKAGE" "$URL"
+          pnpm install --lockfile-only --ignore-scripts
+          git add apps/cli/package.json pnpm-lock.yaml
+          title="创作插件升级到 $VERSION"
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            commit -q -m "$title" -m "插件提交 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+          git push -q -f origin "HEAD:refs/heads/$BRANCH"
+          body="由 ${GITHUB_REPOSITORY} 的发行工作流自动生成：插件 \`main\` 的 ${GITHUB_SHA} 打包为 \`$VERSION\`，依赖地址按 \`dist\` 提交号固定。宿主 CI 通过后自动合并。
+
+          运行记录：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          export GH_TOKEN="$HOST_TOKEN"
+          number=$(gh pr list -R "$HOST_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            gh pr create -R "$HOST_REPO" --base master --head "$BRANCH" --title "$title" --body "$body"
+          else
+            gh pr edit "$number" -R "$HOST_REPO" --title "$title" --body "$body"
+          fi
+          gh pr merge "$BRANCH" -R "$HOST_REPO" --auto --merge \
+            || echo "::warning::could not enable auto-merge on $HOST_REPO; turn on Allow auto-merge in its settings, or merge the pull request by hand"
+        shell: bash
+
       - name: Report
-        run: echo "published $(node -p "require('./package.json').name")@$(node -p "require('./package.json').version") to the dist branch"
+        run: echo "published ${{ steps.dist.outputs.package }}@${{ steps.version.outputs.version }} to the dist branch"
