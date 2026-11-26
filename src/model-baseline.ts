@@ -42,6 +42,10 @@ export type ModelFamily =
   | 'zhipu'
   | 'qwen'
   | 'minimax'
+  // 自家 MaaS 的 MiniMax-H3 图像：OpenAI 形状，但只认 `size` 且尺寸必须落在
+  // 2K / 16MP 计费档内（低于 2K 网关直接 400）。单独成族是因为它的尺寸语义
+  // 和 MiniMax 官方的 `image-01`（aspect_ratio）完全不同。
+  | 'h3-image'
   | 'unknown'
 
 /** Whether an id is still the one to reach for. */

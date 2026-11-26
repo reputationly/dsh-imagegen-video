@@ -891,6 +891,11 @@ export type VideoModelFamily =
   // 启航AIGC's gateway: flat video parameters under `/v1/videos/generations`,
   // then `GET /v1/tasks/{id}` with `is_final` / `output_url`.
   | 'qihang'
+  // 自家 MaaS 网关的统一任务接口：`POST /v1/videos` 提交（`metadata.image_mode`
+  // 区分玩法），`GET /v1/videos/{id}` 轮询，成品在 `metadata.url`。它跟
+  // `minimax` 族的区别是：参考素材放 `metadata.src_ref_images`（不走 content[]
+  // 的 role），时长 1–20 秒，2K 交付由网关侧的聚合模型（生成 768P → 超分）完成。
+  | 'h3-v2'
   | 'unknown'
 
 /**

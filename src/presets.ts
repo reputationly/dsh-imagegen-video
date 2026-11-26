@@ -47,6 +47,22 @@ export const IMAGE_PRESETS: PresetProvider[] = [
     ],
   },
   {
+    id: 'suanli-maas',
+    name: '自家 MaaS',
+    apiUrl: 'https://maas.ovaijisuan.com/v1',
+    hint: '自家多模态网关。生图走 /images/generations（只认 size，按 2K 档计费，低于 2K 会被拒）；视频走 /videos 统一任务接口，metadata.image_mode 区分文生/首尾帧/参考族，成品在轮询返回的 metadata.url。模型名保留 minimax-h3 前缀，插件据此选协议；带 -enhanced / -2k 的是网关侧聚合模型（提示词增强 + 超分都在服务端完成）。',
+    models: [
+      { alias: 'minimax-h3-image-enhanced', id: 'minimax-h3-image-enhanced' },
+      { alias: 'minimax-h3-image', id: 'minimax-h3-image' },
+    ],
+    videoModels: [
+      { alias: 'minimax-h3-2k', id: 'minimax-h3-2k' },
+      { alias: 'minimax-h3-ref-2k', id: 'minimax-h3-ref-2k' },
+      { alias: 'minimax-h3-fl2va', id: 'minimax-h3-fl2va' },
+      { alias: 'minimax-h3-ref2va', id: 'minimax-h3-ref2va' },
+    ],
+  },
+  {
     id: 'nbility-minimax-h3',
     name: 'Nbility · MiniMax-H3',
     apiUrl: 'https://api.nbility.ai/v1',

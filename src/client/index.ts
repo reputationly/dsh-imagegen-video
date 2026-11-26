@@ -23,8 +23,7 @@ import { ImageGenApi } from './api.ts'
 import { ImageGenController } from './controller.ts'
 import { tt, applyHostLocale } from './helpers.ts'
 import { en, ru, zh, type ImageGenKey } from './locales.ts'
-import { mountPanel } from './mount.tsx'
-import { mountSidebarEntry } from './sidebar-entry.ts'
+import { registerImageGenSlotSurface } from './slot-surface.tsx'
 import { ImageGenSettingsSection, ImageGenSettingsCardController } from './SettingsCard.tsx'
 import { IMAGE_GEN_SECTION_ID, OPEN_IMAGE_GEN_CONFIG_EVENT } from './config-entry.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
@@ -216,7 +215,6 @@ export function apply(ctx: ClientContext): void {
   const mountUi = (): void => {
     if (uiLeaseReleased) return
     if (uiDisposer !== undefined) return
-    const controller = new ImageGenController()
     const api = new ImageGenApi()
     const sessions = ctx.get('sessions') as ISessions | undefined
     const conversation = ctx.get('conversation') as ConversationService | undefined
@@ -227,34 +225,9 @@ export function apply(ctx: ClientContext): void {
     const { pickDirectory } = hostDirectoryPicker(ctx)
     const disposers: Array<() => void> = []
     try {
-      disposers.push(mountSidebarEntry(
-        controller,
-        tt('entry.session'),
-        tt('entry.sessionTooltip'),
-        tt('entry.image'),
-        tt('entry.tooltip'),
-      ))
-      disposers.push(mountPanel(controller, api, scope, { sessions, conversation, pickDirectory }))
-      // The imperative sidebar tabs render their labels once; relabel them on
-      // every DSH language switch so the entry follows the interface too.
-      disposers.push(ctx.locale.subscribe(() => {
-        const root = document.querySelector('[data-dsh-imagegen-sidebar-root]')
-        if (root === null) return
-        const labels: Array<[string, string, string]> = [
-          ['session', tt('entry.session'), tt('entry.sessionTooltip')],
-          ['image', tt('entry.image'), tt('entry.tooltip')],
-        ]
-        for (const [tab, label, tooltip] of labels) {
-          const button = root.querySelector<HTMLButtonElement>(`[data-dsh-imagegen-tab="${tab}"]`)
-          if (button === null) continue
-          button.setAttribute('aria-label', label)
-          button.setAttribute('title', tooltip)
-          const labelSpan = button.querySelector('span:nth-child(2)')
-          if (labelSpan !== null) labelSpan.textContent = label
-        }
-        const tablist = root.querySelector<HTMLDivElement>('[role="tablist"][data-dsh-imagegen-session-tabs]')
-        tablist?.setAttribute('aria-label', `${tt('entry.session')} / ${tt('entry.image')}`)
-      }))
+      // 槽位挂载：侧栏入口 + 中心列主面板都由外壳自己的座位承载，插件不再接管
+      // 中心列的 DOM（那样会盖掉会话/任务/频道，外壳改版还会白屏）。
+      disposers.push(registerImageGenSlotSurface(ctx, { api, scope, sessions, conversation, pickDirectory }))
     } catch (error) {
       // DOM failures degrade the studio, never the GUI.
       console.warn('[dsh-imagegen] mount failed:', error)
