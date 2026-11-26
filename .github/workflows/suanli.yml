@@ -70,10 +70,16 @@ jobs:
       - name: Negative checks
         run: pnpm test:negative
 
+      # 重跑旧的 run 时 main 已经往前走了；旧代码不能以更高的构建号盖过新包。
       - name: Pick the version
         id: version
         run: |
           set -euo pipefail
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::main is at $head, not $GITHUB_SHA; this run does not publish"
+            exit 0
+          fi
           releases=""
           if git fetch -q --depth 1 origin dist 2>/dev/null; then
             releases=$(git show FETCH_HEAD:RELEASES.txt 2>/dev/null || true)
@@ -85,11 +91,13 @@ jobs:
         shell: bash
 
       - name: Pack
+        if: steps.version.outputs.version != ''
         run: pnpm pack
 
       # dist 分支只追加：宿主按提交号固定 raw 地址，改写历史会让已发布的地址失效。
       # 同一个版本已经发过就停下，不覆盖；要重发请先改 package.json 的 version。
       - name: Publish to the dist branch
+        if: steps.version.outputs.version != ''
         id: dist
         env:
           GH_TOKEN: ${{ github.token }}
@@ -127,6 +135,7 @@ jobs:
       # 宿主 PR 由个人令牌推送，宿主的 PR CI 才会运行（GITHUB_TOKEN 推送的提交不触发工作流）。
       # 同一个分支每次整份重建，PR 里始终只有最新一版的升级。
       - name: Open the host upgrade pull request
+        if: steps.version.outputs.version != ''
         env:
           HOST_TOKEN: ${{ secrets.HOST_REPO_TOKEN }}
           HOST_REPO: reputationly/deepseek-harness
@@ -174,4 +183,5 @@ jobs:
         shell: bash
 
       - name: Report
+        if: steps.version.outputs.version != ''
         run: echo "published ${{ steps.dist.outputs.package }}@${{ steps.version.outputs.version }} to the dist branch"
