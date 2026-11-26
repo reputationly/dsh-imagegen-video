@@ -90,6 +90,19 @@ jobs:
           if git fetch -q --depth 1 origin dist 2>/dev/null; then
             releases=$(git show FETCH_HEAD:RELEASES.txt 2>/dev/null || true)
           fi
+          # 这个提交已经发过（上次推完 dist、宿主 PR 没开成功后重跑）：沿用那个包，只补宿主 PR。
+          released=$(printf '%s\n' "$releases" | awk -v sha="$GITHUB_SHA" '$4 == sha { line = $0 } END { print line }')
+          if [ -n "$released" ]; then
+            read -r package version archive _ <<< "$released"
+            {
+              echo "version=$version"
+              echo "reused=true"
+              echo "package=$package"
+              echo "url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/$(git rev-parse FETCH_HEAD)/$archive"
+            } >> "$GITHUB_OUTPUT"
+            echo "$GITHUB_SHA is already on dist as $version; reusing it"
+            exit 0
+          fi
           version=$(printf '%s\n' "$releases" | node scripts/suanli-version.mjs next)
           node scripts/suanli-version.mjs stamp "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -97,13 +110,13 @@ jobs:
         shell: bash
 
       - name: Pack
-        if: steps.version.outputs.version != ''
+        if: steps.version.outputs.version != '' && steps.version.outputs.reused != 'true'
         run: pnpm pack
 
       # dist 分支只追加：宿主按提交号固定 raw 地址，改写历史会让已发布的地址失效。
       # 同一个版本已经发过就停下，不覆盖；要重发请先改 package.json 的 version。
       - name: Publish to the dist branch
-        if: steps.version.outputs.version != ''
+        if: steps.version.outputs.version != '' && steps.version.outputs.reused != 'true'
         id: dist
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,8 +159,8 @@ jobs:
           HOST_TOKEN: ${{ secrets.HOST_REPO_TOKEN }}
           HOST_REPO: reputationly/deepseek-harness
           BRANCH: bot/dsh-imagegen-video
-          PACKAGE: ${{ steps.dist.outputs.package }}
-          URL: ${{ steps.dist.outputs.url }}
+          PACKAGE: ${{ steps.dist.outputs.package || steps.version.outputs.package }}
+          URL: ${{ steps.dist.outputs.url || steps.version.outputs.url }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
@@ -169,11 +182,21 @@ jobs:
             fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n")
           ' "$PACKAGE" "$URL"
           pnpm install --lockfile-only --ignore-scripts
-          git add apps/cli/package.json pnpm-lock.yaml
+          if git diff --quiet; then
+            echo "the host already depends on $URL"
+            exit 0
+          fi
           title="创作插件升级到 $VERSION"
-          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
-            commit -q -m "$title" -m "插件提交 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
-          git push -q -f origin "HEAD:refs/heads/$BRANCH"
+          # 升级分支已经是这次的改动时不重推，免得宿主 CI 重跑；PR 和自动合并照样补齐。
+          if git fetch -q --depth 1 origin "refs/heads/$BRANCH" 2>/dev/null \
+            && git diff --quiet FETCH_HEAD -- apps/cli/package.json pnpm-lock.yaml; then
+            echo "$BRANCH already carries this upgrade; not pushing again"
+          else
+            git add apps/cli/package.json pnpm-lock.yaml
+            git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+              commit -q -m "$title" -m "插件提交 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+            git push -q -f origin "HEAD:refs/heads/$BRANCH"
+          fi
           body="由 ${GITHUB_REPOSITORY} 的发行工作流自动生成：插件 \`main\` 的 ${GITHUB_SHA} 打包为 \`$VERSION\`，依赖地址按 \`dist\` 提交号固定。宿主 CI 通过后自动合并。
 
           运行记录：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -190,4 +213,12 @@ jobs:
 
       - name: Report
         if: steps.version.outputs.version != ''
-        run: echo "published ${{ steps.dist.outputs.package }}@${{ steps.version.outputs.version }} to the dist branch"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REUSED: ${{ steps.version.outputs.reused }}
+        run: |
+          if [ "$REUSED" = true ]; then
+            echo "$VERSION was already on the dist branch; only the host upgrade was retried"
+          else
+            echo "published $VERSION to the dist branch"
+          fi
