@@ -2,9 +2,10 @@
 #
 # 小助手安装的是发行包本身，不是 npm 上的版本：宿主把 tgz 作为依赖，打包安装包时再用
 # `stage-external-packages` 取下来放进安装包，用户侧不联网。所以这条工作流只做一件事——
-# `main` 上有代码改动（只改文档不算）就跑全部门禁，通过后把 `pnpm pack` 的产物提交到 `dist`
-# 分支，文件名固定为 `<包名>-<版本>.tgz`（宿主的打包脚本按 `^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$`
-# 匹配）。版本号由 `scripts/suanli-version.mjs` 决定。最后用 `HOST_REPO_TOKEN` 给
+# `main` 上有代码改动（只改文档不算）就跑 typecheck 和 `pnpm test`（反向校验约 45 分钟，
+# 放在 negative.yml 每天跑），通过后把 `pnpm pack` 的产物提交到 `dist` 分支，文件名固定为
+# `<包名>-<版本>.tgz`（宿主的打包脚本按 `^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$` 匹配）。
+# 版本号由 `scripts/suanli-version.mjs` 决定。最后用 `HOST_REPO_TOKEN` 给
 # reputationly/deepseek-harness 开或更新 `bot/dsh-imagegen-video` 升级 PR 并开启自动合并，
 # 宿主 CI 通过就合进 master；没配这个 secret 时只发布到 dist。
 name: Suanli release
@@ -66,9 +67,6 @@ jobs:
 
       - name: Test
         run: pnpm test
-
-      - name: Negative checks
-        run: pnpm test:negative
 
       # 重跑旧的 run 时 main 已经变了：只有 main 是本提交之后只改了文档（含移入/移出的
       # 原路径）才照常发布；否则由更新的 run 发布，旧代码不能以更高的构建号盖过新包。
