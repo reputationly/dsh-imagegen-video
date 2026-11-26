@@ -48,12 +48,11 @@ export interface ChannelsView {
 /**
  * 本次提交要用的密钥。
  * @param channel - 解析到的渠道。
- * @returns 重新解析到的密钥，或渠道自带的固定密钥。
+ * @returns 重新解析到的密钥（退出登录后为空串，不回落到旧密钥），或渠道自带的固定密钥。
  */
 async function apiKeyOf(channel: RuntimeChannel): Promise<string> {
   if (channel.resolveApiKey === undefined) return channel.apiKey
-  const resolved = await channel.resolveApiKey()
-  return resolved === '' ? channel.apiKey : resolved
+  return await channel.resolveApiKey()
 }
 
 export interface HistorySink {
