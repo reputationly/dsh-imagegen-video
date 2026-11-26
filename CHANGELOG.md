@@ -5,6 +5,11 @@ Attribution for third-party code is in [NOTICE](./NOTICE).
 
 ## Releases
 
+### 1.35.0-suanli.2 — 安装时不再带进 React
+
+- 浏览器端依赖（`@xyflow/react`、`lucide-react`、`three`）已经打进 `lib/client.js`，改为构建期依赖。发行包不再声明它们，宿主用 npm 安装时也就不会连带装上一份 React。
+- 退出登录后提交不再回落到旧密钥；Agent 生成工具按模型名或展示名都能选中模型；路由里的对话模型按调用现取。
+
 ### 1.35.0-suanli.1 — 成为蒜狸小助手的「创作」
 
 并入小助手，成为侧栏的一级入口。渠道、密钥与模型都不再由插件配置。

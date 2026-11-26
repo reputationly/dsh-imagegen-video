@@ -1,7 +1,7 @@
 {
   "name": "@q253595422/dsh-imagegen-video",
   "description": "蒜狸小助手的生图与生视频工作台：文生图、图生图、文生视频、首尾帧、参考生视频、无限画布、画廊与模板库。",
-  "version": "1.35.0-suanli.1",
+  "version": "1.35.0-suanli.2",
   "type": "module",
   "icon": "./icon.png",
   "main": "index.js",
@@ -54,15 +54,13 @@
       "platform": "web"
     }
   },
-  "dependencies": {
-    "@xyflow/react": "^12.12.1",
-    "lucide-react": "^1.41.0",
-    "three": "^0.187.0"
-  },
   "peerDependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
   },
   "devDependencies": {
+    "@xyflow/react": "^12.12.1",
+    "lucide-react": "^1.41.0",
+    "three": "^0.187.0",
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-api-remotes": "0.1.2-alpha.2",
     "@deepseek-ai/dsh-api-session-controller": "0.1.2-alpha.2",
