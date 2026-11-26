@@ -107,7 +107,8 @@ export function resolveAgentVideoModel(config: AgentVideoToolConfig, requested: 
     const options = entries.map(entry => `"${entry.channel.name} · ${entry.alias}"`).join(', ')
     throw new VideoGenError(`Multiple video models are available — ask the user which channel and model to use, then call this tool again with that exact model name. Options: ${options}.`, 'video-model-choice-required')
   }
-  const hosting = entries.filter(entry => entry.alias === wanted)
+  // list_media_models 报的是模型名，面板里存的是展示名，两种都认。
+  const hosting = entries.filter(entry => entry.alias === wanted || entry.upstream === wanted)
   if (hosting.length === 0) {
     const available = [...new Set(entries.map(entry => entry.alias))].join(', ')
     throw new VideoGenError(`Video model "${wanted}" is not configured in any channel. Choose one of: ${available}.`, 'video-model-not-configured')

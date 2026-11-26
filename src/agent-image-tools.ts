@@ -90,7 +90,8 @@ export function resolveAgentImageModel(config: AgentImageToolConfig, requested: 
     const options = config.channels.flatMap(channel => channel.models.map(model => `"${channel.name} · ${model.alias}"`)).join(', ')
     throw new ImageGenError(`Multiple image models are available — ask the user which one to use, then call this tool again with that exact model name. Options: ${options}.`, 'model-choice-required')
   }
-  const hosting = entries.filter(entry => entry.alias === wanted)
+  // list_media_models 报的是模型名，面板里存的是展示名，两种都认。
+  const hosting = entries.filter(entry => entry.alias === wanted || entry.upstream === wanted)
   if (hosting.length === 0) {
     const available = [...new Set(entries.map(entry => entry.alias))].join(', ')
     throw new ImageGenError(`Image model "${wanted}" is not available to this account. Choose one of: ${available}.`, 'image-model-not-configured')

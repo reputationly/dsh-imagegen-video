@@ -296,6 +296,11 @@ await check('A2b configured default image model is used when Agent omits model',
   }, undefined)
   assert.equal(picked.alias, 'qwen-image-2')
   assert.equal(picked.upstream, 'qwen-image-2')
+  // list_media_models 报模型名；展示名与模型名不同时，两种都要能选中同一条。
+  const gateway = [{ ...channels[0], models: [{ alias: 'MiniMax H3 图像', id: 'minimax-h3-image' }] }]
+  const config = { enabled: true, allowAgentImageGeneration: true, channels: gateway, defaultChannelId: 'default', defaultModel: '' }
+  assert.equal(host.resolveAgentImageModel(config, 'minimax-h3-image').alias, 'MiniMax H3 图像')
+  assert.equal(host.resolveAgentImageModel(config, 'MiniMax H3 图像').upstream, 'minimax-h3-image')
 })
 // ---------------------------------------------- B. engine vs mock upstream
 /** A PNG fixture: one pixel, valid header, no external file needed. */
