@@ -304,6 +304,8 @@ export function createSkillRegistryBackend(
 import { ImageGenerationRuntime, type ChannelsView, type HostChatSeam, type RuntimeChannel, type VideoDirectorSeam } from './generation-runtime.ts'
 import { createHostChatSeam, type HostAgentPresets, type HostAgentsService, type HostDefaultModel } from './host-chat.ts'
 import { registerAgentCanvasTools } from './agent-canvas-tools.ts'
+import { registerMediaModelsTool } from './agent-media-models-tool.ts'
+import { registerAgentVideoTools } from './agent-video-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
 import { setImageDataRoot, imageDataRoot } from './image-storage-path.ts'
 import type { ChatOptions, ChatTarget } from './prompt-enhancer.ts'
@@ -344,6 +346,8 @@ export { renderCode, dimensionsFor, locateFfmpeg, extractRenderSource, looksLike
 export { codeRenderSystemPrompt, codeRenderUserPrompt, readGeneratedCode, fallbackRendererSource, type CodeBrief, type CodeTarget } from './code-prompt.ts'
 export { registerAgentCanvasTools } from './agent-canvas-tools.ts'
 export { resolveAgentImageModel } from './agent-image-tools.ts'
+export { mediaModelsListing, MEDIA_MODELS_RESULT_LIMIT, registerMediaModelsTool } from './agent-media-models-tool.ts'
+export { registerAgentVideoTools, resolveAgentVideoModel, AGENT_VIDEO_TOOL_NAMES } from './agent-video-tools.ts'
 export { latestSessionImage, registerEditImageCommand } from './edit-image-command.ts'
 export { PptTaskStore } from './ppt-task-store.ts'
 export { pptActivity, PptProgressMonitor } from './ppt-progress.ts'
@@ -583,7 +587,7 @@ const SECTION_ORDER = 150
  * 缓存，也让同一份产品在不同账号下长得不一样。模型清单、玩法与参数因此在
  * `list_media_models` 里，按需读取。
  */
-export const IMAGEGEN_GUIDANCE = '本机有「创作」工作台（侧栏「创作」，可看历史与无限画布）。用户要用模板、批量出图或在画布上编排时，引导用户到「创作」里操作。'
+export const IMAGEGEN_GUIDANCE = '本机有「创作」工作台（侧栏「创作」，可看历史与无限画布）。用户要用模板、批量出图或在画布上编排时，引导用户到「创作」里操作。生视频用 generate_video，不传 model 用默认模型；可用模型、玩法与参数见 list_media_models。视频渲染需要数分钟，提交后不要反复轮询。失败原因以工具结果为准，不要编造模型名。'
 
 
 /** Normalize raw channel entries into the wire shape (schema-adjacent guard). */
@@ -1299,9 +1303,14 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
           defaultVideoModel: value.defaultVideoModel,
         }
       }
-      if (feature === 'video') return () => {}
+      if (feature === 'video') return registerAgentVideoTools(tctx, runtime, resolveVideoToolConfig)
       if (feature === 'canvas') return registerAgentCanvasTools(tctx, resolveVideoToolConfig)
-      // Chat generation belongs to the host's generate_image; the plugin keeps the /edit_image command.
+      // Chat image generation belongs to the host's generate_image; the plugin keeps the /edit_image command.
+      // 只读的模型清单：系统提示不拼目录，模型名与玩法由它按需回答。
+      const disposeModelsTool = registerMediaModelsTool(tctx, () => {
+        const value = resolve()
+        return { enabled: value.enabled, announceToAgent: value.announceToAgent, snapshot: gatewaySnapshotValue }
+      })
       const disposeCommand = registerEditImageCommand(tctx, runtime, resolveAgentConfig, {
         get: sessionId => pendingConversationImages.get(sessionId),
         consume: (sessionId, ref) => {
@@ -1310,6 +1319,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
       })
       return () => {
         disposeCommand()
+        disposeModelsTool()
       }
     }, 'dsh-imagegen: ' + feature + ' agent tools')
   })

@@ -8,13 +8,18 @@ diff.
 ## System prompt
 
 ```text
-本机有「创作」工作台（侧栏「创作」，可看历史与无限画布）。用户要用模板、批量出图或在画布上编排时，引导用户到「创作」里操作。
+本机有「创作」工作台（侧栏「创作」，可看历史与无限画布）。用户要用模板、批量出图或在画布上编排时，引导用户到「创作」里操作。生视频用 generate_video，不传 model 用默认模型；可用模型、玩法与参数见 list_media_models。视频渲染需要数分钟，提交后不要反复轮询。失败原因以工具结果为准，不要编造模型名。
 ```
 
-Characters: 62
+Characters: 167
 
 ## Tools
 
+- `generate_video` (355): Generate a video from text. Rendering takes minutes, so by default the call waits for the task; set wait_for_completion=false for background mode, then poll with get_video_generation_task. The clip is saved on the host and returned as a same-origin URL, never attached to the conversation. Omit model to use the default video model; see list_media_models.
+- `generate_video_from_image` (353): Generate a video from reference image(s): mode image uses one reference frame, keyframe interpolates first and last frame, reference uses one or more style or subject images. References come from a finished generation or get_video_generation_task, passed unchanged. Rendering takes minutes; by default the call waits for the task. See list_media_models.
+- `get_video_generation_task` (216): Check a video-generation task status. Completed tasks return the served clip URL. Video renders usually take several minutes, so use this for polling or recovery instead of re-submitting; do not poll in a tight loop.
+- `cancel_video_generation_task` (49): Cancel a queued or running video generation task.
+- `list_media_models` (239): List the image and video models this account can use, with display name, modes, and parameter choices. Call it before choosing a model instead of guessing names; omit the model argument of a generation tool to use that operation's default.
 - `list_canvases` (127): List the user's infinite-canvas projects with their ids, node counts and revision. Use this to find the canvas to read or edit.
 - `read_canvas` (367): Read one canvas as a node graph: every node's id, type, title, position, prompt/model/text, plus the connections between them. Use the returned ids with the other canvas tools. Includes the changes you proposed that the user has not accepted yet, so read it again after proposing instead of assuming your proposal is already on the canvas. This never starts a render.
 - `create_canvas` (88): Create a new empty canvas project. Returns its id; add nodes to it with add_canvas_node.

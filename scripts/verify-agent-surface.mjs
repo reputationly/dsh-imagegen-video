@@ -44,15 +44,22 @@ function collectTools(register) {
   return collected
 }
 
-const tools = collectTools(ctx => host.registerAgentCanvasTools(ctx, () => ({
+const videoConfig = () => ({
   enabled: true,
   allowAgentVideoGeneration: true,
   channels: [],
   defaultChannelId: '',
+})
+const videoTools = collectTools(ctx => host.registerAgentVideoTools(ctx, {}, videoConfig))
+const catalogTools = collectTools(ctx => host.registerMediaModelsTool(ctx, () => ({
+  enabled: true,
+  announceToAgent: true,
+  snapshot: () => ({ status: 'ready', entries: [] }),
 })))
-/** 宿主自己的对话生成工具；插件再注册同名工具会让宿主启动时报重名。 */
-const HOST_TOOLS = ['generate_image', 'edit_image', 'generate_video', 'generate_video_from_image', 'get_image_generation_task',
-  'cancel_image_generation_task', 'get_video_generation_task', 'cancel_video_generation_task', 'list_media_models']
+const canvasTools = collectTools(ctx => host.registerAgentCanvasTools(ctx, videoConfig))
+const tools = [...videoTools, ...catalogTools, ...canvasTools]
+/** 宿主自己的对话生图工具；插件再注册同名工具会让宿主启动时报重名。 */
+const HOST_TOOLS = ['generate_image', 'edit_image', 'get_image_generation_task', 'cancel_image_generation_task']
 
 // ---------------------------------------------------------------- 系统提示
 const guidance = host.IMAGEGEN_GUIDANCE
@@ -79,6 +86,16 @@ for (const tool of tools) {
 }
 pass(`${tools.length} tool descriptions are each within ${TOOL_LIMIT} characters`)
 pass('no tool duplicates a host generation tool')
+if (!names.includes('list_media_models')) fail('list_media_models is not registered')
+// 生成工具的 model 参数必须指向清单工具，否则模型只能猜模型名。
+for (const tool of tools.filter(candidate => candidate.name.startsWith('generate_'))) {
+  const model = tool.parameters?.properties?.model
+  assert.ok(model !== undefined, `${tool.name} has no model parameter`)
+  if (!String(model.description).includes('list_media_models')) {
+    fail(`${tool.name} does not point model at list_media_models`)
+  }
+}
+pass('generation tools point model at list_media_models')
 
 // ---------------------------------------------------------------- 快照
 const render = () => {
