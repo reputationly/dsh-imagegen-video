@@ -89,7 +89,7 @@ import { newPromptSetId, normalizePromptSet, promptSetJobsFromItems } from './ca
 import { claimableClips } from './canvas/video-ledger.ts'
 import { AlignBar } from './canvas/align-bar.tsx'
 import { scanConfigReadiness, summarizeReadiness } from './canvas/readiness.ts'
-import { generationComposerInputs, generationComposerTarget, generationOutputX } from './canvas/annotation-composer.ts'
+import { annotationEntries, constrainedAnnotationBoxes, generationComposerInputs, generationComposerTarget, generationOutputX, preferredAnnotationInputs } from './canvas/annotation-composer.ts'
 import { fullHealth, type GraphHealth, type GraphIssue } from './canvas/graph-health.ts'
 import { describeStep, historyRows } from './canvas/history-model.ts'
 import { HistoryPanel } from './canvas/history-panel.tsx'
@@ -3591,18 +3591,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     canvasDocument: CanvasDocument,
     inputs: CanvasNode[],
   ): Promise<{ image: string; prompt: string; size: string; sourceNodeId: string; texts: string[]; boxes: CanvasRect[] } | undefined> => {
-    for (const image of inputs) {
-      if (image.type !== 'image' || usableAsset(image) === undefined) continue
-      const entries = liveAnnotations(image, canvasDocument.nodes).map(annotation => {
-        const card = annotation.nodeId === undefined ? undefined : canvasDocument.nodes.find(node => node.id === annotation.nodeId)
-        return {
-          rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height },
-          text: (card === undefined ? '' : nodeMetadata(card).text ?? '').trim(),
-        }
-      })
-      const instructed = entries.some(entry => entry.text !== '')
-      const boxes = (instructed ? entries.filter(entry => entry.text !== '') : entries)
-        .map(entry => ({ rect: entry.rect, text: entry.text === '' ? '按生成描述修改这个区域' : entry.text }))
+    for (const image of preferredAnnotationInputs(inputs, canvasDocument.nodes)) {
+      if (usableAsset(image) === undefined) continue
+      const entries = annotationEntries(image, canvasDocument.nodes)
+      const boxes = constrainedAnnotationBoxes(entries)
       if (boxes.length === 0) continue
       try {
         const reference = await annotatedReference(image, boxes)

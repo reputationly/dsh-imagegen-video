@@ -5,8 +5,41 @@
  * 输入条挂回被标注的图片。这样「在图上标注」不用额外手工连线，也能直接生成。
  */
 
-import type { CanvasNode } from '../../protocol.ts'
+import type { CanvasNode, CanvasRect } from '../../protocol.ts'
 import { attachedCards, isAnnotationCard, liveAnnotations, nodeMetadata } from './node-model.ts'
+
+
+export interface AnnotationEntry {
+  readonly rect: CanvasRect
+  readonly text: string
+}
+
+/** Live boxes and their prompt-card text on one image. */
+export function annotationEntries(image: CanvasNode, nodes: CanvasNode[]): AnnotationEntry[] {
+  return liveAnnotations(image, nodes).map(annotation => {
+    const card = annotation.nodeId === undefined ? undefined : nodes.find(node => node.id === annotation.nodeId)
+    return {
+      rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height },
+      text: (card === undefined ? '' : nodeMetadata(card).text ?? '').trim(),
+    }
+  })
+}
+
+/** Boxes sent to the edit model: written boxes win; otherwise blank boxes still constrain a composer prompt. */
+export function constrainedAnnotationBoxes(entries: readonly AnnotationEntry[]): { rect: CanvasRect; text: string }[] {
+  const instructed = entries.some(entry => entry.text !== '')
+  return (instructed ? entries.filter(entry => entry.text !== '') : entries)
+    .map(entry => ({ rect: entry.rect, text: entry.text === '' ? '按生成描述修改这个区域' : entry.text }))
+}
+
+/** Prefer images with written instructions; use blank boxes only when no input has written instructions. */
+export function preferredAnnotationInputs(inputs: CanvasNode[], nodes: CanvasNode[]): CanvasNode[] {
+  const annotated = inputs.filter(node => node.type === 'image' && liveAnnotations(node, nodes).length > 0)
+  const hasInstructions = annotated.some(node => annotationEntries(node, nodes).some(entry => entry.text !== ''))
+  return hasInstructions
+    ? annotated.filter(node => annotationEntries(node, nodes).some(entry => entry.text !== ''))
+    : annotated
+}
 
 /** Resolve the node the generation composer should submit against. */
 export function generationComposerTarget(nodes: CanvasNode[], selectedIds: ReadonlySet<string>): CanvasNode | null {
