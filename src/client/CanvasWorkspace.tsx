@@ -89,6 +89,7 @@ import { newPromptSetId, normalizePromptSet, promptSetJobsFromItems } from './ca
 import { claimableClips } from './canvas/video-ledger.ts'
 import { AlignBar } from './canvas/align-bar.tsx'
 import { scanConfigReadiness, summarizeReadiness } from './canvas/readiness.ts'
+import { annotationEntries, constrainedAnnotationBoxes, generationComposerInputs, generationComposerTarget, generationOutputX, preferredAnnotationInputs } from './canvas/annotation-composer.ts'
 import { fullHealth, type GraphHealth, type GraphIssue } from './canvas/graph-health.ts'
 import { describeStep, historyRows } from './canvas/history-model.ts'
 import { HistoryPanel } from './canvas/history-panel.tsx'
@@ -3590,17 +3591,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     canvasDocument: CanvasDocument,
     inputs: CanvasNode[],
   ): Promise<{ image: string; prompt: string; size: string; sourceNodeId: string; texts: string[]; boxes: CanvasRect[] } | undefined> => {
-    for (const image of inputs) {
-      if (image.type !== 'image' || usableAsset(image) === undefined) continue
-      const boxes = liveAnnotations(image, canvasDocument.nodes).flatMap(annotation => {
-        const card = annotation.nodeId === undefined ? undefined : canvasDocument.nodes.find(node => node.id === annotation.nodeId)
-        const text = (card === undefined ? '' : nodeMetadata(card).text ?? '').trim()
-        return text === '' ? [] : [{ rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height }, text }]
-      })
+    for (const image of preferredAnnotationInputs(inputs, canvasDocument.nodes)) {
+      if (usableAsset(image) === undefined) continue
+      const entries = annotationEntries(image, canvasDocument.nodes)
+      const boxes = constrainedAnnotationBoxes(entries)
       if (boxes.length === 0) continue
       try {
         const reference = await annotatedReference(image, boxes)
-        if (reference !== undefined) return { ...reference, sourceNodeId: image.id, texts: boxes.map(box => box.text), boxes: boxes.map(box => box.rect) }
+        if (reference !== undefined) return { ...reference, sourceNodeId: image.id, texts: entries.flatMap(entry => entry.text === '' ? [] : [entry.text]), boxes: boxes.map(box => box.rect) }
       } catch { /* unreadable source: fall back to the plain reference path */ }
     }
     return undefined
@@ -3809,16 +3807,19 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (!codeRenderer && !composerChannelConnected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const groups = videoGroups ?? []
     if (!codeRenderer && groups.length === 0) { setError(tt('canvas.videoNoModel')); onOpenSettings?.(); return }
-    const inputs = target === null ? [] : upstreamNodes(current, target.id)
+    const inputs = target === null ? [] : generationComposerInputs(target, upstreamNodes(current, target.id))
     const usableImage = (node: CanvasNode): boolean => node.type === 'image' && usableAsset(node) !== undefined
     // 连线语义角色：首帧/尾帧由连线上的 role 决定，不再靠 connections 数组
     // 恰好排成什么样——删一条边再重连顺序就变了，画布上却看不出来。
     // 没标过角色的画布 orderedUpstream 保持原数组顺序，行为与今天逐条一致。
     const wiredImages = target === null
       ? []
-      : orderedUpstream(current.connections, target.id)
-        .map(connection => current.nodes.find(node => node.id === connection.fromNodeId))
-        .filter((node): node is CanvasNode => node !== undefined && usableImage(node))
+      : [
+          ...target.type === 'image' && usableImage(target) ? [target] : [],
+          ...orderedUpstream(current.connections, target.id)
+            .map(connection => current.nodes.find(node => node.id === connection.fromNodeId))
+            .filter((node): node is CanvasNode => node !== undefined && usableImage(node)),
+        ]
     // 拖到节点旁边却没连过来的图：提交这一刻补上。看得见、删得掉、一步能撤销；
     // 拖拽过程中不猜，那是替用户做决定而用户没法拒绝。
     const nearbyImages = target === null
@@ -3922,7 +3923,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         const nodes = [...previous.nodes]
         const connections = [...previous.connections]
         const anchor = target !== null ? previous.nodes.find(node => node.id === target.id) : undefined
-        const originX = anchor !== undefined ? anchor.x + anchor.width + 80 : Math.round(canvasCenter().x - footprint.width / 2)
+        const originX = anchor !== undefined ? generationOutputX(anchor, previous.nodes) : Math.round(canvasCenter().x - footprint.width / 2)
         const originY = anchor !== undefined ? anchor.y : Math.round(canvasCenter().y - footprint.height / 2)
         nodes.push({
           id: placeholderId, type: 'video', title: tt('canvas.videoNode'),
@@ -3969,16 +3970,18 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (current === null || composerBusy) return
     const codeRenderer = composerRenderer === 'code'
     if (!codeRenderer && !composerChannelConnected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
-    const inputs = target === null ? [] : upstreamNodes(current, target.id)
+    const inputs = target === null ? [] : generationComposerInputs(target, upstreamNodes(current, target.id))
     const referenceImages = inputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined)
     const upstreamText = inputs
       .filter(node => node.type === 'text' && nodeMetadata(node).annotation === undefined && (nodeMetadata(node).text ?? '').trim() !== '')
       .map(node => nodeMetadata(node).text!.trim())
     setComposerBusy(true)
     try {
-      // Attached 标注 cards supply both the boxed reference and, when the
-      // composer box is empty, the prompt itself.
+      // Raster edits: attached 标注 cards supply both the boxed reference and,
+      // when the composer box is empty, the prompt itself. Code rendering has no
+      // source-image edit input, so it must not reuse those boxes as a mask.
       const annotationPlan = await annotationPlanOf(current, inputs).catch(() => undefined)
+      const annotationMask = codeRenderer ? undefined : annotationPlan
       // 套图条目（草稿）优先：编辑器里正在写的这几条就是这次要跑的。
       const setJobs = codeRenderer ? [] : promptSetJobsFromItems(composerPromptSet)
       const prompt = composerPrompt.trim() !== ''
@@ -3991,7 +3994,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ? { channelId: '', model: '' }
         : resolveModelChoice(modelGroups, { channelId: composerChannelId, model: composerModel }, defaultChannelId)
       const model = composerChoice.model
-      const annotationCanvas = codeRenderer || annotationPlan === undefined ? {} : { annotationCanvas: annotationPlan.size }
+      const annotationCanvas = annotationMask === undefined ? {} : { annotationCanvas: annotationMask.size }
       if (!codeRenderer && model === '') { setError(tt('canvas.needModel')); setComposerBusy(false); return }
       // One chat answer draws one still, so the code path always produces one
       // node — a count above one would leave placeholders that never fill.
@@ -4002,7 +4005,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const castPrompt = castPromptOf(current, castNodes.map(node => node.id))
       const referencePool = [...referenceImages, ...castNodes]
       const baseAsset = referencePool[0] !== undefined ? usableAsset(referencePool[0]!) : undefined
-      const finalPrompt = [annotationPlan === undefined ? prompt : `${prompt}\n\n${annotationPlan.prompt}`, castPrompt]
+      const finalPrompt = [annotationMask === undefined ? prompt : `${prompt}\n\n${annotationMask.prompt}`, castPrompt]
         .filter(part => part !== '')
         .join('\n\n')
       let image: string | undefined
@@ -4013,8 +4016,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       // one would only make the request look like an edit it cannot perform.
       if (codeRenderer) {
         image = undefined
-      } else if (annotationPlan !== undefined) {
-        image = annotationPlan.image
+      } else if (annotationMask !== undefined) {
+        image = annotationMask.image
         refName = 'canvas-annotated.png'
         // 标注底图已经占掉一张参考图；身份参考接在后面，最多凑满四张。
         const extras: string[] = []
@@ -4044,13 +4047,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       if (!codeRenderer && target !== null && setJobs.length > 0) {
         const jobs = setJobs
         const anchor = current.nodes.find(node => node.id === target.id)
-        const originX = anchor !== undefined ? anchor.x + anchor.width + 80 : Math.round(canvasCenter().x - footprint.width / 2)
+        const originX = anchor !== undefined ? generationOutputX(anchor, current.nodes) : Math.round(canvasCenter().x - footprint.width / 2)
         const originY = anchor !== undefined ? anchor.y : Math.round(canvasCenter().y - footprint.height / 2)
         for (let index = 0; index < jobs.length; index += 1) {
           const job = jobs[index]!
           // 每条都带同一池子的参考图与身份设定：一套三视图的每张都该认得同一个
           // 角色，而不是只有第一条认得。
-          const jobPrompt = [job.prompt, castPrompt].filter(part => part !== '').join('\n\n')
+          const jobPrompt = [job.prompt, annotationMask?.prompt ?? '', castPrompt].filter(part => part !== '').join('\n\n')
           const jobRequest: GenerateRequest = {
             mode: image === undefined ? 'text' : 'edit', model, prompt: jobPrompt,
             size: composerSize, quality: composerQuality, n: 1, detail: '', ...annotationCanvas,
@@ -4059,7 +4062,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             ...(images === undefined ? {} : { images }),
             canvas: {
               canvasId: current.id,
-              sourceNodeId: annotationPlan?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
+              sourceNodeId: annotationMask?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
               parentNodeId: target.id,
               placement: 'right' as const,
             },
@@ -4076,6 +4079,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
               metadata: {
                 status: 'generating', taskId: jobTask.id,
                 ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
+                ...(annotationMask === undefined ? {} : { annotationEdit: { sourceNodeId: annotationMask.sourceNodeId, boxes: annotationMask.boxes } }),
                 prompt: jobPrompt, model,
                 ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
               },
@@ -4105,7 +4109,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         canvas: {
           canvasId: current.id,
           ...(target === null ? {} : {
-            sourceNodeId: annotationPlan?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
+            sourceNodeId: annotationMask?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
             parentNodeId: target.id,
             placement: 'right' as const,
           }),
@@ -4117,7 +4121,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         const nodes = [...previous.nodes]
         const connections = [...previous.connections]
         const anchor = target !== null ? previous.nodes.find(node => node.id === target.id) : undefined
-        const originX = anchor !== undefined ? anchor.x + anchor.width + 80 : Math.round(canvasCenter().x - footprint.width / 2)
+        const originX = anchor !== undefined ? generationOutputX(anchor, previous.nodes) : Math.round(canvasCenter().x - footprint.width / 2)
         const originY = anchor !== undefined ? anchor.y : Math.round(canvasCenter().y - footprint.height / 2)
         for (let index = 0; index < count; index += 1) {
           const id = newId('node')
@@ -4128,7 +4132,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             metadata: {
               status: 'generating', taskId: task.id,
               ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
-              ...(annotationPlan === undefined ? {} : { annotationEdit: { sourceNodeId: annotationPlan.sourceNodeId, boxes: annotationPlan.boxes } }),
+              ...(annotationMask === undefined ? {} : { annotationEdit: { sourceNodeId: annotationMask.sourceNodeId, boxes: annotationMask.boxes } }),
               prompt: finalPrompt, model,
               ...codeRenderer ? { renderer: 'code' as const } : {},
               ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
@@ -4596,8 +4600,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (!codeRenderer && model === '') { setError(tt('canvas.needModel')); return }
     if (!codeRenderer && !channelIsConnected(retryChoice.channelId)) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const sourceId = metadata.sourceNodeId
-    const sourceNode = sourceId === undefined ? undefined : current.nodes.find(item => item.id === sourceId)
-    const directAsset = sourceNode !== undefined && sourceNode.type === 'image' ? usableAsset(sourceNode) : undefined
+    const editSourceId = metadata.annotationEdit?.sourceNodeId ?? sourceId
+    const editSourceNode = editSourceId === undefined ? undefined : current.nodes.find(item => item.id === editSourceId)
+    const directAsset = editSourceNode !== undefined && editSourceNode.type === 'image' ? usableAsset(editSourceNode) : undefined
     const references = sourceId === undefined ? [] : upstreamNodes(current, sourceId).filter(item => item.type === 'image' && usableAsset(item) !== undefined)
     const baseAsset = directAsset ?? (references[0] !== undefined ? usableAsset(references[0]!) : undefined)
     // 用户点了重试，旧结论就不再成立：留着红标等于在说「它还是坏的」，而
@@ -4609,13 +4614,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       let images: string[] | undefined
       let refName: string | undefined
       // A 标注 edit rebuilds its marked reference so the retry stays boxed.
-      const boxes = sourceNode === undefined || sourceNode.type !== 'image' ? [] : liveAnnotations(sourceNode, current.nodes).flatMap(annotation => {
-        const textNode = current.nodes.find(item => item.id === annotation.nodeId)
-        const text = (textNode === undefined ? '' : nodeMetadata(textNode).text ?? '').trim()
-        return text === '' ? [] : [{ rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height }, text }]
-      })
-      const annotated = sourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
-        ? await annotatedReference(sourceNode, boxes).catch(() => undefined)
+      const entries = editSourceNode === undefined || editSourceNode.type !== 'image' ? [] : annotationEntries(editSourceNode, current.nodes)
+      const boxes = constrainedAnnotationBoxes(entries)
+      const annotated = editSourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
+        ? await annotatedReference(editSourceNode, boxes).catch(() => undefined)
         : undefined
       if (codeRenderer) {
         // A drawing program does not edit the wired picture; see submitComposer.
@@ -4641,6 +4643,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         // Re-render the stored drawing source when there is one; without it
         // (e.g. the chat call itself failed) the host asks the model again.
         ...codeRenderer && metadata.renderSource !== undefined ? { renderSource: metadata.renderSource } : {},
+        ...annotated !== undefined && !codeRenderer ? { annotationCanvas: annotated.size } : {},
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
         canvas: { canvasId: current.id, sourceNodeId: sourceId ?? references[0]?.id, parentNodeId: node.id, placement: 'right' as const },
@@ -4652,9 +4655,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ...codeRenderer ? { renderer: 'code' as const } : {},
         // Remember the boxes so the finished image can be composited back onto
         // the clean original (the marker must not survive into the result).
-        ...(annotated !== undefined && sourceNode !== undefined && !codeRenderer
-          ? { annotationEdit: { sourceNodeId: sourceNode.id, boxes: boxes.map(box => box.rect) } }
-          : {}),
+        annotationEdit: annotated !== undefined && editSourceNode !== undefined && !codeRenderer
+          ? { sourceNodeId: editSourceNode.id, boxes: boxes.map(box => box.rect) }
+          : undefined,
       })
       setError(null)
     } catch (caught) {
@@ -5596,16 +5599,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
 
   const singleSelectedId = selectedIds.size === 1 ? [...selectedIds][0]! : null
   const singleSelected = useMemo(() => document?.nodes.find(node => node.id === singleSelectedId) ?? null, [document, singleSelectedId])
-  // The composer follows the selected config node — including when other nodes
-  // are selected alongside it, so using an image node's tools no longer makes
-  // the generation bar vanish.
-  const composerTarget = useMemo(() => {
-    const selected = (document?.nodes ?? []).filter(node => selectedIds.has(node.id))
-    const configs = selected.filter(node => node.type === 'config')
-    return configs.length === 1 ? configs[0]! : null
-  }, [document, selectedIds])
+  // The composer follows the selected config node. A selected 标注 prompt card
+  // resolves back to its source image, so a boxed edit can be submitted without
+  // wiring the deliberately unwireable card into the graph.
+  const composerTarget = useMemo(() => generationComposerTarget(document?.nodes ?? [], selectedIds), [document, selectedIds])
   const composerInputs = useMemo(
-    () => composerTarget === null || document === null ? [] : upstreamNodes(document, composerTarget.id),
+    () => composerTarget === null || document === null ? [] : generationComposerInputs(composerTarget, upstreamNodes(document, composerTarget.id)),
     [composerTarget, document, upstreamNodes],
   )
   const composerReferenceCount = composerInputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined).length
