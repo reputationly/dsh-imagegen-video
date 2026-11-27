@@ -931,6 +931,16 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
       skillButton.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true, cancelable: true }))
       assert.ok(await waitUntil(() => pickerMenu() !== null), 'the skill menu opens with the catalog loaded')
     }
+    const initialNodeIds = ['node-rendering', 'node-failed', 'node-clip-left', 'node-clip-right']
+    /** Wait out React Flow's asynchronous node mount after the canvas itself appears. */
+    const settleCanvasNodes = async () => {
+      const expected = initialNodeIds.filter(id => canvasReadDocument.nodes.some(node => node.id === id))
+      if (expected.length === 0) return
+      const rendered = await waitUntil(() => expected.every(id => view.querySelector(`[data-node-id="${id}"]`) !== null))
+      const missing = expected.filter(id => view.querySelector(`[data-node-id="${id}"]`) === null)
+      assert.ok(rendered, `the canvas nodes render; missing ${missing.join(',')}`)
+    }
+
     const closeSkillMenu = async () => {
       const menu = pickerMenu()
       if (menu === null) return
@@ -950,7 +960,7 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
       jsdomWindow, jsdomDocument, view, waitUntil, waitForSelector, click,
       canvasDocument, canvasSaves, canvasAssetUploads, canvasFileUploads, videoSubmissions,
       requestPaths, skillRunRequests, galleryVideoFavorites, FIXTURE_IDS,
-      pointerDown, nodeById, badgesNow, pickerMenu, openComposeMenu, closeSkillMenu,
+      pointerDown, nodeById, badgesNow, pickerMenu, openComposeMenu, closeSkillMenu, settleCanvasNodes,
       /** Swap what `/canvas/read` answers with (a document the fixture lacks). */
       setCanvasReadDocument: next => { canvasReadDocument = next },
       /**
@@ -981,6 +991,7 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
         await waitUntil(() => view.querySelector('[data-canvas-workspace]') === null)
         canvasTab.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true, cancelable: true }))
         assert.ok(await waitUntil(() => view.querySelector('[data-canvas-workspace]') !== null), 'the canvas came back')
+        await settleCanvasNodes()
       },
     })
     // ------------------------------------------------- W1 studio clip actions
@@ -1019,6 +1030,7 @@ await check('W1-W3 a finished studio clip lands a referenced node and states are
     assert.ok(addToCanvas !== null, 'W2: the add-to-canvas action is present')
     addToCanvas.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true, cancelable: true }))
     await waitForSelector(view, '[data-canvas-workspace]')
+    await settleCanvasNodes()
     // The two fixture nodes are video nodes too, so identify the imported one by
     // what it is NOT: an id that was not on the canvas before the click.
     const importedOf = document => (document?.nodes ?? []).find(node => node.type === 'video' && !FIXTURE_IDS.has(node.id))
