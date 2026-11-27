@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict'
 import { createCheckHarness } from './lib/check-harness.mjs'
-import { generationComposerInputs, generationComposerTarget } from '../src/client/canvas/annotation-composer.ts'
+import { generationComposerInputs, generationComposerTarget, generationOutputX } from '../src/client/canvas/annotation-composer.ts'
 
 const results = []
 const check = createCheckHarness({ results })
@@ -61,11 +61,29 @@ await check('图片目标是第一张参考输入，配置目标只读上游', (
   assert.deepEqual(generationComposerInputs(config('cfg'), upstream).map(node => node.id), ['upstream'])
 })
 
+
+await check('生成结果让开标注提示词卡所在列', () => {
+  const source = image('img', [{ id: 'ann', x: 0.1, y: 0.1, width: 0.2, height: 0.2, nodeId: 'card' }])
+  const promptCard = card('card', 'img')
+  const nodes = [source, promptCard]
+  assert.equal(generationOutputX(source, nodes), promptCard.x + promptCard.width + 80)
+  assert.equal(generationOutputX(config('cfg'), nodes), config('cfg').x + config('cfg').width + 80)
+})
+
 process.stdout.write(`${results.join('\n')}\n`)
 const failed = results.filter(line => line.startsWith('FAIL')).length
 if (failed > 0) {
   process.stderr.write(`\ncanvas annotation composer: ${failed} failed, ${results.length - failed} passed\n`)
   process.exitCode = 1
 } else {
-  process.stdout.write(`\ncanvas annotation composer: ${results.length} passed\n`)
+  
+await check('生成结果让开标注提示词卡所在列', () => {
+  const source = image('img', [{ id: 'ann', x: 0.1, y: 0.1, width: 0.2, height: 0.2, nodeId: 'card' }])
+  const promptCard = card('card', 'img')
+  const nodes = [source, promptCard]
+  assert.equal(generationOutputX(source, nodes), promptCard.x + promptCard.width + 80)
+  assert.equal(generationOutputX(config('cfg'), nodes), config('cfg').x + config('cfg').width + 80)
+})
+
+process.stdout.write(`\ncanvas annotation composer: ${results.length} passed\n`)
 }

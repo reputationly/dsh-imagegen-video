@@ -89,7 +89,7 @@ import { newPromptSetId, normalizePromptSet, promptSetJobsFromItems } from './ca
 import { claimableClips } from './canvas/video-ledger.ts'
 import { AlignBar } from './canvas/align-bar.tsx'
 import { scanConfigReadiness, summarizeReadiness } from './canvas/readiness.ts'
-import { generationComposerInputs, generationComposerTarget } from './canvas/annotation-composer.ts'
+import { generationComposerInputs, generationComposerTarget, generationOutputX } from './canvas/annotation-composer.ts'
 import { fullHealth, type GraphHealth, type GraphIssue } from './canvas/graph-health.ts'
 import { describeStep, historyRows } from './canvas/history-model.ts'
 import { HistoryPanel } from './canvas/history-panel.tsx'
@@ -3931,7 +3931,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         const nodes = [...previous.nodes]
         const connections = [...previous.connections]
         const anchor = target !== null ? previous.nodes.find(node => node.id === target.id) : undefined
-        const originX = anchor !== undefined ? anchor.x + anchor.width + 80 : Math.round(canvasCenter().x - footprint.width / 2)
+        const originX = anchor !== undefined ? generationOutputX(anchor, previous.nodes) : Math.round(canvasCenter().x - footprint.width / 2)
         const originY = anchor !== undefined ? anchor.y : Math.round(canvasCenter().y - footprint.height / 2)
         nodes.push({
           id: placeholderId, type: 'video', title: tt('canvas.videoNode'),
@@ -4053,7 +4053,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       if (!codeRenderer && target !== null && setJobs.length > 0) {
         const jobs = setJobs
         const anchor = current.nodes.find(node => node.id === target.id)
-        const originX = anchor !== undefined ? anchor.x + anchor.width + 80 : Math.round(canvasCenter().x - footprint.width / 2)
+        const originX = anchor !== undefined ? generationOutputX(anchor, current.nodes) : Math.round(canvasCenter().x - footprint.width / 2)
         const originY = anchor !== undefined ? anchor.y : Math.round(canvasCenter().y - footprint.height / 2)
         for (let index = 0; index < jobs.length; index += 1) {
           const job = jobs[index]!
@@ -4126,7 +4126,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         const nodes = [...previous.nodes]
         const connections = [...previous.connections]
         const anchor = target !== null ? previous.nodes.find(node => node.id === target.id) : undefined
-        const originX = anchor !== undefined ? anchor.x + anchor.width + 80 : Math.round(canvasCenter().x - footprint.width / 2)
+        const originX = anchor !== undefined ? generationOutputX(anchor, previous.nodes) : Math.round(canvasCenter().x - footprint.width / 2)
         const originY = anchor !== undefined ? anchor.y : Math.round(canvasCenter().y - footprint.height / 2)
         for (let index = 0; index < count; index += 1) {
           const id = newId('node')

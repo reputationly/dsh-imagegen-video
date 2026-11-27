@@ -6,7 +6,7 @@
  */
 
 import type { CanvasNode } from '../../protocol.ts'
-import { isAnnotationCard, liveAnnotations, nodeMetadata } from './node-model.ts'
+import { attachedCards, isAnnotationCard, liveAnnotations, nodeMetadata } from './node-model.ts'
 
 /** Resolve the node the generation composer should submit against. */
 export function generationComposerTarget(nodes: CanvasNode[], selectedIds: ReadonlySet<string>): CanvasNode | null {
@@ -29,4 +29,12 @@ export function generationComposerTarget(nodes: CanvasNode[], selectedIds: Reado
 /** Inputs of one composer submission: an image target is itself the first reference. */
 export function generationComposerInputs(target: CanvasNode, upstream: CanvasNode[]): CanvasNode[] {
   return target.type === 'image' ? [target, ...upstream] : upstream
+}
+
+/** X position for a generated child: annotation cards occupy the first column right of their source. */
+export function generationOutputX(anchor: CanvasNode, nodes: CanvasNode[], gap = 80): number {
+  const base = anchor.x + anchor.width + gap
+  if (anchor.type !== 'image') return Math.round(base)
+  const right = attachedCards(anchor, nodes).reduce((edge, card) => Math.max(edge, card.x + card.width), 0)
+  return Math.round(Math.max(base, right + gap))
 }
