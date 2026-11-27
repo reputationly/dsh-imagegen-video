@@ -4059,7 +4059,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           const job = jobs[index]!
           // 每条都带同一池子的参考图与身份设定：一套三视图的每张都该认得同一个
           // 角色，而不是只有第一条认得。
-          const jobPrompt = [job.prompt, castPrompt].filter(part => part !== '').join('\n\n')
+          const jobPrompt = [job.prompt, annotationPlan?.prompt ?? '', castPrompt].filter(part => part !== '').join('\n\n')
           const jobRequest: GenerateRequest = {
             mode: image === undefined ? 'text' : 'edit', model, prompt: jobPrompt,
             size: composerSize, quality: composerQuality, n: 1, detail: '', ...annotationCanvas,
@@ -4085,6 +4085,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
               metadata: {
                 status: 'generating', taskId: jobTask.id,
                 ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
+                ...(annotationPlan === undefined ? {} : { annotationEdit: { sourceNodeId: annotationPlan.sourceNodeId, boxes: annotationPlan.boxes } }),
                 prompt: jobPrompt, model,
                 ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
               },
