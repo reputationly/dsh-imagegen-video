@@ -274,6 +274,9 @@ export function compositeAnnotatedResult(
     maskCtx.drawImage(shape, 0, 0)
   }
 
+  ctx.globalCompositeOperation = 'destination-out'
+  ctx.drawImage(mask, 0, 0)
+  ctx.globalCompositeOperation = 'source-over'
   const generated = createCanvas(width, height)
   const generatedCtx = context2d(generated)
   generatedCtx.drawImage(result, 0, 0)
