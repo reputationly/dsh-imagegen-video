@@ -89,6 +89,7 @@ import { newPromptSetId, normalizePromptSet, promptSetJobsFromItems } from './ca
 import { claimableClips } from './canvas/video-ledger.ts'
 import { AlignBar } from './canvas/align-bar.tsx'
 import { scanConfigReadiness, summarizeReadiness } from './canvas/readiness.ts'
+import { generationComposerInputs, generationComposerTarget } from './canvas/annotation-composer.ts'
 import { fullHealth, type GraphHealth, type GraphIssue } from './canvas/graph-health.ts'
 import { describeStep, historyRows } from './canvas/history-model.ts'
 import { HistoryPanel } from './canvas/history-panel.tsx'
@@ -3809,16 +3810,19 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (!codeRenderer && !composerChannelConnected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const groups = videoGroups ?? []
     if (!codeRenderer && groups.length === 0) { setError(tt('canvas.videoNoModel')); onOpenSettings?.(); return }
-    const inputs = target === null ? [] : upstreamNodes(current, target.id)
+    const inputs = target === null ? [] : generationComposerInputs(target, upstreamNodes(current, target.id))
     const usableImage = (node: CanvasNode): boolean => node.type === 'image' && usableAsset(node) !== undefined
     // 连线语义角色：首帧/尾帧由连线上的 role 决定，不再靠 connections 数组
     // 恰好排成什么样——删一条边再重连顺序就变了，画布上却看不出来。
     // 没标过角色的画布 orderedUpstream 保持原数组顺序，行为与今天逐条一致。
     const wiredImages = target === null
       ? []
-      : orderedUpstream(current.connections, target.id)
-        .map(connection => current.nodes.find(node => node.id === connection.fromNodeId))
-        .filter((node): node is CanvasNode => node !== undefined && usableImage(node))
+      : [
+          ...target.type === 'image' && usableImage(target) ? [target] : [],
+          ...orderedUpstream(current.connections, target.id)
+            .map(connection => current.nodes.find(node => node.id === connection.fromNodeId))
+            .filter((node): node is CanvasNode => node !== undefined && usableImage(node)),
+        ]
     // 拖到节点旁边却没连过来的图：提交这一刻补上。看得见、删得掉、一步能撤销；
     // 拖拽过程中不猜，那是替用户做决定而用户没法拒绝。
     const nearbyImages = target === null
@@ -3969,7 +3973,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (current === null || composerBusy) return
     const codeRenderer = composerRenderer === 'code'
     if (!codeRenderer && !composerChannelConnected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
-    const inputs = target === null ? [] : upstreamNodes(current, target.id)
+    const inputs = target === null ? [] : generationComposerInputs(target, upstreamNodes(current, target.id))
     const referenceImages = inputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined)
     const upstreamText = inputs
       .filter(node => node.type === 'text' && nodeMetadata(node).annotation === undefined && (nodeMetadata(node).text ?? '').trim() !== '')
@@ -5596,16 +5600,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
 
   const singleSelectedId = selectedIds.size === 1 ? [...selectedIds][0]! : null
   const singleSelected = useMemo(() => document?.nodes.find(node => node.id === singleSelectedId) ?? null, [document, singleSelectedId])
-  // The composer follows the selected config node — including when other nodes
-  // are selected alongside it, so using an image node's tools no longer makes
-  // the generation bar vanish.
-  const composerTarget = useMemo(() => {
-    const selected = (document?.nodes ?? []).filter(node => selectedIds.has(node.id))
-    const configs = selected.filter(node => node.type === 'config')
-    return configs.length === 1 ? configs[0]! : null
-  }, [document, selectedIds])
+  // The composer follows the selected config node. A selected 标注 prompt card
+  // resolves back to its source image, so a boxed edit can be submitted without
+  // wiring the deliberately unwireable card into the graph.
+  const composerTarget = useMemo(() => generationComposerTarget(document?.nodes ?? [], selectedIds), [document, selectedIds])
   const composerInputs = useMemo(
-    () => composerTarget === null || document === null ? [] : upstreamNodes(document, composerTarget.id),
+    () => composerTarget === null || document === null ? [] : generationComposerInputs(composerTarget, upstreamNodes(document, composerTarget.id)),
     [composerTarget, document, upstreamNodes],
   )
   const composerReferenceCount = composerInputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined).length
