@@ -2692,7 +2692,7 @@ export function ImageGenPanel(props: {
    *  metadata + first image are saved); otherwise the current form state is
    *  used. */
   const addToGallery = async (image: GeneratedImage, entry?: GalleryImageSource): Promise<void> => {
-    if (galleryAdding || (workspace === 'normal' && tab === 'gallery')) return
+    if (galleryAdding) return
     const source = entry ?? viewingEntry ?? {
       mode: tab === 'edit' ? 'edit' as GenerateMode : 'text' as GenerateMode,
       model,
