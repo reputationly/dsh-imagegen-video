@@ -3980,7 +3980,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       // Raster edits: attached 标注 cards supply both the boxed reference and,
       // when the composer box is empty, the prompt itself. Code rendering has no
       // source-image edit input, so it must not reuse those boxes as a mask.
-      const annotationPlan = codeRenderer ? undefined : await annotationPlanOf(current, inputs).catch(() => undefined)
+      const annotationPlan = await annotationPlanOf(current, inputs).catch(() => undefined)
+      const annotationMask = codeRenderer ? undefined : annotationPlan
       // 套图条目（草稿）优先：编辑器里正在写的这几条就是这次要跑的。
       const setJobs = codeRenderer ? [] : promptSetJobsFromItems(composerPromptSet)
       const prompt = composerPrompt.trim() !== ''
@@ -3993,7 +3994,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ? { channelId: '', model: '' }
         : resolveModelChoice(modelGroups, { channelId: composerChannelId, model: composerModel }, defaultChannelId)
       const model = composerChoice.model
-      const annotationCanvas = codeRenderer || annotationPlan === undefined ? {} : { annotationCanvas: annotationPlan.size }
+      const annotationCanvas = annotationMask === undefined ? {} : { annotationCanvas: annotationMask.size }
       if (!codeRenderer && model === '') { setError(tt('canvas.needModel')); setComposerBusy(false); return }
       // One chat answer draws one still, so the code path always produces one
       // node — a count above one would leave placeholders that never fill.
@@ -4004,7 +4005,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const castPrompt = castPromptOf(current, castNodes.map(node => node.id))
       const referencePool = [...referenceImages, ...castNodes]
       const baseAsset = referencePool[0] !== undefined ? usableAsset(referencePool[0]!) : undefined
-      const finalPrompt = [annotationPlan === undefined ? prompt : `${prompt}\n\n${annotationPlan.prompt}`, castPrompt]
+      const finalPrompt = [annotationMask === undefined ? prompt : `${prompt}\n\n${annotationMask.prompt}`, castPrompt]
         .filter(part => part !== '')
         .join('\n\n')
       let image: string | undefined
@@ -4015,8 +4016,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       // one would only make the request look like an edit it cannot perform.
       if (codeRenderer) {
         image = undefined
-      } else if (annotationPlan !== undefined) {
-        image = annotationPlan.image
+      } else if (annotationMask !== undefined) {
+        image = annotationMask.image
         refName = 'canvas-annotated.png'
         // 标注底图已经占掉一张参考图；身份参考接在后面，最多凑满四张。
         const extras: string[] = []
@@ -4052,7 +4053,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           const job = jobs[index]!
           // 每条都带同一池子的参考图与身份设定：一套三视图的每张都该认得同一个
           // 角色，而不是只有第一条认得。
-          const jobPrompt = [job.prompt, annotationPlan?.prompt ?? '', castPrompt].filter(part => part !== '').join('\n\n')
+          const jobPrompt = [job.prompt, annotationMask?.prompt ?? '', castPrompt].filter(part => part !== '').join('\n\n')
           const jobRequest: GenerateRequest = {
             mode: image === undefined ? 'text' : 'edit', model, prompt: jobPrompt,
             size: composerSize, quality: composerQuality, n: 1, detail: '', ...annotationCanvas,
@@ -4061,7 +4062,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             ...(images === undefined ? {} : { images }),
             canvas: {
               canvasId: current.id,
-              sourceNodeId: annotationPlan?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
+              sourceNodeId: annotationMask?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
               parentNodeId: target.id,
               placement: 'right' as const,
             },
@@ -4078,7 +4079,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
               metadata: {
                 status: 'generating', taskId: jobTask.id,
                 ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
-                ...(annotationPlan === undefined ? {} : { annotationEdit: { sourceNodeId: annotationPlan.sourceNodeId, boxes: annotationPlan.boxes } }),
+                ...(annotationMask === undefined ? {} : { annotationEdit: { sourceNodeId: annotationMask.sourceNodeId, boxes: annotationMask.boxes } }),
                 prompt: jobPrompt, model,
                 ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
               },
@@ -4108,7 +4109,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         canvas: {
           canvasId: current.id,
           ...(target === null ? {} : {
-            sourceNodeId: annotationPlan?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
+            sourceNodeId: annotationMask?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
             parentNodeId: target.id,
             placement: 'right' as const,
           }),
@@ -4131,7 +4132,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             metadata: {
               status: 'generating', taskId: task.id,
               ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
-              ...(annotationPlan === undefined ? {} : { annotationEdit: { sourceNodeId: annotationPlan.sourceNodeId, boxes: annotationPlan.boxes } }),
+              ...(annotationMask === undefined ? {} : { annotationEdit: { sourceNodeId: annotationMask.sourceNodeId, boxes: annotationMask.boxes } }),
               prompt: finalPrompt, model,
               ...codeRenderer ? { renderer: 'code' as const } : {},
               ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
