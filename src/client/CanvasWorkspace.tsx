@@ -5775,7 +5775,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         // what the user expects to survive).
         if (shortcutHelpOpen) { setShortcutHelpOpen(false); return }
         // Esc leaves the 标注 tool first, then clears the selection.
-        if (annotateNodeId !== null) { setAnnotateNodeId(null); setAnnotationDraft(null); return }
+        if (annotateNodeId !== null) { setAnnotateNodeId(null); annotationDragRef.current = null; setAnnotationDraft(null); return }
         // The in-canvas overlays come next, topmost first. They are rendered by
         // this component rather than portalled, so they cannot register their
         // own listener the way CanvasVideoPicker / CanvasFilePreview do --
