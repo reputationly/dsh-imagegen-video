@@ -220,6 +220,20 @@ export interface BackgroundRemovalResult {
  * itself is discarded) and restores the untouched original everywhere else —
  * which is exactly what "only change inside the box" promised.
  */
+/**
+ * 标注重绘要按原图的画幅出图，否则合成时框外原图会被裁掉。按 2K 档面积
+ * （2048²，两边向下取 32 的倍数，比例夹在 1:3–3:1）换成 `WIDTHxHEIGHT`。
+ * @param width - source image width in pixels.
+ * @param height - source image height in pixels.
+ * @returns the canvas to request.
+ */
+export function annotationCanvasOf(width: number, height: number): string {
+  const aspect = Math.min(3, Math.max(1 / 3, width / Math.max(1, height)))
+  const side = Math.sqrt(2048 * 2048 / aspect)
+  const floor = (value: number): number => Math.max(32, Math.floor(value / 32) * 32)
+  return `${String(floor(aspect * side))}x${String(floor(side))}`
+}
+
 export function compositeAnnotatedResult(
   result: HTMLCanvasElement,
   original: HTMLCanvasElement,
