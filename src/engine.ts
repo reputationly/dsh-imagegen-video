@@ -775,6 +775,14 @@ const ASYNC_FAILED_STATUSES = new Set(['failed', 'failure', 'cancelled', 'cancel
 const ASYNC_POLL_MAX_MS = 240_000
 const ASYNC_POLL_REQUEST_TIMEOUT_MS = 30_000
 
+// new-api 的异步图片任务契约：提交返回 202 + image.generation.job，轮询
+// GET /images/generations/{id}。大面积 2K 局部重绘经常超过同步接口的
+// 240s 预算，不能把一次仍在正常排队/生成的任务误判成失败。
+const IMAGE_JOB_OBJECT = 'image.generation.job'
+const IMAGE_JOB_POLL_MAX_MS = 600_000
+const IMAGE_JOB_POLL_REQUEST_TIMEOUT_MS = 30_000
+const IMAGE_JOB_PENDING_STATUSES = new Set(['queued', 'in_progress', 'submitted', 'pending', 'processing', 'running'])
+
 /** Read a provider error message from the common nested locations. */
 function asyncErrorMessage(payload: unknown, fallback: string): string {
   if (payload !== null && typeof payload === 'object') {
@@ -923,6 +931,119 @@ async function pollAsyncTask(
   throw new ImageGenError('上游异步任务轮询超时（240 秒）', 'upstream-timeout')
 }
 
+/** Whether one payload is new-api's asynchronous image-job envelope. */
+function imageJobIdOf(record: Record<string, unknown>): string | undefined {
+  if (record.object !== IMAGE_JOB_OBJECT) return undefined
+  return typeof record.id === 'string' && record.id.trim() !== '' ? record.id.trim() : undefined
+}
+
+/** Derive the image-job polling URL when the gateway omitted Location. */
+function imageJobUrlOf(requestUrl: string, upstream: UpstreamConfig, baseUrl: string, taskId: string): string {
+  if (upstream.apiUrlFull !== true) return `${baseUrl}/images/generations/${encodeURIComponent(taskId)}`
+  try {
+    const url = new URL(requestUrl)
+    url.pathname = url.pathname.replace(/\/images\/edits\/?$/i, `/images/generations/${encodeURIComponent(taskId)}`)
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return `${baseUrl}/images/generations/${encodeURIComponent(taskId)}`
+  }
+}
+
+/** Parse a Retry-After hint into a bounded poll delay. */
+function retryAfterMs(value: string | null): number | undefined {
+  if (value === null) return undefined
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined
+  return Math.min(15_000, Math.max(1_000, Math.round(seconds * 1000)))
+}
+
+/**
+ * Poll a new-api asynchronous image job and return its data records.
+ *
+ * The job payload deliberately reuses the sync `data` shape when completed, so
+ * the caller can hand the records to the same normalizer. This is the same
+ * cancellation model as pollAsyncTask: local cancellation interrupts both the
+ * active poll and the sleep, while upstream work continues server-side.
+ */
+async function pollImageJob(
+  jobUrl: string,
+  upstream: UpstreamConfig,
+  signal: AbortSignal | undefined,
+  firstDelayMs?: number,
+): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + IMAGE_JOB_POLL_MAX_MS
+  let delay = firstDelayMs ?? 2_000
+  let first = true
+  for (;;) {
+    if (Date.now() >= deadline) throw new ImageGenError('上游异步图片任务轮询超时（600 秒）', 'upstream-timeout')
+    if (first) first = false
+    else await waitForPoll(Math.min(delay, Math.max(1, deadline - Date.now())), signal)
+    const remaining = deadline - Date.now()
+    const budget = requestSignal(signal, Math.min(IMAGE_JOB_POLL_REQUEST_TIMEOUT_MS, remaining))
+    const context: AttemptContext = {
+      phase: 'poll-task',
+      channel: upstream.channelName?.trim() || '默认渠道',
+      model: '',
+      mode: 'poll',
+      url: displayUrl(jobUrl),
+      method: 'GET',
+      hadAuth: upstream.apiKey.trim() !== '',
+      startedAt: Date.now(),
+    }
+    try {
+      let response: Response
+      try {
+        response = await fetch(jobUrl, {
+          headers: { authorization: `Bearer ${upstream.apiKey.trim()}`, accept: 'application/json' },
+          signal: budget.signal,
+        })
+      } catch (error) {
+        const failure = signal?.aborted === true
+          ? new ImageGenError('任务已取消', 'cancelled')
+          : isBudgetTimeout(error)
+            ? new ImageGenError('上游异步图片任务轮询超时', 'upstream-timeout')
+            : new ImageGenError(`无法轮询上游异步图片任务：${error instanceof Error ? error.message : String(error)}`, 'upstream-unreachable')
+        recordFailure(context, failure)
+        throw failure
+      }
+      const responseText = await readResponseText(response)
+      let payload: unknown
+      try {
+        payload = JSON.parse(responseText)
+      } catch (error) {
+        const failure = isBudgetTimeout(error)
+          ? new ImageGenError('上游异步图片任务轮询超时', 'upstream-timeout')
+          : nonJsonFailure('上游图片任务接口', jobUrl, response, responseText)
+        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
+        throw failure
+      }
+      if (!response.ok || payload === null || typeof payload !== 'object') {
+        const failure = new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
+        throw failure
+      }
+      const record = payload as Record<string, unknown>
+      const status = typeof record.status === 'string' ? record.status.toLowerCase() : ''
+      const data = dataRecordsOf(record) ?? []
+      if (status === 'completed' || data.length > 0) {
+        if (data.length > 0) return data
+        throw new ImageGenError('上游异步图片任务完成但没有图片结果', 'upstream-empty')
+      }
+      if (status === 'failed' || status === 'cancelled' || status === 'error' || status === 'failure') {
+        throw new ImageGenError(upstreamMessage(record, response.status), status === 'cancelled' ? 'cancelled' : 'upstream-rejected')
+      }
+      if (status !== '' && !IMAGE_JOB_PENDING_STATUSES.has(status)) {
+        throw new ImageGenError(`上游返回了未知异步图片任务状态：${status}`, 'upstream-invalid')
+      }
+      delay = Math.min(10_000, Math.max(delay, delay * 2))
+    } finally {
+      budget.dispose()
+    }
+  }
+}
+
 /**
  * Issue one single-image request (never sends `n`). The response is kept as a
  * list so a gateway that happens to return several images per call still works.
@@ -938,6 +1059,9 @@ async function requestOneImage(
   const headers: Record<string, string> = {
     authorization: `Bearer ${upstream.apiKey.trim()}`,
     ...(modelScope ? { 'X-ModelScope-Async-Mode': 'true' } : {}),
+    // Multipart edits cannot carry the async switch in-body. The header is a
+    // new-api extension and harmless to upstreams that ignore unknown headers.
+    ...(request.mode === 'edit' ? { 'X-New-Api-Async': 'true' } : {}),
   }
   let body: BodyInit
   if (request.mode === 'edit') {
@@ -1048,6 +1172,16 @@ async function requestOneImage(
     }
 
     const record = payload as Record<string, unknown>
+    const imageJobId = imageJobIdOf(record)
+    if (imageJobId !== undefined) {
+      const location = response.headers.get('location')
+      const located = location !== null && location.trim() !== '' ? new URL(location, requestUrl).toString() : ''
+      const jobUrl = located !== '' && isSameOriginAsApi(located, upstream.apiUrl)
+        ? located
+        : imageJobUrlOf(requestUrl, upstream, baseUrl, imageJobId)
+      const data = await pollImageJob(jobUrl, upstream, signal, retryAfterMs(response.headers.get('retry-after')))
+      return Promise.all(data.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
+    }
     const modelScopeTaskId = modelScope && typeof record.task_id === 'string' ? record.task_id.trim() : ''
     if (modelScopeTaskId !== '') {
       const taskBaseUrl = modelScopeTaskBaseUrl(baseUrl, upstream.apiUrlFull === true)
