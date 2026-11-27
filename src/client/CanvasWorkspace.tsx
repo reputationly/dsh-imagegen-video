@@ -4600,8 +4600,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (!codeRenderer && model === '') { setError(tt('canvas.needModel')); return }
     if (!codeRenderer && !channelIsConnected(retryChoice.channelId)) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const sourceId = metadata.sourceNodeId
-    const sourceNode = sourceId === undefined ? undefined : current.nodes.find(item => item.id === sourceId)
-    const directAsset = sourceNode !== undefined && sourceNode.type === 'image' ? usableAsset(sourceNode) : undefined
+    const editSourceId = metadata.annotationEdit?.sourceNodeId ?? sourceId
+    const editSourceNode = editSourceId === undefined ? undefined : current.nodes.find(item => item.id === editSourceId)
+    const directAsset = editSourceNode !== undefined && editSourceNode.type === 'image' ? usableAsset(editSourceNode) : undefined
     const references = sourceId === undefined ? [] : upstreamNodes(current, sourceId).filter(item => item.type === 'image' && usableAsset(item) !== undefined)
     const baseAsset = directAsset ?? (references[0] !== undefined ? usableAsset(references[0]!) : undefined)
     // 用户点了重试，旧结论就不再成立：留着红标等于在说「它还是坏的」，而
@@ -4613,10 +4614,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       let images: string[] | undefined
       let refName: string | undefined
       // A 标注 edit rebuilds its marked reference so the retry stays boxed.
-      const entries = sourceNode === undefined || sourceNode.type !== 'image' ? [] : annotationEntries(sourceNode, current.nodes)
+      const entries = editSourceNode === undefined || editSourceNode.type !== 'image' ? [] : annotationEntries(editSourceNode, current.nodes)
       const boxes = constrainedAnnotationBoxes(entries)
-      const annotated = sourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
-        ? await annotatedReference(sourceNode, boxes).catch(() => undefined)
+      const annotated = editSourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
+        ? await annotatedReference(editSourceNode, boxes).catch(() => undefined)
         : undefined
       if (codeRenderer) {
         // A drawing program does not edit the wired picture; see submitComposer.
@@ -4653,8 +4654,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ...codeRenderer ? { renderer: 'code' as const } : {},
         // Remember the boxes so the finished image can be composited back onto
         // the clean original (the marker must not survive into the result).
-        annotationEdit: annotated !== undefined && sourceNode !== undefined && !codeRenderer
-          ? { sourceNodeId: sourceNode.id, boxes: boxes.map(box => box.rect) }
+        annotationEdit: annotated !== undefined && editSourceNode !== undefined && !codeRenderer
+          ? { sourceNodeId: editSourceNode.id, boxes: boxes.map(box => box.rect) }
           : undefined,
       })
       setError(null)
