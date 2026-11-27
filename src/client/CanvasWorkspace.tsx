@@ -322,6 +322,7 @@ interface CanvasWorkspaceProps {
   importRequest?: (
     | { source: 'history' | 'gallery'; entryId: string; imageIndex: number }
     | { source: 'video'; url: string; mime: string; duration?: number; title?: string }
+    | { source: 'annotate'; dataUrl: string }
   )
   onImportRequestHandled?: () => void
   /**
@@ -5178,6 +5179,29 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       onImportRequestHandled?.()
       return
     }
+    if (importRequest.source === 'annotate') {
+      // 图生图页「在图上标注」：参考图落成一个图片节点，并直接进入画框状态。
+      const key = `annotate:${importRequest.dataUrl.length}:${importRequest.dataUrl.slice(-64)}`
+      if (processedImport.current === key) return
+      processedImport.current = key
+      const { dataUrl } = importRequest
+      void (async () => {
+        const dimensions = await readImageSize(dataUrl)
+        const asset = await api.canvasUpload(dataUrl, dimensions.width, dimensions.height, { origin: 'upload', originId: 'refine' })
+        const node = createImageNode(asset)
+        mutate(previous => ({ ...previous, nodes: [...previous.nodes, node] }))
+        setSelectedIds(new Set([node.id]))
+        setFocusNodeId(node.id)
+        setAnnotateNodeId(node.id)
+        setAnnotationDraft(null)
+        setNotice(tt('canvas.annotationDrawHint'))
+        onImportRequestHandled?.()
+      })().catch(caught => {
+        setError(caught instanceof Error ? caught.message : String(caught))
+        onImportRequestHandled?.()
+      })
+      return
+    }
     const requestKey = `${importRequest.source}:${importRequest.entryId}:${importRequest.imageIndex}`
     if (processedImport.current === requestKey) return
     const sourceEntries = importRequest.source === 'history' ? history : gallery
@@ -5198,7 +5222,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       setError(caught instanceof Error ? caught.message : String(caught))
       onImportRequestHandled?.()
     })
-  }, [addAssets, addClipNode, api, document, gallery, history, importRequest, onImportRequestHandled])
+  }, [addAssets, addClipNode, api, createImageNode, document, gallery, history, importRequest, mutate, onImportRequestHandled])
 
   // -------------------------------------------------------------- loading
 

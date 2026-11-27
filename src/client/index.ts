@@ -23,7 +23,7 @@ import { ImageGenApi } from './api.ts'
 import { tt, applyHostLocale } from './helpers.ts'
 import { en, ru, zh, type ImageGenKey } from './locales.ts'
 import { IMAGE_GEN_PANEL_ID, registerImageGenSlotSurface } from './slot-surface.tsx'
-import { showImageGenGallery } from './config-entry.tsx'
+import { refineImages } from './config-entry.tsx'
 import { ImageGenSettingsSection, ImageGenSettingsCardController } from './SettingsCard.tsx'
 import { IMAGE_GEN_SECTION_ID, OPEN_IMAGE_GEN_CONFIG_EVENT } from './config-entry.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
@@ -77,33 +77,31 @@ export function apply(ctx: ClientContext): void {
   // The host locale service only knows zh/en dictionaries (its type is
   // fixed); ru rides the untyped single-locale registration instead.
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-imagegen: dictionaries')
-  // 对话里生成的图片卡片点「在创作中打开」时调这里：工作台已关闭时返回 false；
-  // 否则每张图各收一条画廊（画廊按首图去重），再切到工作台的画廊。
+  // 对话里生成的图片卡片点「拿去精修」时调这里：工作台已关闭时返回 false；
+  // 否则切到工作台的图生图页，这些图就是参考图。不写画廊：精修出的结果才进画廊。
+  // `ready` 让卡片在工作台关闭时不显示这个按钮。
+  const readyListeners = new Set<() => void>()
+  const notifyReady = (): void => { for (const listener of readyListeners) listener() }
   ctx.provide('suanliCreative', {
+    ready: {
+      getSnapshot: (): boolean => uiDisposer !== undefined,
+      subscribe: (listener: () => void): (() => void) => {
+        readyListeners.add(listener)
+        return () => { readyListeners.delete(listener) }
+      },
+    },
     openImages: (input: CreativeImages): boolean => {
       if (uiDisposer === undefined) return false
-      void (async () => {
-        const api = new ImageGenApi()
-        for (const image of input.images) {
-          await api.galleryAppend({
-            id: '',
-            createdAt: Date.now(),
-            mode: 'text',
-            model: input.model,
-            prompt: input.prompt,
-            size: 'auto',
-            quality: 'auto',
-            detail: '',
-            n: 1,
-            images: [image],
-          })
-        }
-        const layout = ctx.get('layout') as { selectPanel: (id: string) => void } | undefined
-        layout?.selectPanel(IMAGE_GEN_PANEL_ID)
-        showImageGenGallery()
-      })().catch((error: unknown) => {
-        console.warn('[dsh-imagegen] open in Creative failed:', error)
+      refineImages({
+        prompt: input.prompt,
+        images: input.images.map((image, index) => ({
+          dataUrl: `data:${image.mime};base64,${image.b64}`,
+          name: `chat-image-${index + 1}.${image.mime.split('/')[1] ?? 'png'}`,
+          bytes: Math.ceil(image.b64.length * 3 / 4),
+        })),
       })
+      const layout = ctx.get('layout') as { selectPanel: (id: string) => void } | undefined
+      layout?.selectPanel(IMAGE_GEN_PANEL_ID)
       return true
     },
   })
@@ -264,7 +262,9 @@ export function apply(ctx: ClientContext): void {
     uiDisposer = () => {
       for (const dispose of disposers.splice(0)) dispose()
       uiDisposer = undefined
+      notifyReady()
     }
+    notifyReady()
   }
   const syncEnabled = (): void => {
     if (uiLeaseReleased) return

@@ -16,7 +16,7 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
-import { openImageGenConfig, SHOW_GALLERY_EVENT, takeGalleryRequest } from './config-entry.tsx'
+import { openImageGenConfig, REFINE_IMAGES_EVENT, SHOW_GALLERY_EVENT, takeGalleryRequest, takeRefineRequest } from './config-entry.tsx'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { ReferenceImages } from './ReferenceImages.tsx'
 import { useEditReferences, EDIT_REFERENCE_LIMIT } from './reference-images.ts'
@@ -727,6 +727,7 @@ type PanelWorkspace = 'normal' | 'ecommerce' | 'canvas' | 'ppt' | 'replica' | 'o
 type CanvasImportRequest =
   | { source: 'history' | 'gallery'; entryId: string; imageIndex: number }
   | { source: 'video'; url: string; mime: string; duration?: number; title?: string }
+  | { source: 'annotate'; dataUrl: string }
 
 type GalleryFilter = string
 type ComparisonSession = { taskIds: string[]; prompt: string; comparisonId: string }
@@ -1115,6 +1116,30 @@ export function ImageGenPanel(props: {
    *  because the hook reports validation warnings through it. */
   const editReferenceCapacity = EDIT_REFERENCE_LIMIT
   const refs = useEditReferences(setError, { limit: editReferenceCapacity })
+  // 对话图片卡片「拿去精修」：进图生图页，那几张图替换掉原有参考图。
+  useEffect(() => {
+    const onRefine = (): void => {
+      const request = takeRefineRequest()
+      if (request === undefined) return
+      const [first, ...rest] = request.images
+      if (first === undefined) return
+      openTab('edit')
+      refs.replace(first)
+      if (rest.length > 0) {
+        void Promise.all(rest.map(async image => {
+          const blob = await (await fetch(image.dataUrl)).blob()
+          return new File([blob], image.name, { type: blob.type })
+        })).then(files => { refs.add(files) })
+      }
+      setPrompt(previous => previous.trim() === '' ? request.prompt : previous)
+      setError(null)
+    }
+    onRefine()
+    window.addEventListener(REFINE_IMAGES_EVENT, onRefine)
+    return () => { window.removeEventListener(REFINE_IMAGES_EVENT, onRefine) }
+    // `refs` 每次渲染都是新对象，但它的方法只读写 ref，挂载时的那份一直有效。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // Submission is brief; actual generation stays visible until the host
   // queue reports that every queued/running task has finished.
   const [submitting, setSubmitting] = useState(false)
@@ -4001,6 +4026,22 @@ export function ImageGenPanel(props: {
                   notice={editLimitNotice}
                   limit={editReferenceCapacity}
                 />
+                {refs.images[0] !== undefined ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-edit-annotate=""
+                    title={tt('edit.annotateHint')}
+                    onClick={() => {
+                      const first = refs.images[0]
+                      if (first === undefined) return
+                      setCanvasImportRequest({ source: 'annotate', dataUrl: first.dataUrl })
+                      setWorkspace('canvas')
+                    }}
+                  >
+                    {tt('edit.annotate')}
+                  </Button>
+                ) : null}
               </section>
             ) : null}
 
