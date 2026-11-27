@@ -1169,7 +1169,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [workflowParallel, setWorkflowParallel] = useState(true)
   const [focusNodeId, setFocusNodeId] = useState<string | null>(null)
   const [colorPickerNodeId, setColorPickerNodeId] = useState<string | null>(null)
-  const annotationDragRef = useRef<{ nodeId: string; pointerId: number; start: Point; box: { left: number; top: number; width: number; height: number } } | null>(null)
+  const annotationDragRef = useRef<{ nodeId: string; pointerId: number; element: HTMLDivElement; start: Point; box: { left: number; top: number; width: number; height: number } } | null>(null)
 
   // Floating generation composer state.
   const [composerPrompt, setComposerPrompt] = useState('')
@@ -3659,6 +3659,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     annotationDragRef.current = {
       nodeId: node.id,
       pointerId: event.pointerId,
+      element: event.currentTarget,
       start: { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
       box,
     }
@@ -3666,25 +3667,56 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     setAnnotationDraft({ nodeId: node.id, rect: { x: 0, y: 0, width: 0, height: 0 } })
   }, [])
 
-  const moveAnnotationDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
+  const moveAnnotationDragPoint = useCallback((clientX: number, clientY: number, pointerId: number): void => {
     const drag = annotationDragRef.current
-    if (drag === null || drag.pointerId !== event.pointerId) return
-    const bounds = event.currentTarget.getBoundingClientRect()
-    const current = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+    if (drag === null || drag.pointerId !== pointerId) return
+    const bounds = drag.element.getBoundingClientRect()
+    const current = { x: clientX - bounds.left, y: clientY - bounds.top }
     setAnnotationDraft({ nodeId: drag.nodeId, rect: rectBetween(drag.start, current, drag.box) })
   }, [])
 
-  const endAnnotationDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode): void => {
+  const moveAnnotationDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
+    moveAnnotationDragPoint(event.clientX, event.clientY, event.pointerId)
+  }, [moveAnnotationDragPoint])
+
+  const finishAnnotationDrag = useCallback((clientX: number, clientY: number, pointerId: number, fallback?: CanvasNode): void => {
     const drag = annotationDragRef.current
-    if (drag === null || drag.pointerId !== event.pointerId) return
+    if (drag === null || drag.pointerId !== pointerId) return
     annotationDragRef.current = null
     setAnnotationDraft(null)
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
-    const bounds = event.currentTarget.getBoundingClientRect()
-    const rect = rectBetween(drag.start, { x: event.clientX - bounds.left, y: event.clientY - bounds.top }, drag.box)
+    if (drag.element.hasPointerCapture(pointerId)) drag.element.releasePointerCapture(pointerId)
+    const bounds = drag.element.getBoundingClientRect()
+    const rect = rectBetween(drag.start, { x: clientX - bounds.left, y: clientY - bounds.top }, drag.box)
     if (rect.width * rect.height < MIN_ANNOTATION_AREA) return
-    addAnnotationPrompt(node, rect)
+    const source = documentRef.current?.nodes.find(node => node.id === drag.nodeId)
+      ?? (fallback?.id === drag.nodeId ? fallback : undefined)
+    if (source !== undefined) addAnnotationPrompt(source, rect)
   }, [addAnnotationPrompt])
+
+  const cancelAnnotationDrag = useCallback((pointerId: number): void => {
+    const drag = annotationDragRef.current
+    if (drag === null || drag.pointerId !== pointerId) return
+    annotationDragRef.current = null
+    setAnnotationDraft(null)
+  }, [])
+
+  const endAnnotationDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode): void => {
+    finishAnnotationDrag(event.clientX, event.clientY, event.pointerId, node)
+  }, [finishAnnotationDrag])
+
+  useEffect(() => {
+    const move = (event: PointerEvent): void => { moveAnnotationDragPoint(event.clientX, event.clientY, event.pointerId) }
+    const finish = (event: PointerEvent): void => { finishAnnotationDrag(event.clientX, event.clientY, event.pointerId) }
+    const cancel = (event: PointerEvent): void => { cancelAnnotationDrag(event.pointerId) }
+    window.addEventListener('pointermove', move, true)
+    window.addEventListener('pointerup', finish, true)
+    window.addEventListener('pointercancel', cancel, true)
+    return () => {
+      window.removeEventListener('pointermove', move, true)
+      window.removeEventListener('pointerup', finish, true)
+      window.removeEventListener('pointercancel', cancel, true)
+    }
+  }, [cancelAnnotationDrag, finishAnnotationDrag, moveAnnotationDragPoint])
 
   /** 移除背景: local alpha matting, no upstream call and no API cost. */
   const removeNodeBackground = useCallback(async (node: CanvasNode): Promise<void> => {
@@ -5743,7 +5775,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         // what the user expects to survive).
         if (shortcutHelpOpen) { setShortcutHelpOpen(false); return }
         // Esc leaves the 标注 tool first, then clears the selection.
-        if (annotateNodeId !== null) { setAnnotateNodeId(null); setAnnotationDraft(null); return }
+        if (annotateNodeId !== null) { setAnnotateNodeId(null); annotationDragRef.current = null; setAnnotationDraft(null); return }
         // The in-canvas overlays come next, topmost first. They are rendered by
         // this component rather than portalled, so they cannot register their
         // own listener the way CanvasVideoPicker / CanvasFilePreview do --
