@@ -41,7 +41,7 @@ function stubFetch(handlers) {
   globalThis.fetch = async (url, init = {}) => {
     const href = String(url)
     const method = init.method ?? 'GET'
-    requests.push({ url: href, method, body: init.body })
+    requests.push({ url: href, method, body: init.body, headers: init.headers })
     for (const [match, respond] of handlers) {
       if (match(href, method)) return respond(href, init)
     }
@@ -134,6 +134,34 @@ await check('标注重绘的原图画幅 annotationCanvas 两个 H3 模型都原
     const body = jsonBodyOf(stub.requests.find(request => request.url.includes('/images/generations')))
     assert.equal(body.size, '2496x1664', model)
   }
+})
+
+await check('图生图向 new-api 请求异步任务并轮询 image.generation.job', async () => {
+  const job = body => new Response(JSON.stringify(body), {
+    status: 202,
+    headers: {
+      'content-type': 'application/json',
+      location: '/v1/images/generations/task_img_1',
+      'retry-after': '1',
+    },
+  })
+  const stub = stubFetch([
+    [(href, method) => method === 'POST' && href.endsWith('/images/edits'), () => job({ id: 'task_img_1', object: 'image.generation.job', status: 'queued' })],
+    [(href, method) => method === 'GET' && href.endsWith('/images/generations/task_img_1'), () => json({ id: 'task_img_1', object: 'image.generation.job', status: 'completed', data: [{ url: 'https://cdn.example/async.png' }] })],
+    [(href) => href.endsWith('async.png'), () => new Response(TINY_PNG, { status: 200, headers: { 'content-type': 'image/png' } })],
+  ])
+  try {
+    await generateImage(IMAGE_UPSTREAM, imageRequest('minimax-h3-image', {
+      mode: 'edit',
+      image: `data:image/png;base64,${TINY_PNG.toString('base64')}`,
+    }))
+  } finally {
+    stub.restore()
+  }
+  const submit = stub.requests.find(request => request.method === 'POST' && request.url.endsWith('/images/edits'))
+  assert.ok(submit !== undefined, '没有发出 /images/edits')
+  assert.equal(submit.headers['X-New-Api-Async'], 'true', 'multipart edits 必须用 header 打开异步')
+  assert.ok(stub.requests.some(request => request.method === 'GET' && request.url.endsWith('/images/generations/task_img_1')), '没有轮询图片任务')
 })
 
 // ------------------------------------------------------------------ 视频

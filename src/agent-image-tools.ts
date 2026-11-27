@@ -16,7 +16,8 @@ export interface AgentImageToolConfig {
 }
 
 /** Agent calls stay pending until the provider and history write settle. */
-const AGENT_GENERATION_TIMEOUT_MS = 300_000
+// Keep this aligned with the engine's asynchronous image-job polling budget.
+const AGENT_GENERATION_TIMEOUT_MS = 600_000
 
 export function ensureAgentImageConfigured(config: AgentImageToolConfig): void {
   if (!config.enabled) throw new ImageGenError('AI image generation is disabled. Open Settings → Image / Video and enable it.', 'plugin-disabled')
