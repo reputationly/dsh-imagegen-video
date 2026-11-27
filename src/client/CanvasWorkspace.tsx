@@ -3977,9 +3977,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       .map(node => nodeMetadata(node).text!.trim())
     setComposerBusy(true)
     try {
-      // Attached 标注 cards supply both the boxed reference and, when the
-      // composer box is empty, the prompt itself.
-      const annotationPlan = await annotationPlanOf(current, inputs).catch(() => undefined)
+      // Raster edits: attached 标注 cards supply both the boxed reference and,
+      // when the composer box is empty, the prompt itself. Code rendering has no
+      // source-image edit input, so it must not reuse those boxes as a mask.
+      const annotationPlan = codeRenderer ? undefined : await annotationPlanOf(current, inputs).catch(() => undefined)
       // 套图条目（草稿）优先：编辑器里正在写的这几条就是这次要跑的。
       const setJobs = codeRenderer ? [] : promptSetJobsFromItems(composerPromptSet)
       const prompt = composerPrompt.trim() !== ''
