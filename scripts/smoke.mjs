@@ -3876,8 +3876,12 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
       for (let py = Math.max(0, Math.round(y)); py < Math.min(canvas.height, Math.round(y + h)); py += 1) {
         for (let px = Math.max(0, Math.round(x)); px < Math.min(canvas.width, Math.round(x + w)); px += 1) {
           const offset = (py * canvas.width + px) * 4
-          if (erase) { dest[offset] = 0; dest[offset + 1] = 0; dest[offset + 2] = 0; dest[offset + 3] = 0 }
-          else { dest[offset] = red; dest[offset + 1] = green; dest[offset + 2] = blue; dest[offset + 3] = 255 }
+          if (erase || canvas.__composite === 'destination-in') {
+            if (erase || canvas.__composite === 'destination-in') {
+              if (erase) { dest[offset] = 0; dest[offset + 1] = 0; dest[offset + 2] = 0; dest[offset + 3] = 0 }
+              // destination-in keeps existing pixels where the new opaque rectangle lands.
+            }
+          } else { dest[offset] = red; dest[offset + 1] = green; dest[offset + 2] = blue; dest[offset + 3] = 255 }
         }
       }
     }
@@ -4409,8 +4413,12 @@ await check('E1 client apply registers the tool views and the settings section (
       for (let py = Math.max(0, Math.round(y)); py < Math.min(canvas.height, Math.round(y + h)); py += 1) {
         for (let px = Math.max(0, Math.round(x)); px < Math.min(canvas.width, Math.round(x + w)); px += 1) {
           const offset = (py * canvas.width + px) * 4
-          if (erase) { dest[offset] = 0; dest[offset + 1] = 0; dest[offset + 2] = 0; dest[offset + 3] = 0 }
-          else { dest[offset] = red; dest[offset + 1] = green; dest[offset + 2] = blue; dest[offset + 3] = 255 }
+          if (erase || canvas.__composite === 'destination-in') {
+            if (erase || canvas.__composite === 'destination-in') {
+              if (erase) { dest[offset] = 0; dest[offset + 1] = 0; dest[offset + 2] = 0; dest[offset + 3] = 0 }
+              // destination-in keeps existing pixels where the new opaque rectangle lands.
+            }
+          } else { dest[offset] = red; dest[offset + 1] = green; dest[offset + 2] = blue; dest[offset + 3] = 255 }
         }
       }
     }
