@@ -3593,15 +3593,20 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   ): Promise<{ image: string; prompt: string; size: string; sourceNodeId: string; texts: string[]; boxes: CanvasRect[] } | undefined> => {
     for (const image of inputs) {
       if (image.type !== 'image' || usableAsset(image) === undefined) continue
-      const boxes = liveAnnotations(image, canvasDocument.nodes).flatMap(annotation => {
+      const entries = liveAnnotations(image, canvasDocument.nodes).map(annotation => {
         const card = annotation.nodeId === undefined ? undefined : canvasDocument.nodes.find(node => node.id === annotation.nodeId)
-        const text = (card === undefined ? '' : nodeMetadata(card).text ?? '').trim()
-        return text === '' ? [] : [{ rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height }, text }]
+        return {
+          rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height },
+          text: (card === undefined ? '' : nodeMetadata(card).text ?? '').trim(),
+        }
       })
+      const instructed = entries.some(entry => entry.text !== '')
+      const boxes = (instructed ? entries.filter(entry => entry.text !== '') : entries)
+        .map(entry => ({ rect: entry.rect, text: entry.text === '' ? '按生成描述修改这个区域' : entry.text }))
       if (boxes.length === 0) continue
       try {
         const reference = await annotatedReference(image, boxes)
-        if (reference !== undefined) return { ...reference, sourceNodeId: image.id, texts: boxes.map(box => box.text), boxes: boxes.map(box => box.rect) }
+        if (reference !== undefined) return { ...reference, sourceNodeId: image.id, texts: entries.flatMap(entry => entry.text === '' ? [] : [entry.text]), boxes: boxes.map(box => box.rect) }
       } catch { /* unreadable source: fall back to the plain reference path */ }
     }
     return undefined
