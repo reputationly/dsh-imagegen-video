@@ -3815,7 +3815,7 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
 
   // Minimal 2D canvas mock: enough of the API for the matting, annotation and
   // composite helpers (createElement/getImageData/putImageData/drawImage/fillRect
-  // plus destination-out erasing) to run headless.
+  // plus destination-in/out compositing) to run headless.
   const makeCanvas = (width = 0, height = 0, fill) => {
     let pixels = null
     const canvas = { width, height }
@@ -3854,6 +3854,10 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
           const to = ((dy + y) * canvas.width + dx + x) * 4
           if (to < 0 || to + 3 >= dest.length) continue
           const alpha = src[from + 3] / 255
+          if (canvas.__composite === 'destination-in') {
+            for (let channel = 0; channel < 4; channel += 1) dest[to + channel] = Math.round(dest[to + channel] * alpha)
+            continue
+          }
           if (alpha === 0) continue
           for (let channel = 0; channel < 3; channel += 1) {
             dest[to + channel] = Math.round(src[from + channel] * alpha + dest[to + channel] * (1 - alpha))
@@ -4382,9 +4386,11 @@ await check('E1 client apply registers the tool views and the settings section (
           const from = (sourceY * source.width + sourceX) * 4
           const to = ((dy + y) * canvas.width + dx + x) * 4
           if (to < 0 || to + 3 >= dest.length) continue
-          // Source-over compositing: fully transparent source pixels leave the
-          // destination untouched (the real canvas does the same).
           const alpha = src[from + 3] / 255
+          if (canvas.__composite === 'destination-in') {
+            for (let channel = 0; channel < 4; channel += 1) dest[to + channel] = Math.round(dest[to + channel] * alpha)
+            continue
+          }
           if (alpha === 0) continue
           for (let channel = 0; channel < 3; channel += 1) {
             dest[to + channel] = Math.round(src[from + channel] * alpha + dest[to + channel] * (1 - alpha))
