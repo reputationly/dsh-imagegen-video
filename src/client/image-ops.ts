@@ -255,11 +255,15 @@ export function compositeAnnotatedResult(
   patchCtx.drawImage(original, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight)
   patchCtx.globalCompositeOperation = 'destination-out'
   patchCtx.fillStyle = '#000000'
+  // Feather the hole so the redrawn box blends into the original instead of
+  // leaving a hard seam or the model's echoed marker line at the box edge.
+  if (inset > 0) patchCtx.filter = `blur(${String(Math.round(inset / 2))}px)`
   for (const box of boxes) {
     const px = rectToPixels(box, width, height)
     const pad = Math.max(0, Math.min(inset, Math.floor(Math.min(px.width, px.height) / 2) - 1))
     patchCtx.fillRect(px.x + pad, px.y + pad, Math.max(1, px.width - pad * 2), Math.max(1, px.height - pad * 2))
   }
+  patchCtx.filter = 'none'
   patchCtx.globalCompositeOperation = 'source-over'
   ctx.drawImage(patch, 0, 0)
   return canvas

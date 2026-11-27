@@ -5076,7 +5076,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             try {
               const result = await loadRaster(dataUrl, 4096)
               const original = await loadRaster(originalAsset.url, 4096)
-              const inset = Math.max(2, Math.round(Math.min(result.width, result.height) * 0.01))
+              const inset = Math.max(4, Math.round(Math.min(result.width, result.height) * 0.02))
               dataUrl = canvasToDataUrl(compositeAnnotatedResult(result, original, annotationEdit.boxes, inset))
             } catch { /* keep the raw result if the composite cannot be built */ }
           }
