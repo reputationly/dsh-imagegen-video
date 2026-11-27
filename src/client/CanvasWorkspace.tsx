@@ -4613,11 +4613,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       let images: string[] | undefined
       let refName: string | undefined
       // A 标注 edit rebuilds its marked reference so the retry stays boxed.
-      const boxes = sourceNode === undefined || sourceNode.type !== 'image' ? [] : liveAnnotations(sourceNode, current.nodes).flatMap(annotation => {
-        const textNode = current.nodes.find(item => item.id === annotation.nodeId)
-        const text = (textNode === undefined ? '' : nodeMetadata(textNode).text ?? '').trim()
-        return text === '' ? [] : [{ rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height }, text }]
-      })
+      const entries = sourceNode === undefined || sourceNode.type !== 'image' ? [] : annotationEntries(sourceNode, current.nodes)
+      const boxes = constrainedAnnotationBoxes(entries)
       const annotated = sourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
         ? await annotatedReference(sourceNode, boxes).catch(() => undefined)
         : undefined
@@ -4656,9 +4653,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ...codeRenderer ? { renderer: 'code' as const } : {},
         // Remember the boxes so the finished image can be composited back onto
         // the clean original (the marker must not survive into the result).
-        ...(annotated !== undefined && sourceNode !== undefined && !codeRenderer
-          ? { annotationEdit: { sourceNodeId: sourceNode.id, boxes: boxes.map(box => box.rect) } }
-          : {}),
+        annotationEdit: annotated !== undefined && sourceNode !== undefined && !codeRenderer
+          ? { sourceNodeId: sourceNode.id, boxes: boxes.map(box => box.rect) }
+          : undefined,
       })
       setError(null)
     } catch (caught) {
