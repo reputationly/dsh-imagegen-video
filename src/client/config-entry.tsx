@@ -27,6 +27,27 @@ export function showImageGenGallery(): void {
   window.dispatchEvent(new CustomEvent(SHOW_GALLERY_EVENT))
 }
 
+/** 对话图片卡片「拿去精修」交给生图面板的图片：进图生图页当参考图。 */
+export interface RefineImagesRequest {
+  prompt: string
+  images: Array<{ dataUrl: string; name: string; bytes: number }>
+}
+
+export const REFINE_IMAGES_EVENT = 'dsh-imagegen:refine-images'
+
+/** 生图面板此刻还没挂载时，挂载后取走这个请求。 */
+let refineRequested: RefineImagesRequest | undefined
+export function takeRefineRequest(): RefineImagesRequest | undefined {
+  const requested = refineRequested
+  refineRequested = undefined
+  return requested
+}
+
+export function refineImages(request: RefineImagesRequest): void {
+  refineRequested = request
+  window.dispatchEvent(new CustomEvent(REFINE_IMAGES_EVENT))
+}
+
 /** Settings groups an in-app prompt can jump to directly. */
 export type ImageGenConfigSection = 'storage' | 'skills' | 'ppt' | 'general'
 

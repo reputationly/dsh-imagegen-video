@@ -582,6 +582,7 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
       ? { images: body.images.filter((item): item is string => typeof item === 'string' && item !== '').slice(0, 4) }
       : {},
     ...typeof body.refName === 'string' && body.refName !== '' ? { refName: body.refName } : {},
+    ...typeof body.annotationCanvas === 'string' && /^\d+x\d+$/u.test(body.annotationCanvas) ? { annotationCanvas: body.annotationCanvas } : {},
     ...typeof body.channelId === 'string' && body.channelId !== '' ? { channelId: body.channelId } : {},
     ...typeof body.comparisonId === 'string' && body.comparisonId !== '' ? { comparisonId: body.comparisonId } : {},
     ...comparisonModels.length > 1 ? { comparisonModels } : {},

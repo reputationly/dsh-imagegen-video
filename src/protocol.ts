@@ -2548,6 +2548,8 @@ export type ListingCopyResult =
 
 /** A client → host generate request (what the panel collects). */
 export interface GenerateRequest extends EcommerceTaskMeta {
+  /** 标注重绘：原图画幅对应的 H3 画布 `WIDTHxHEIGHT`；只有 H3 读它，其他模型照旧用 `size` 的比例。 */
+  annotationCanvas?: string
   /** Tool name marker for Agent-submitted generations (history bookkeeping). */
   agentTool?: string
   /** text-to-image (images/generations) or image-to-image (images/edits). */

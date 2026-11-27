@@ -36,7 +36,7 @@ import { ImageGenApiError, type ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { mergeCanvasDocuments, type MergeConflict, type MergeSummary } from './canvas/canvas-merge.ts'
 import type { ImageGenKey } from './locales.ts'
-import { autoRemoveBackground, canvasToDataUrl, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, loadRaster, rectBetween, transparencyRatio } from './image-ops.ts'
+import { autoRemoveBackground, canvasToDataUrl, annotationCanvasOf, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, loadRaster, rectBetween, transparencyRatio } from './image-ops.ts'
 import { PosterEditor } from './PosterEditor.tsx'
 // 工作流执行器：分层调度在 workflow-graph.ts（纯函数），执行循环在 workflow-runner.ts。
 import { runWorkflow } from './workflow-runner.ts'
@@ -322,6 +322,7 @@ interface CanvasWorkspaceProps {
   importRequest?: (
     | { source: 'history' | 'gallery'; entryId: string; imageIndex: number }
     | { source: 'video'; url: string; mime: string; duration?: number; title?: string }
+    | { source: 'annotate'; dataUrl: string }
   )
   onImportRequestHandled?: () => void
   /**
@@ -3560,7 +3561,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const annotatedReference = useCallback(async (
     source: CanvasNode,
     boxes: Array<{ rect: CanvasRect; text: string }>,
-  ): Promise<{ image: string; prompt: string } | undefined> => {
+  ): Promise<{ image: string; prompt: string; size: string } | undefined> => {
     const asset = usableAsset(source)
     if (asset === undefined || boxes.length === 0) return undefined
     const raster = await loadRaster(asset.url)
@@ -3572,6 +3573,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     })
     return {
       image: canvasToDataUrl(composite),
+      size: annotationCanvasOf(asset.width, asset.height),
       prompt: [
         '【局部修改约束】只修改参考图中红色方框标记的区域，方框之外的内容必须与原图完全一致（构图、人物、文字、颜色与光影都不要变化）。',
         '红色方框和编号只是给你定位用的标记：结果图片里绝对不能出现方框、边框、编号或任何标注痕迹。',
@@ -3587,7 +3589,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const annotationPlanOf = useCallback(async (
     canvasDocument: CanvasDocument,
     inputs: CanvasNode[],
-  ): Promise<{ image: string; prompt: string; sourceNodeId: string; texts: string[]; boxes: CanvasRect[] } | undefined> => {
+  ): Promise<{ image: string; prompt: string; size: string; sourceNodeId: string; texts: string[]; boxes: CanvasRect[] } | undefined> => {
     for (const image of inputs) {
       if (image.type !== 'image' || usableAsset(image) === undefined) continue
       const boxes = liveAnnotations(image, canvasDocument.nodes).flatMap(annotation => {
@@ -3989,6 +3991,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ? { channelId: '', model: '' }
         : resolveModelChoice(modelGroups, { channelId: composerChannelId, model: composerModel }, defaultChannelId)
       const model = composerChoice.model
+      const annotationCanvas = codeRenderer || annotationPlan === undefined ? {} : { annotationCanvas: annotationPlan.size }
       if (!codeRenderer && model === '') { setError(tt('canvas.needModel')); setComposerBusy(false); return }
       // One chat answer draws one still, so the code path always produces one
       // node — a count above one would leave placeholders that never fill.
@@ -4050,7 +4053,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           const jobPrompt = [job.prompt, castPrompt].filter(part => part !== '').join('\n\n')
           const jobRequest: GenerateRequest = {
             mode: image === undefined ? 'text' : 'edit', model, prompt: jobPrompt,
-            size: composerSize, quality: composerQuality, n: 1, detail: '',
+            size: composerSize, quality: composerQuality, n: 1, detail: '', ...annotationCanvas,
             ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
             ...(image === undefined ? {} : { image, refName }),
             ...(images === undefined ? {} : { images }),
@@ -4094,7 +4097,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         return
       }
       const request: GenerateRequest = {
-        mode: image === undefined ? 'text' : 'edit', model, prompt: finalPrompt, size: composerSize, quality: composerQuality, n: count, detail: '',
+        mode: image === undefined ? 'text' : 'edit', model, prompt: finalPrompt, size: composerSize, quality: composerQuality, n: count, detail: '', ...annotationCanvas,
         ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
         ...codeRenderer ? { renderer: 'code' as const } : {},
         ...(image === undefined ? {} : { image, refName }),
@@ -5074,7 +5077,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             try {
               const result = await loadRaster(dataUrl, 4096)
               const original = await loadRaster(originalAsset.url, 4096)
-              const inset = Math.max(2, Math.round(Math.min(result.width, result.height) * 0.01))
+              const inset = Math.max(4, Math.round(Math.min(result.width, result.height) * 0.02))
               dataUrl = canvasToDataUrl(compositeAnnotatedResult(result, original, annotationEdit.boxes, inset))
             } catch { /* keep the raw result if the composite cannot be built */ }
           }
@@ -5178,6 +5181,29 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       onImportRequestHandled?.()
       return
     }
+    if (importRequest.source === 'annotate') {
+      // 图生图页「在图上标注」：参考图落成一个图片节点，并直接进入画框状态。
+      const key = `annotate:${importRequest.dataUrl.length}:${importRequest.dataUrl.slice(-64)}`
+      if (processedImport.current === key) return
+      processedImport.current = key
+      const { dataUrl } = importRequest
+      void (async () => {
+        const dimensions = await readImageSize(dataUrl)
+        const asset = await api.canvasUpload(dataUrl, dimensions.width, dimensions.height, { origin: 'upload', originId: 'refine' })
+        const node = createImageNode(asset)
+        mutate(previous => ({ ...previous, nodes: [...previous.nodes, node] }))
+        setSelectedIds(new Set([node.id]))
+        setFocusNodeId(node.id)
+        setAnnotateNodeId(node.id)
+        setAnnotationDraft(null)
+        setNotice(tt('canvas.annotationDrawHint'))
+        onImportRequestHandled?.()
+      })().catch(caught => {
+        setError(caught instanceof Error ? caught.message : String(caught))
+        onImportRequestHandled?.()
+      })
+      return
+    }
     const requestKey = `${importRequest.source}:${importRequest.entryId}:${importRequest.imageIndex}`
     if (processedImport.current === requestKey) return
     const sourceEntries = importRequest.source === 'history' ? history : gallery
@@ -5198,7 +5224,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       setError(caught instanceof Error ? caught.message : String(caught))
       onImportRequestHandled?.()
     })
-  }, [addAssets, addClipNode, api, document, gallery, history, importRequest, onImportRequestHandled])
+  }, [addAssets, addClipNode, api, createImageNode, document, gallery, history, importRequest, mutate, onImportRequestHandled])
 
   // -------------------------------------------------------------- loading
 

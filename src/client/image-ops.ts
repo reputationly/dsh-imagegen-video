@@ -220,6 +220,23 @@ export interface BackgroundRemovalResult {
  * itself is discarded) and restores the untouched original everywhere else —
  * which is exactly what "only change inside the box" promised.
  */
+/**
+ * 标注重绘要按原图的画幅出图，否则合成时框外原图会被裁掉。按 2K 档面积
+ * （2048²，两边向下取 32 的倍数，比例夹在 1:2.9–2.9:1，取整后仍不超过网关的 3:1）换成 `WIDTHxHEIGHT`。
+ * @param width - source image width in pixels.
+ * @param height - source image height in pixels.
+ * @returns the canvas to request.
+ */
+export function annotationCanvasOf(width: number, height: number): string {
+  // A source that already is a 2K H3 canvas is requested as is, so nothing is cropped.
+  if (width % 32 === 0 && height % 32 === 0 && Math.max(width, height) <= 3 * Math.min(width, height)
+    && width * height >= 4_000_000 && width * height <= 4_300_000) return `${String(width)}x${String(height)}`
+  const aspect = Math.min(2.9, Math.max(1 / 2.9, width / Math.max(1, height)))
+  const side = Math.sqrt(2048 * 2048 / aspect)
+  const floor = (value: number): number => Math.max(32, Math.floor(value / 32) * 32)
+  return `${String(floor(aspect * side))}x${String(floor(side))}`
+}
+
 export function compositeAnnotatedResult(
   result: HTMLCanvasElement,
   original: HTMLCanvasElement,
@@ -244,8 +261,12 @@ export function compositeAnnotatedResult(
   for (const box of boxes) {
     const px = rectToPixels(box, width, height)
     const pad = Math.max(0, Math.min(inset, Math.floor(Math.min(px.width, px.height) / 2) - 1))
+    // Feather the hole inside the box so the redraw blends into the original
+    // instead of leaving a hard seam or the model's echoed marker line.
+    patchCtx.filter = pad > 1 ? `blur(${String(Math.floor(pad / 2))}px)` : 'none'
     patchCtx.fillRect(px.x + pad, px.y + pad, Math.max(1, px.width - pad * 2), Math.max(1, px.height - pad * 2))
   }
+  patchCtx.filter = 'none'
   patchCtx.globalCompositeOperation = 'source-over'
   ctx.drawImage(patch, 0, 0)
   return canvas
