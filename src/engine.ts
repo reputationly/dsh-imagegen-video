@@ -326,7 +326,7 @@ function effectiveParams(request: GenerateRequest): {
   //  - 裸模型（`minimax-h3-image`）必须由我们把面板比例换成 2K 档像素。
   if (modelFamily(model) === 'h3-image') {
     // 标注重绘按原图画幅给出的像素尺寸，两个 H3 模型都照发。
-    if (/^\d+x\d+$/u.test(request.size)) return { model, size: request.size }
+    if (request.annotationCanvas !== undefined) return { model, size: request.annotationCanvas }
     if (/-enhanced(?:$|[-_.])/i.test(model)) return { model }
     return {
       model,

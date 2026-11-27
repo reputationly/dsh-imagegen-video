@@ -228,6 +228,9 @@ export interface BackgroundRemovalResult {
  * @returns the canvas to request.
  */
 export function annotationCanvasOf(width: number, height: number): string {
+  // A source that already is a 2K H3 canvas is requested as is, so nothing is cropped.
+  if (width % 32 === 0 && height % 32 === 0 && Math.max(width, height) <= 3 * Math.min(width, height)
+    && width * height >= 4_000_000 && width * height <= 4_300_000) return `${String(width)}x${String(height)}`
   const aspect = Math.min(2.9, Math.max(1 / 2.9, width / Math.max(1, height)))
   const side = Math.sqrt(2048 * 2048 / aspect)
   const floor = (value: number): number => Math.max(32, Math.floor(value / 32) * 32)

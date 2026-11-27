@@ -120,14 +120,14 @@ await check('未知比例回落到 2K 正方形，而不是发一个会被 400 �
   assert.equal(body.size, '2048x2048')
 })
 
-await check('像素尺寸（标注重绘按原图画幅）两个 H3 模型都原样发', async () => {
+await check('标注重绘的原图画幅 annotationCanvas 两个 H3 模型都原样发', async () => {
   for (const model of ['minimax-h3-image', 'minimax-h3-image-enhanced']) {
     const stub = stubFetch([
       [(href, method) => method === 'POST' && href.endsWith('/images/generations'), () => json({ data: [{ url: 'https://cdn.example/d.png' }] })],
       [(href) => href.endsWith('.png'), () => new Response(TINY_PNG, { status: 200, headers: { 'content-type': 'image/png' } })],
     ])
     try {
-      await generateImage(IMAGE_UPSTREAM, imageRequest(model, { size: '2496x1664' }))
+      await generateImage(IMAGE_UPSTREAM, imageRequest(model, { size: '1:1', annotationCanvas: '2496x1664' }))
     } finally {
       stub.restore()
     }

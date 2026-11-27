@@ -15,7 +15,6 @@ import {
 import type { CanvasAnnotation, CanvasAssetRef, CanvasConnection, CanvasPromptSetItem, CanvasConnectionRole, CanvasDocument, CanvasProposal, CanvasFileKind, CanvasLayerInfo, CanvasLayerPlanItem, CanvasNode, CanvasRect, CanvasStoryboard, CanvasStoryboardSource, CanvasVideoRef, CanvasSkillConfigApplyResult, CanvasSkillConfigField, CanvasSkillConfigSaveResult, CanvasSkillConfigStep, CanvasSkillConfigView, CanvasSkillDescriptor, CanvasSkillLibrary, CanvasSkillOutput, CanvasSkillRunRequest, CanvasSkillTask, CanvasSketchStroke, CanvasPoseStage, CanvasPoseRig, GenerateRequest, GenerationTask, HistoryEntry, VideoGenerateRequest, VideoHistoryEntry, VideoTaskSummary, VideoMode, VideoResolution } from '../protocol.ts'
 import type { CanvasBundleUnresolved } from '../canvas-bundle.ts'
 import { describeVideoModel, durationsOf, VIDEO_RESOLUTIONS } from '../video-model-catalog.ts'
-import { modelFamily } from '../model-catalog.ts'
 // The stitch order is a SHARED rule: the host builds its ffmpeg concat list with
 // the same function, so the numbers on the badges are the order of the file.
 import { TimelinePanel, type TimelineClipView } from './TimelinePanel.tsx'
@@ -3574,7 +3573,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     })
     return {
       image: canvasToDataUrl(composite),
-      size: annotationCanvasOf(raster.width, raster.height),
+      size: annotationCanvasOf(asset.width, asset.height),
       prompt: [
         '【局部修改约束】只修改参考图中红色方框标记的区域，方框之外的内容必须与原图完全一致（构图、人物、文字、颜色与光影都不要变化）。',
         '红色方框和编号只是给你定位用的标记：结果图片里绝对不能出现方框、边框、编号或任何标注痕迹。',
@@ -3992,8 +3991,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ? { channelId: '', model: '' }
         : resolveModelChoice(modelGroups, { channelId: composerChannelId, model: composerModel }, defaultChannelId)
       const model = composerChoice.model
-      // Only H3 reads a pixel canvas; other routes keep the selected ratio.
-      const annotationSize = !codeRenderer && modelFamily(model) === 'h3-image' ? annotationPlan?.size : undefined
+      const annotationCanvas = codeRenderer || annotationPlan === undefined ? {} : { annotationCanvas: annotationPlan.size }
       if (!codeRenderer && model === '') { setError(tt('canvas.needModel')); setComposerBusy(false); return }
       // One chat answer draws one still, so the code path always produces one
       // node — a count above one would leave placeholders that never fill.
@@ -4055,7 +4053,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           const jobPrompt = [job.prompt, castPrompt].filter(part => part !== '').join('\n\n')
           const jobRequest: GenerateRequest = {
             mode: image === undefined ? 'text' : 'edit', model, prompt: jobPrompt,
-            size: annotationSize ?? composerSize, quality: composerQuality, n: 1, detail: '',
+            size: composerSize, quality: composerQuality, n: 1, detail: '', ...annotationCanvas,
             ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
             ...(image === undefined ? {} : { image, refName }),
             ...(images === undefined ? {} : { images }),
@@ -4099,7 +4097,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         return
       }
       const request: GenerateRequest = {
-        mode: image === undefined ? 'text' : 'edit', model, prompt: finalPrompt, size: annotationSize ?? composerSize, quality: composerQuality, n: count, detail: '',
+        mode: image === undefined ? 'text' : 'edit', model, prompt: finalPrompt, size: composerSize, quality: composerQuality, n: count, detail: '', ...annotationCanvas,
         ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
         ...codeRenderer ? { renderer: 'code' as const } : {},
         ...(image === undefined ? {} : { image, refName }),
