@@ -4643,6 +4643,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         // Re-render the stored drawing source when there is one; without it
         // (e.g. the chat call itself failed) the host asks the model again.
         ...codeRenderer && metadata.renderSource !== undefined ? { renderSource: metadata.renderSource } : {},
+        ...annotated !== undefined && !codeRenderer ? { annotationCanvas: annotated.size } : {},
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
         canvas: { canvasId: current.id, sourceNodeId: sourceId ?? references[0]?.id, parentNodeId: node.id, placement: 'right' as const },
