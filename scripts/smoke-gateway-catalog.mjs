@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import {
   displayNameOf, entriesOfKind, gatewayChannel, gatewayOrigin, gatewayUrl, GATEWAY_CHANNEL_ID,
-  hasRenderableEntries, isCredentialRefName, modelOptionsOf, pluginSnapshotOf, selectDefaultAlias, selectDefaultModel,
+  hasRenderableEntries, isCredentialRefName, modelOptionsOf, pluginSnapshotOf, selectDefaultAlias, selectDefaultImageAlias, selectDefaultModel,
 } from '../src/gateway-catalog.ts'
 // 路由来自已构建的宿主包：`src/routes.ts` 用到 Node 的类型剥离不支持的语法，
 // 只能在构建产物上跑；`pnpm test` 的链条先 build 再跑本脚本。
@@ -112,6 +112,13 @@ await check('展示名中文优先，缺省回落到模型名', () => {
 await check('默认模型：用户上次的选择仍在目录里就用它', () => {
   const candidates = entriesOfKind(ENTRIES, 'images')
   assert.equal(selectDefaultModel(candidates, 'relayvsr'), 'relayvsr')
+})
+
+await check('图像默认模型：裸模型排第一时仍优先增强流水线', () => {
+  const raw = { ...IMAGE, id: 'generate_image:raw', model: 'minimax-h3-image', displayName: { zh: 'H3 图像', en: 'H3 image' }, default: true }
+  const enhanced = { ...IMAGE, default: false }
+  assert.equal(selectDefaultImageAlias([raw, enhanced], ''), 'H3 图像增强')
+  assert.equal(selectDefaultImageAlias([raw, enhanced], 'H3 图像'), 'H3 图像')
 })
 
 await check('默认模型：选择已不在目录里时回到目录标记的默认项', () => {

@@ -63,15 +63,17 @@ export function gatewayUpstreamId(snapshot: Snapshot, alias: string): string {
  *
  * The user's own previous choice wins while the catalog still offers it — a
  * gateway that retires a model must not leave the picker pointing at it — and
- * falls back to the catalog's marked default, then to the first entry.
+ * falls back to the catalog's marked default, then to the first entry. Image callers can ask for
+ * the enhanced pipeline first because annotation edits are only visual prompts, not masks.
  *
  * @param options - one catalog list.
  * @param previous - the alias stored in settings, if any.
  * @returns the alias to select, or undefined when the list is empty.
  */
-export function gatewayDefaultAlias(options: readonly GatewayModelOption[], previous: string | undefined): string | undefined {
+export function gatewayDefaultAlias(options: readonly GatewayModelOption[], previous: string | undefined, preferEnhanced = false): string | undefined {
   if (options.length === 0) return undefined
   const stored = previous?.trim() ?? ''
   if (stored !== '' && options.some(option => option.label === stored)) return stored
-  return (options.find(option => option.isDefault) ?? options[0]!).label
+  const enhanced = preferEnhanced ? options.find(option => option.model.endsWith('-enhanced')) : undefined
+  return (enhanced ?? options.find(option => option.isDefault) ?? options[0]!).label
 }
