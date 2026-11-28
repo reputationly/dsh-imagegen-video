@@ -267,18 +267,21 @@ export function compositeAnnotatedResult(
     // saturated marker ink reads as a visible edge line.
     shapeCtx.fillStyle = '#ffffff'
     const feather = Math.floor(pad / 2)
-    shapeCtx.filter = pad > 1 ? `blur(${String(feather)}px)` : 'none'
     const innerX = px.x + pad
     const innerY = px.y + pad
     const innerWidth = Math.max(1, px.width - pad * 2)
     const innerHeight = Math.max(1, px.height - pad * 2)
     // Pull the solid rectangle in by about two blur radii before clipping. The
     // Gaussian tail is then effectively zero at the inner boundary, so the mask
-    // rises smoothly instead of jumping from no coverage to half coverage.
+    // rises smoothly instead of jumping from no coverage to half coverage. When
+    // the interior is too small for that core, blur would erase the edit itself;
+    // small boxes use the solid interior instead.
     const core = feather * 2
     const coreWidth = innerWidth - core * 2
     const coreHeight = innerHeight - core * 2
-    if (coreWidth >= 1 && coreHeight >= 1) shapeCtx.fillRect(innerX + core, innerY + core, coreWidth, coreHeight)
+    const feathered = coreWidth >= feather * 2 && coreHeight >= feather * 2
+    shapeCtx.filter = feathered ? `blur(${String(feather)}px)` : 'none'
+    if (feathered) shapeCtx.fillRect(innerX + core, innerY + core, coreWidth, coreHeight)
     else shapeCtx.fillRect(innerX, innerY, innerWidth, innerHeight)
     shapeCtx.filter = 'none'
     shapeCtx.globalCompositeOperation = 'destination-in'
