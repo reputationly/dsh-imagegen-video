@@ -67,6 +67,13 @@
   }
 
   .tabs {
-    gap: 18px;
+    flex-wrap: wrap;
+    gap: 0 14px;
+    overflow-x: visible;
+  }
+
+  .tab {
+    height: 32px;
+    padding-bottom: 5px;
   }
 }
