@@ -261,16 +261,31 @@ export function compositeAnnotatedResult(
     const pad = Math.max(0, Math.min(inset, Math.floor(Math.min(px.width, px.height) / 2) - 1))
     const shape = createCanvas(width, height)
     const shapeCtx = context2d(shape)
-    // Blur only the shrunken interior, then clip the blurred alpha back to the
-    // exact box. Canvas blur is Gaussian and otherwise leaks several pixels past
-    // the rectangle, which is precisely how generated pixels and echoed marker
-    // ink used to contaminate the promised untouched exterior.
+    // Blur only the shrunken interior, then clip the blurred alpha back to that
+    // same interior. The inset margin itself must stay fully original: it is
+    // where the model may echo the marker stroke, and even a few percent of
+    // saturated marker ink reads as a visible edge line.
     shapeCtx.fillStyle = '#ffffff'
-    shapeCtx.filter = pad > 1 ? `blur(${String(Math.floor(pad / 2))}px)` : 'none'
-    shapeCtx.fillRect(px.x + pad, px.y + pad, Math.max(1, px.width - pad * 2), Math.max(1, px.height - pad * 2))
+    const feather = Math.floor(pad / 2)
+    const innerX = px.x + pad
+    const innerY = px.y + pad
+    const innerWidth = Math.max(1, px.width - pad * 2)
+    const innerHeight = Math.max(1, px.height - pad * 2)
+    // Pull the solid rectangle in by about two blur radii before clipping. The
+    // Gaussian tail is then effectively zero at the inner boundary, so the mask
+    // rises smoothly instead of jumping from no coverage to half coverage. When
+    // the interior is too small for that core, blur would erase the edit itself;
+    // small boxes use the solid interior instead.
+    const core = feather * 2
+    const coreWidth = innerWidth - core * 2
+    const coreHeight = innerHeight - core * 2
+    const feathered = coreWidth >= feather * 2 && coreHeight >= feather * 2
+    shapeCtx.filter = feathered ? `blur(${String(feather)}px)` : 'none'
+    if (feathered) shapeCtx.fillRect(innerX + core, innerY + core, coreWidth, coreHeight)
+    else shapeCtx.fillRect(innerX, innerY, innerWidth, innerHeight)
     shapeCtx.filter = 'none'
     shapeCtx.globalCompositeOperation = 'destination-in'
-    shapeCtx.fillRect(px.x, px.y, px.width, px.height)
+    shapeCtx.fillRect(innerX, innerY, innerWidth, innerHeight)
     maskCtx.drawImage(shape, 0, 0)
   }
 
