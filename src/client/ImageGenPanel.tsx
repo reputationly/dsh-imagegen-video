@@ -1252,7 +1252,7 @@ export function ImageGenPanel(props: {
     ...config,
     channels,
     defaultChannelId: channels[0]?.id ?? '',
-    defaultModel: gatewayDefaultAlias(gatewaySnapshot?.image ?? [], config.defaultModel),
+    defaultModel: gatewayDefaultAlias(gatewaySnapshot?.image ?? [], config.defaultModel, true),
     defaultVideoModel: gatewayDefaultAlias(gatewaySnapshot?.video ?? [], config.defaultVideoModel),
   }, [config, channels, gatewaySnapshot])
   // Channel-aware model options: every selector keeps the owning channel so a

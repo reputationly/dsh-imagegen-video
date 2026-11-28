@@ -29,7 +29,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type { ImageAttachmentRef, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import {
   entriesOfKind, gatewayChannel, isCredentialRefName, modelOptionsOf, pluginSnapshotOf,
-  selectDefaultAlias, type GatewayCatalogHost, type GatewayCredentialsHost, type GatewayEndpoint,
+  selectDefaultAlias, selectDefaultImageAlias, type GatewayCatalogHost, type GatewayCredentialsHost, type GatewayEndpoint,
 } from './gateway-catalog.ts'
 import { IMAGEGEN_SETTINGS_NAMESPACE, isChannelProtocolPreference, type GatewayCatalogSnapshot, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
@@ -748,7 +748,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     const defaultChannelId = gateway?.id ?? ''
     const imageEntries = entriesOfKind(snapshot.entries, 'images')
     const videoEntries = entriesOfKind(snapshot.entries, 'videos_task')
-    const defaultModel = selectDefaultAlias(imageEntries, typeof value.defaultModel === 'string' ? value.defaultModel.trim() : '')
+    const defaultModel = selectDefaultImageAlias(imageEntries, typeof value.defaultModel === 'string' ? value.defaultModel.trim() : '')
     // 视频默认模型与图像分开比较：一个过期的 defaultVideoModel 不能漏到图像路径上。
     const defaultVideoModel = selectDefaultAlias(videoEntries, typeof value.defaultVideoModel === 'string' ? value.defaultVideoModel.trim() : '')
     return {

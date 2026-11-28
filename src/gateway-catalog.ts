@@ -264,6 +264,23 @@ export function selectDefaultAlias(candidates: readonly GatewayEntry[], previous
 }
 
 /**
+ * 图像编辑/标注重绘的默认 alias：优先选择增强流水线。
+ *
+ * 目录常同时给出生成段裸模型和聚合增强模型，而裸模型常排在第一。标注框只是
+ * 视觉提示，不是 mask；裸模型会把标记画进结果，增强流水线才会把“红框仅用于
+ * 定位、结果必须去掉”这层约束改写到生成提示里。用户显式选中的 alias 仍然优先。
+ * @param candidates - 图像传输方式下的条目。
+ * @param previous - 用户上次选择的展示名。
+ * @returns 选中的展示名，候选为空时为空串。
+ */
+export function selectDefaultImageAlias(candidates: readonly GatewayEntry[], previous: string): string {
+  if (candidates.length === 0) return ''
+  if (previous !== '' && candidates.some(entry => displayNameOf(entry) === previous)) return previous
+  const enhanced = candidates.find(entry => entry.operation === 'generate_image' && entry.model.endsWith('-enhanced'))
+  return displayNameOf(enhanced ?? candidates.find(entry => entry.default) ?? candidates[0]!)
+}
+
+/**
  * 某个操作类别下可选的模型条目。
  * @param entries - 目录里的全部条目。
  * @param kind - 传输方式（`images` / `videos_task`）。
