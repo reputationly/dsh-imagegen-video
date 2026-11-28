@@ -121,6 +121,20 @@ await check('裸模型 minimax-h3-image 发 2K 档像素尺寸', async () => {
   assert.equal('aspect_ratio' in body, false, '网关的图片链路不读 aspect_ratio')
 })
 
+await check('3:2 使用 2K 档的真实 3:2 像素尺寸', async () => {
+  const stub = stubFetch([
+    [(href, method) => method === 'POST' && href.endsWith('/images/generations'), () => json({ data: [{ url: 'https://cdn.example/a3.png' }] })],
+    [(href) => href.endsWith('.png'), () => new Response(TINY_PNG, { status: 200, headers: { 'content-type': 'image/png' } })],
+  ])
+  try {
+    await generateImage(IMAGE_UPSTREAM, imageRequest('minimax-h3-image-enhanced', { size: '3:2' }))
+  } finally {
+    stub.restore()
+  }
+  const submit = stub.requests.find(request => request.url.includes('/images/generations'))
+  assert.equal(jsonBodyOf(submit).size, '2496x1664')
+})
+
 await check('未知比例回落到 2K 正方形，而不是发一个会被 400 的低分辨率', async () => {
   const stub = stubFetch([
     [(href, method) => method === 'POST' && href.endsWith('/images/generations'), () => json({ data: [{ url: 'https://cdn.example/c.png' }] })],
