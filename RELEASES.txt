@@ -10,3 +10,4 @@
 @q253595422/dsh-imagegen-video 1.35.0-suanli.2.8 q253595422-dsh-imagegen-video-1.35.0-suanli.2.8.tgz b7e4522eb25f1aefcfe0d21d9b4e350b7a41985b
 @q253595422/dsh-imagegen-video 1.35.0-suanli.2.9 q253595422-dsh-imagegen-video-1.35.0-suanli.2.9.tgz 3280afef0879733cc4307de85082536fcc1524e8
 @q253595422/dsh-imagegen-video 1.35.0-suanli.2.10 q253595422-dsh-imagegen-video-1.35.0-suanli.2.10.tgz 8f03888254ec0f877c467b915563e1b66761fef1
+@q253595422/dsh-imagegen-video 1.35.0-suanli.2.11 q253595422-dsh-imagegen-video-1.35.0-suanli.2.11.tgz 12468f3cbf05c10b677a1cb644e90fa9190af268
