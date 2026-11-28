@@ -247,28 +247,42 @@ export function compositeAnnotatedResult(
   const height = result.height
   const canvas = createCanvas(width, height)
   const ctx = context2d(canvas)
-  ctx.drawImage(result, 0, 0)
-  // Original copy with the box interiors punched out. Cover-fit keeps its
-  // aspect when the model answered with a different frame shape.
-  const patch = createCanvas(width, height)
-  const patchCtx = context2d(patch)
+  // Start from the clean original, cover-fit exactly as before. Generated pixels are
+  // layered back only through a mask whose alpha is clipped to the annotated boxes.
   const scale = Math.max(width / Math.max(1, original.width), height / Math.max(1, original.height))
   const drawWidth = original.width * scale
   const drawHeight = original.height * scale
-  patchCtx.drawImage(original, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight)
-  patchCtx.globalCompositeOperation = 'destination-out'
-  patchCtx.fillStyle = '#000000'
+  ctx.drawImage(original, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight)
+
+  const mask = createCanvas(width, height)
+  const maskCtx = context2d(mask)
   for (const box of boxes) {
     const px = rectToPixels(box, width, height)
     const pad = Math.max(0, Math.min(inset, Math.floor(Math.min(px.width, px.height) / 2) - 1))
-    // Feather the hole inside the box so the redraw blends into the original
-    // instead of leaving a hard seam or the model's echoed marker line.
-    patchCtx.filter = pad > 1 ? `blur(${String(Math.floor(pad / 2))}px)` : 'none'
-    patchCtx.fillRect(px.x + pad, px.y + pad, Math.max(1, px.width - pad * 2), Math.max(1, px.height - pad * 2))
+    const shape = createCanvas(width, height)
+    const shapeCtx = context2d(shape)
+    // Blur only the shrunken interior, then clip the blurred alpha back to the
+    // exact box. Canvas blur is Gaussian and otherwise leaks several pixels past
+    // the rectangle, which is precisely how generated pixels and echoed marker
+    // ink used to contaminate the promised untouched exterior.
+    shapeCtx.fillStyle = '#ffffff'
+    shapeCtx.filter = pad > 1 ? `blur(${String(Math.floor(pad / 2))}px)` : 'none'
+    shapeCtx.fillRect(px.x + pad, px.y + pad, Math.max(1, px.width - pad * 2), Math.max(1, px.height - pad * 2))
+    shapeCtx.filter = 'none'
+    shapeCtx.globalCompositeOperation = 'destination-in'
+    shapeCtx.fillRect(px.x, px.y, px.width, px.height)
+    maskCtx.drawImage(shape, 0, 0)
   }
-  patchCtx.filter = 'none'
-  patchCtx.globalCompositeOperation = 'source-over'
-  ctx.drawImage(patch, 0, 0)
+
+  ctx.globalCompositeOperation = 'destination-out'
+  ctx.drawImage(mask, 0, 0)
+  ctx.globalCompositeOperation = 'source-over'
+  const generated = createCanvas(width, height)
+  const generatedCtx = context2d(generated)
+  generatedCtx.drawImage(result, 0, 0)
+  generatedCtx.globalCompositeOperation = 'destination-in'
+  generatedCtx.drawImage(mask, 0, 0)
+  ctx.drawImage(generated, 0, 0)
   return canvas
 }
 
