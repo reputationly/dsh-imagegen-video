@@ -3950,7 +3950,7 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
     const inset = compositeAnnotatedResult(modelResult, cleanOriginal, [{ x: 0.25, y: 0.25, width: 0.5, height: 0.5 }], 4)._data
     assert.equal(inset[(16 * 64 + 16) * 4], 200, 'the inset restores the pixels right on the box edge')
     assert.equal(inset[(24 * 64 + 19) * 4], 200, 'the whole inset margin stays clean original')
-    assert.equal(inset[(24 * 64 + 20) * 4], 7, 'generated content starts only inside the inset interior')
+    assert.equal(inset[(24 * 64 + 24) * 4], 7, 'generated content appears after the feather core begins')
   } finally {
     delete sandbox.document
   }

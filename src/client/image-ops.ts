@@ -266,12 +266,20 @@ export function compositeAnnotatedResult(
     // where the model may echo the marker stroke, and even a few percent of
     // saturated marker ink reads as a visible edge line.
     shapeCtx.fillStyle = '#ffffff'
-    shapeCtx.filter = pad > 1 ? `blur(${String(Math.floor(pad / 2))}px)` : 'none'
+    const feather = Math.floor(pad / 2)
+    shapeCtx.filter = pad > 1 ? `blur(${String(feather)}px)` : 'none'
     const innerX = px.x + pad
     const innerY = px.y + pad
     const innerWidth = Math.max(1, px.width - pad * 2)
     const innerHeight = Math.max(1, px.height - pad * 2)
-    shapeCtx.fillRect(innerX, innerY, innerWidth, innerHeight)
+    // Pull the solid rectangle in by about two blur radii before clipping. The
+    // Gaussian tail is then effectively zero at the inner boundary, so the mask
+    // rises smoothly instead of jumping from no coverage to half coverage.
+    const core = feather * 2
+    const coreWidth = innerWidth - core * 2
+    const coreHeight = innerHeight - core * 2
+    if (coreWidth >= 1 && coreHeight >= 1) shapeCtx.fillRect(innerX + core, innerY + core, coreWidth, coreHeight)
+    else shapeCtx.fillRect(innerX, innerY, innerWidth, innerHeight)
     shapeCtx.filter = 'none'
     shapeCtx.globalCompositeOperation = 'destination-in'
     shapeCtx.fillRect(innerX, innerY, innerWidth, innerHeight)
