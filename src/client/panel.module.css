@@ -217,6 +217,19 @@
 @media (max-width: 700px) {
   .panelHeader {
     align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  /* The module row owns the second line at narrow widths. Sharing the first
+     line with the title and connection actions squeezed its scroll box until
+     the rightmost modules were painted straight into the window edge. */
+  .panelNav {
+    flex: 1 0 100%;
+    order: 3;
+  }
+
+  .panelHeaderActions {
+    margin-left: auto;
   }
 
   .panelHeading {
