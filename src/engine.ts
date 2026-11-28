@@ -327,7 +327,7 @@ function effectiveParams(request: GenerateRequest): {
   if (modelFamily(model) === 'h3-image') {
     // 标注重绘按原图画幅给出的像素尺寸，两个 H3 模型都照发。
     if (request.annotationCanvas !== undefined) return { model, size: request.annotationCanvas }
-    if (/-enhanced(?:$|[-_.])/i.test(model)) return { model }
+    if (/-enhanced(?:$|[-_.])/i.test(model) && (request.size === '' || request.size === 'auto')) return { model }
     return {
       model,
       size: H3_IMAGE_2K_SIZE_BY_RATIO[request.size] ?? H3_IMAGE_DEFAULT_SIZE,

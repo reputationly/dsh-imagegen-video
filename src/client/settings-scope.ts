@@ -323,10 +323,14 @@ export function imageModelOptions(config: ImageGenConfig | undefined): {
     channels.find(channel => channel.id === defaultId)!,
     ...channels.filter(channel => channel.id !== defaultId),
   ]
+  const configuredDefault = typeof config?.defaultModel === 'string' ? config.defaultModel.trim() : ''
   const groups: ImageModelGroup[] = orderedChannels.flatMap(channel => {
-    const models = channel.models
+    const aliases = channel.models
       .map(model => model.alias.trim())
       .filter((alias, index, all) => alias !== '' && all.indexOf(alias) === index)
+    const models = aliases.includes(configuredDefault)
+      ? [configuredDefault, ...aliases.filter(alias => alias !== configuredDefault)]
+      : aliases
     return models.length === 0 ? [] : [{ id: channel.id, name: channel.name.trim() || channel.id, models }]
   })
 

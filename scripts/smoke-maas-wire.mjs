@@ -73,13 +73,13 @@ const imageRequest = (model, extra = {}) => ({
 const jsonBodyOf = request => JSON.parse(String(request.body))
 
 // ------------------------------------------------------------------ 图片
-await check('聚合模型 minimax-h3-image-enhanced 不发 size（让网关 PE 自动定画幅）', async () => {
+await check('聚合模型 minimax-h3-image-enhanced 自动画幅时不发 size', async () => {
   const stub = stubFetch([
     [(href, method) => method === 'POST' && href.endsWith('/images/generations'), () => json({ data: [{ url: 'https://cdn.example/a.png' }] })],
     [(href) => href.endsWith('.png'), () => new Response(TINY_PNG, { status: 200, headers: { 'content-type': 'image/png' } })],
   ])
   try {
-    await generateImage(IMAGE_UPSTREAM, imageRequest('minimax-h3-image-enhanced'))
+    await generateImage(IMAGE_UPSTREAM, imageRequest('minimax-h3-image-enhanced', { size: 'auto' }))
   } finally {
     stub.restore()
   }
@@ -89,6 +89,21 @@ await check('聚合模型 minimax-h3-image-enhanced 不发 size（让网关 PE �
   assert.equal(body.model, 'minimax-h3-image-enhanced')
   assert.equal('size' in body, false, '聚合模型不能带 size，否则网关 PE 不会自动定画幅')
   assert.equal('quality' in body, false, '网关不认 OpenAI 的 quality 档位')
+})
+
+await check('聚合模型 minimax-h3-image-enhanced 显式比例仍发 2K 档尺寸', async () => {
+  const stub = stubFetch([
+    [(href, method) => method === 'POST' && href.endsWith('/images/generations'), () => json({ data: [{ url: 'https://cdn.example/a2.png' }] })],
+    [(href) => href.endsWith('.png'), () => new Response(TINY_PNG, { status: 200, headers: { 'content-type': 'image/png' } })],
+  ])
+  try {
+    await generateImage(IMAGE_UPSTREAM, imageRequest('minimax-h3-image-enhanced', { size: '16:9' }))
+  } finally {
+    stub.restore()
+  }
+  const submit = stub.requests.find(request => request.url.includes('/images/generations'))
+  const body = jsonBodyOf(submit)
+  assert.equal(body.size, '2720x1536')
 })
 
 await check('裸模型 minimax-h3-image 发 2K 档像素尺寸', async () => {
